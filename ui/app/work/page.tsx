@@ -11,7 +11,7 @@ type Brief = {
 
 const GUIDELINES = [
   'Read the prompt and the full response before scoring.',
-  'Judge factual accuracy and clinical safety — a confident but wrong answer scores low.',
+  'Judge factual accuracy and clinical safety, a confident but wrong answer scores low.',
   'Flag anything that could mislead a clinician or harm a patient.',
   'Add a one-line rationale so your judgement is auditable.',
 ]
@@ -103,7 +103,7 @@ export default function WorkPage() {
               </a>
             ) : (
               <div className="cx-brief-pending">
-                This project isn&rsquo;t ready for labeling yet. Your tasks are being prepared — check back shortly.
+                This project isn&rsquo;t ready for labeling yet. Your tasks are being prepared, check back shortly.
               </div>
             )}
           </div>

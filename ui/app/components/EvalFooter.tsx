@@ -1,26 +1,64 @@
-// Self-contained footer for the eval-business funnel — no links to the science side.
-const DISPLAY = '"SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif'
-const BODY = '"DM Sans", system-ui, sans-serif'
+// Structured footer for the eval-business funnel, same layout as the site footer,
+// no links to the science side.
+const NAV = {
+  product: [
+    { label: 'What we do', href: '/#what-you-get' },
+    { label: 'Modalities', href: '/#modalities' },
+    { label: 'API docs', href: '/docs' },
+    { label: 'Get an API key', href: '/developers' },
+    { label: 'Book a demo', href: '/submit' },
+  ],
+  company: [
+    { label: 'About', href: '/#about' },
+    { label: 'Research', href: '/research' },
+    { label: 'Contact', href: 'mailto:senebiclabs@gmail.com' },
+  ],
+  legal: [
+    { label: 'Privacy', href: '/evaluate/privacy' },
+    { label: 'Terms', href: '/evaluate/terms' },
+  ],
+}
 
 export default function EvalFooter() {
   return (
-    <footer style={{ borderTop: '1px solid var(--hairline)', padding: 'clamp(48px, 7vw, 84px) 0' }}>
-      <div className="wrap" style={{ textAlign: 'center' }}>
-        <div style={{ fontFamily: DISPLAY, fontWeight: 300, fontSize: 19, letterSpacing: '0.04em', marginBottom: 14 }}>
-          Senebiclabs
+    <footer>
+      <div className="wrap">
+        <div className="grid">
+          <div>
+            <a className="brand" href="/">Senebiclabs</a>
+            <p style={{ marginTop: '18px', maxWidth: '320px', lineHeight: '1.6', color: 'var(--slate)', fontSize: '13.5px' }}>
+              The clinician-grade data layer for medical AI: labeling, evaluation, and RLHF.
+            </p>
+          </div>
+          <div>
+            <h5>Product</h5>
+            <ul>
+              {NAV.product.map((item) => (
+                <li key={item.label}><a href={item.href}>{item.label}</a></li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h5>Company</h5>
+            <ul>
+              {NAV.company.map((item) => (
+                <li key={item.label}><a href={item.href}>{item.label}</a></li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h5>Legal</h5>
+            <ul>
+              {NAV.legal.map((item) => (
+                <li key={item.label}><a href={item.href}>{item.label}</a></li>
+              ))}
+            </ul>
+          </div>
         </div>
-        <p style={{ fontFamily: BODY, fontWeight: 300, fontSize: 14, color: 'var(--slate)', lineHeight: 1.6, maxWidth: 420, margin: '0 auto 24px' }}>
-          Clinician-validated safety and accuracy evaluation for medical AI.
-        </p>
-        <a href="/submit" className="iso-cta">Start a pilot →</a>
-        <div style={{ display: 'flex', gap: 24, justifyContent: 'center', flexWrap: 'wrap', marginTop: 36 }}>
-          <a href="/evaluate/privacy" className="iso-cta iso-cta--muted">Privacy</a>
-          <a href="/evaluate/terms" className="iso-cta iso-cta--muted">Terms</a>
-          <a href="mailto:senebiclabs@gmail.com" className="iso-cta iso-cta--muted">Contact</a>
+        <div className="legal">
+          <span>© 2026 Senebiclabs Inc. · All rights reserved</span>
+          <span>Clinician-reviewed · De-identified · Isolated per client</span>
         </div>
-        <p style={{ fontFamily: 'Geist Mono, monospace', fontSize: 11, letterSpacing: '0.1em', color: 'var(--slate)', marginTop: 24 }}>
-          © 2026 Senebiclabs
-        </p>
       </div>
     </footer>
   )

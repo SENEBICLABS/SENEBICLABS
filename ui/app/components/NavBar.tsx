@@ -3,24 +3,25 @@
 import { useState } from 'react'
 import Logo from './Logo'
 
-type Page = 'home' | 'patients' | 'about' | 'analyse' | 'experts' | 'contribute'
+type Page = 'home' | 'patients' | 'about' | 'analyse' | 'experts' | 'contribute' | 'aiteams'
 
 const LINKS: { label: string; href: string; page: Page }[] = [
   { label: 'Patients',    href: '/patients',   page: 'patients'   },
   { label: 'Specialists', href: '/experts',    page: 'experts'    },
+  { label: 'For AI teams', href: '/evaluate', page: 'aiteams'   },
   { label: 'Contribute',  href: '/contribute', page: 'contribute' },
   { label: 'About',       href: '/about',      page: 'about'      },
 ]
 
 // `minimal` = the eval-business funnel: no links into the science side,
-// brand stays within /evaluate, single "Start a pilot" CTA.
+// brand stays within /evaluate, single "Book a demo" CTA.
 export default function NavBar({ active, onLight, minimal }: { active?: Page; onLight?: boolean; minimal?: boolean }) {
   const [open, setOpen] = useState(false)
 
   const links = minimal ? [] : LINKS
-  const brandHref = minimal ? '/evaluate' : '/'
+  const brandHref = '/'
   const ctaHref = minimal ? '/submit' : '/experts'
-  const ctaLabel = minimal ? 'Start a pilot →' : 'Join as specialist →'
+  const ctaLabel = minimal ? 'Book a demo →' : 'Join as specialist →'
 
   return (
     <nav className={`top scrolled${open ? ' nav-open' : ''}${onLight ? ' nav-on-light' : ''}`}>
@@ -31,7 +32,7 @@ export default function NavBar({ active, onLight, minimal }: { active?: Page; on
           Senebiclabs
         </a>
 
-        {/* Desktop links */}
+        {/* Desktop links  */}
         {!minimal && (
           <div className="nav-links">
             {links.map(l => (
@@ -42,7 +43,7 @@ export default function NavBar({ active, onLight, minimal }: { active?: Page; on
           </div>
         )}
 
-        {/* Right side: CTA, plus hamburger only when there are links */}
+        {/* Right side: CTA, plus hamburger only when there are links  */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, gridColumn: 3 }}>
           <a href={ctaHref} className={minimal ? 'nav-join-cta' : 'nav-join-cta nav-cta-desktop'}>{ctaLabel}</a>
           {!minimal && (
@@ -66,7 +67,7 @@ export default function NavBar({ active, onLight, minimal }: { active?: Page; on
 
       </div>
 
-      {/* Mobile menu (science nav only) */}
+      {/* Mobile menu (science nav only)  */}
       {!minimal && open && (
         <div className="nav-mobile-menu">
           {links.map(l => (

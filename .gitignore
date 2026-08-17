@@ -49,6 +49,8 @@ build/
 Thumbs.db
 
 # Local strategy & research docs — keep private, never commit
+/abhishek-call-cheatsheet.md
+/client-onboarding-100-cases.md
 /collaboration-brief.md
 /darius-call.md
 /founders-understanding.md
@@ -63,3 +65,6 @@ Thumbs.db
 /figures/
 /CLAUDE.md
 /Senebiclabs_Platform_Overview.md
+
+# Internal demo assets (NIH images) — local only
+Demo/

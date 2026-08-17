@@ -27,10 +27,10 @@ export default function PrivacyPage() {
       <Section heading="Information we collect">
         <p>We collect only the information you choose to give us:</p>
         <ul style={{ marginTop: 12, paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <li><strong>Contact details</strong> — the email address, name, and (for specialists) specialty you submit when you join a waitlist or apply to the network.</li>
-          <li><strong>Approximate location</strong> — if you grant permission, we may record approximate coordinates from your browser to help match patients with nearby specialists. This is optional and you can decline.</li>
-          <li><strong>Messages</strong> — anything you send us by email.</li>
-          <li><strong>Basic technical data</strong> — standard server and analytics information such as IP address and browser type, used to keep the service secure and working.</li>
+          <li><strong>Contact details</strong>, the email address, name, and (for specialists) specialty you submit when you join a waitlist or apply to the network.</li>
+          <li><strong>Approximate location</strong>, if you grant permission, we may record approximate coordinates from your browser to help match patients with nearby specialists. This is optional and you can decline.</li>
+          <li><strong>Messages</strong>, anything you send us by email.</li>
+          <li><strong>Basic technical data</strong>, standard server and analytics information such as IP address and browser type, used to keep the service secure and working.</li>
         </ul>
         <p style={{ marginTop: 12 }}>
           We do not ask for, and you should not submit, medical records or identifiable patient
@@ -61,10 +61,10 @@ export default function PrivacyPage() {
       <Section heading="Service providers">
         <p>We share information only with the providers that help us run the service:</p>
         <ul style={{ marginTop: 12, paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <li><strong>Supabase</strong> — secure database storage for sign-ups and applications.</li>
-          <li><strong>Resend</strong> — sending confirmation and notification emails.</li>
-          <li><strong>Vercel</strong> — website hosting.</li>
-          <li><strong>Google Cloud</strong> — backend hosting.</li>
+          <li><strong>Supabase</strong>, secure database storage for sign-ups and applications.</li>
+          <li><strong>Resend</strong>, sending confirmation and notification emails.</li>
+          <li><strong>Vercel</strong>, website hosting.</li>
+          <li><strong>Google Cloud</strong>, backend hosting.</li>
         </ul>
         <p style={{ marginTop: 12 }}>
           These providers process data on our behalf under their own security and privacy terms.

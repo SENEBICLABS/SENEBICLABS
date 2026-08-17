@@ -12,6 +12,12 @@ const nextConfig = {
         destination: `${process.env.FASTAPI_URL ?? 'http://localhost:8000'}/docs`,
         permanent: false,
       },
+      {
+        // The eval business is now the homepage; keep old /evaluate links working.
+        source: '/evaluate',
+        destination: '/',
+        permanent: true,
+      },
     ]
   },
 }

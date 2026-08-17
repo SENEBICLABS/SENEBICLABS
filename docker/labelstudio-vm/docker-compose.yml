@@ -32,7 +32,8 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: caddy:2
+    build:
+      context: .
     depends_on: [ label-studio ]
     environment:
       LS_DOMAIN: ${LS_DOMAIN}

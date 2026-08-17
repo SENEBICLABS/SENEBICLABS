@@ -4,9 +4,10 @@ import { parseDataset, type ParsedDataset } from '../lib/dataset'
 
 const STAGES = ['submitted', 'scoping', 'agreement', 'pilot', 'production', 'delivered']
 const STORAGE_KEY = 'senebiclabs_admin_key'
+const API_BASE = 'https://senebiclabs-api-777437555578.us-central1.run.app/api/v1/project'
 // value, label, required data columns
 const LS_TASK_TYPES: [string, string, string][] = [
-  ['eval_rating', 'Rate response (1–5)', 'prompt, output'],
+  ['eval_rating', 'Rate response (1-5)', 'prompt, output'],
   ['rubric_eval', 'Rubric evaluation (multi-axis)', 'prompt, output'],
   ['preference', 'Compare A / B', 'prompt, output_a, output_b'],
   ['response_writing', 'Write ideal answer', 'prompt'],
@@ -130,6 +131,17 @@ export default function AdminPage() {
   const [meta, setMeta] = useState<Record<string, { rate: string; difficulty: string }>>({})
   const [metaSaving, setMetaSaving] = useState<string | null>(null)
   const [metaMsg, setMetaMsg] = useState<Record<string, string>>({})
+  const [cfgOpen, setCfgOpen] = useState<string | null>(null)
+  const [cfgText, setCfgText] = useState<Record<string, string>>({})
+  const [cfgSaving, setCfgSaving] = useState<string | null>(null)
+  const [cfgMsg, setCfgMsg] = useState<Record<string, string>>({})
+  const [assigning, setAssigning] = useState<string | null>(null)
+  const [assignMsg, setAssignMsg] = useState<Record<string, string>>({})
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [reportData, setReportData] = useState<Record<string, any>>({})
+  const [reportLoading, setReportLoading] = useState<string | null>(null)
+  const [apiKey, setApiKey] = useState<Record<string, string>>({})
+  const [apiKeyLoading, setApiKeyLoading] = useState<string | null>(null)
 
   const load = useCallback(async (k: string) => {
     setLoading(true)
@@ -148,7 +160,7 @@ export default function AdminPage() {
         const cr = await fetch('/api/admin/clinicians', { headers: { 'x-admin-key': k } })
         const cd = await cr.json()
         if (cd.ok) setClinicians(cd.clinicians ?? [])
-      } catch { /* ignore */ }
+      } catch { /* ignore  */ }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not load.')
       setAuthed(false)
@@ -198,7 +210,7 @@ export default function AdminPage() {
       const res = await fetch(`/api/admin/progress?project=${id}`, { headers: { 'x-admin-key': k } })
       const data = await res.json()
       if (data.ok) setProgress(p => ({ ...p, [id]: { total: data.total, done: data.done } }))
-    } catch { /* ignore */ }
+    } catch { /* ignore  */ }
   }, [])
 
   const toggleItems = (id: string) => {
@@ -357,7 +369,112 @@ export default function AdminPage() {
     }
   }
 
-  // ── Key gate ──────────────────────────────────────────────────────────────
+  const IMAGE_TEMPLATE = JSON.stringify({
+    title: 'Chest X-ray classification review',
+    reviewers_per_item: 5,
+    schema: {
+      input: 'image',
+      classes: ['Normal', 'Pneumonia', 'Effusion'],
+      multi_label: false,
+      case_id_field: 'study_id',
+      fields: {
+        verdict: { type: 'single', options: ['Correct', 'Incorrect', 'Partially correct'], required: true },
+        correct_label: { type: 'from_classes', visible_when: 'verdict!=Correct' },
+        critical_miss: { type: 'structured', visible_when: 'verdict!=Correct' },
+      },
+    },
+  }, null, 2)
+
+  const TEXT_TEMPLATE = JSON.stringify({
+    title: 'Response review',
+    reviewers_per_item: 5,
+    schema: {
+      input: 'text',
+      context: [
+        { key: 'prompt', label: 'Prompt' },
+        { key: 'output', label: 'Model output' },
+      ],
+      classes: ['Correct', 'Incorrect', 'Partially correct'],
+      fields: {
+        verdict: { type: 'single', options: ['Correct', 'Incorrect', 'Partially correct'], required: true },
+        quality: { type: 'scale', max: 5 },
+        notes: { type: 'text', placeholder: 'Rationale (optional)' },
+      },
+    },
+  }, null, 2)
+
+  const toggleConfig = (id: string) => {
+    const opening = cfgOpen !== id
+    setCfgOpen(opening ? id : null)
+    if (opening && cfgText[id] === undefined) setCfgText(t => ({ ...t, [id]: IMAGE_TEMPLATE }))
+  }
+
+  const saveConfig = async (id: string) => {
+    let cfg: unknown
+    try { cfg = JSON.parse(cfgText[id] ?? '') } catch { setCfgMsg(m => ({ ...m, [id]: 'Invalid JSON, check your brackets/commas.' })); return }
+    setCfgSaving(id); setCfgMsg(m => ({ ...m, [id]: '' }))
+    try {
+      const res = await fetch('/api/admin/eval-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
+        body: JSON.stringify({ project_id: id, eval_config: cfg }),
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.message ?? 'Failed')
+      setCfgMsg(m => ({ ...m, [id]: 'Config saved ✓' }))
+    } catch (err: unknown) {
+      setCfgMsg(m => ({ ...m, [id]: err instanceof Error ? err.message : 'Failed' }))
+    } finally { setCfgSaving(null) }
+  }
+
+  const assignClinician = async (id: string, clinicianId: string) => {
+    if (!clinicianId) return
+    setAssigning(id); setAssignMsg(m => ({ ...m, [id]: '' }))
+    try {
+      const res = await fetch('/api/admin/assign-clinician', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
+        body: JSON.stringify({ project_id: id, clinician_id: clinicianId }),
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.message ?? 'Failed')
+      setAssignMsg(m => ({ ...m, [id]: 'Assigned ✓' }))
+    } catch (err: unknown) {
+      setAssignMsg(m => ({ ...m, [id]: err instanceof Error ? err.message : 'Failed' }))
+    } finally { setAssigning(null) }
+  }
+
+  const viewReport = async (id: string) => {
+    setReportLoading(id)
+    try {
+      const res = await fetch(`/api/admin/report?project=${id}`, { headers: { 'x-admin-key': key } })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.message ?? 'Failed')
+      setReportData(r => ({ ...r, [id]: data.report }))
+    } catch (err: unknown) {
+      setReportData(r => ({ ...r, [id]: { error: err instanceof Error ? err.message : 'Failed' } }))
+    } finally { setReportLoading(null) }
+  }
+
+  const rpct = (v: number | null | undefined) => (v == null ? 'n/a' : `${Math.round(v * 100)}%`)
+
+  const genApiKey = async (id: string) => {
+    setApiKeyLoading(id)
+    try {
+      const res = await fetch('/api/admin/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
+        body: JSON.stringify({ project_id: id }),
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.message ?? 'Failed')
+      setApiKey(k => ({ ...k, [id]: data.api_key }))
+    } catch (err: unknown) {
+      setApiKey(k => ({ ...k, [id]: 'ERROR: ' + (err instanceof Error ? err.message : 'Failed') }))
+    } finally { setApiKeyLoading(null) }
+  }
+
+  // Key gate
   if (!authed) {
     return (
       <main style={{ ...page, display: 'grid', placeItems: 'center', padding: 24 }}>
@@ -381,7 +498,7 @@ export default function AdminPage() {
     )
   }
 
-  // ── Dashboard ─────────────────────────────────────────────────────────────
+  // Dashboard
   return (
     <div style={page}>
     <main style={{ maxWidth: 880, margin: '0 auto', padding: '48px 24px 96px' }}>
@@ -394,7 +511,7 @@ export default function AdminPage() {
       </div>
       <p style={{ ...label, marginBottom: 28 }}>{subs.length} total</p>
 
-      {/* Clinicians */}
+      {/* Clinicians  */}
       <div style={{ ...card, marginBottom: 30 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Clinicians</h2>
@@ -425,10 +542,11 @@ export default function AdminPage() {
       {subs.map(s => {
         const edit = edits[s.id] ?? { stage: 'submitted', note: '' }
         const p = prog(s)
+        const selClin = clinicians.find(c => c.id === pickClin[s.id])
         return (
           <div key={s.id} style={card}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <h2 style={{ fontSize: 20, fontWeight: 600 }}>{s.company || '—'}</h2>
+              <h2 style={{ fontSize: 20, fontWeight: 600 }}>{s.company || ', '}</h2>
               <span style={{ ...label, color: '#15a34a' }}>{s.stage ?? 'submitted'}</span>
             </div>
             <p style={{ fontSize: 14, color: '#475569', marginTop: 4 }}>
@@ -449,7 +567,7 @@ export default function AdminPage() {
                   const locked = stageLocked(st, p)
                   return (
                     <option key={st} value={st} disabled={locked} style={{ background: '#ffffff', color: locked ? '#9aa1a9' : '#0f172a' }}>
-                      {st}{locked ? ' — locked' : ''}
+                      {st}{locked ? ', locked' : ''}
                     </option>
                   )
                 })}
@@ -470,13 +588,18 @@ export default function AdminPage() {
               </p>
             )}
 
-            {/* Work: items, queue, export */}
+            {/* Work: items, queue, export  */}
             <div style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid #eef0f2', display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
               <button onClick={() => toggleItems(s.id)} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>
                 {openId === s.id ? 'Hide items ▲' : 'Add items ▼'}
               </button>
-              <a href={`/work?project=${s.id}`} style={{ ...label, color: '#15a34a', textDecoration: 'none' }}>Work queue →</a>
+              <button onClick={() => toggleConfig(s.id)} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
+                {cfgOpen === s.id ? 'Hide config ▲' : 'Set config ▼'}
+              </button>
               <button onClick={() => exportProject(s.id, s.company)} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Export labels ↓</button>
+              <button onClick={() => genApiKey(s.id)} disabled={apiKeyLoading === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
+                {apiKeyLoading === s.id ? 'Generating…' : 'API key ⚙'}
+              </button>
               {p.total > 0 && (
                 <select value={lsType[s.id] ?? 'eval_rating'} onChange={e => setLsType(t => ({ ...t, [s.id]: e.target.value }))} style={{ ...input, padding: '6px 8px', fontSize: 12, cursor: 'pointer' }}>
                   {LS_TASK_TYPES.map(([v, lbl]) => <option key={v} value={v} style={{ background: '#fff' }}>{lbl}</option>)}
@@ -491,6 +614,9 @@ export default function AdminPage() {
               <button onClick={() => lsPull(s.id)} disabled={lsSyncing === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
                 Pull results ↓
               </button>
+              <button onClick={() => viewReport(s.id)} disabled={reportLoading === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
+                {reportLoading === s.id ? 'Building…' : 'View report ↧'}
+              </button>
               {p.total > 0 && <span style={label}>{p.done}/{p.total} labeled</span>}
               {lsMsg[s.id] && <span style={{ ...label, color: lsMsg[s.id].startsWith('Sent') ? '#15a34a' : '#dc2626' }}>{lsMsg[s.id]}</span>}
               {clinicians.length > 0 && (
@@ -500,14 +626,20 @@ export default function AdminPage() {
                     onChange={e => setPickClin(pc => ({ ...pc, [s.id]: e.target.value }))}
                     style={{ ...input, padding: '6px 10px', fontSize: 12.5, cursor: 'pointer' }}
                   >
-                    <option value="">Clinician link…</option>
-                    {clinicians.map(c => <option key={c.id} value={c.access_code}>{c.name}</option>)}
+                    <option value="">Clinician…</option>
+                    {clinicians.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  {pickClin[s.id] && (
-                    <button onClick={() => copyLink(s.id, pickClin[s.id])} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#15a34a' }}>
-                      {copied === s.id + pickClin[s.id] ? 'Copied ✓' : 'Copy link'}
-                    </button>
+                  {selClin && (
+                    <>
+                      <button onClick={() => assignClinician(s.id, selClin.id)} disabled={assigning === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
+                        {assigning === s.id ? 'Assigning…' : 'Assign'}
+                      </button>
+                      <button onClick={() => copyLink(s.id, selClin.access_code)} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#15a34a' }}>
+                        {copied === s.id + selClin.access_code ? 'Copied ✓' : 'Copy link'}
+                      </button>
+                    </>
                   )}
+                  {assignMsg[s.id] && <span style={{ ...label, color: assignMsg[s.id].includes('✓') ? '#15a34a' : '#dc2626' }}>{assignMsg[s.id]}</span>}
                 </span>
               )}
             </div>
@@ -529,6 +661,91 @@ export default function AdminPage() {
               {metaMsg[s.id] && <span style={{ ...label, color: metaMsg[s.id].includes('✓') ? '#15a34a' : '#dc2626' }}>{metaMsg[s.id]}</span>}
             </div>
 
+            {cfgOpen === s.id && (
+              <div style={{ marginTop: 16, padding: 16, border: '1px solid #eef0f2', borderRadius: 10, background: '#fafbfc' }}>
+                <p style={{ ...label, marginBottom: 4 }}>Task config</p>
+                <p style={{ fontSize: 12.5, color: '#475569', marginBottom: 10 }}>Pick a template: <strong>Image</strong> for X-rays/scans (each item needs an image), <strong>Text</strong> for rating a model&apos;s written answers. Then edit the <code style={{ fontFamily: 'Geist Mono, monospace' }}>classes</code> to match the client&apos;s labels.</p>
+                <textarea
+                  value={cfgText[s.id] ?? ''}
+                  onChange={e => setCfgText(t => ({ ...t, [s.id]: e.target.value }))}
+                  spellCheck={false}
+                  style={{ width: '100%', minHeight: 240, boxSizing: 'border-box', fontFamily: 'Geist Mono, monospace', fontSize: 12.5, lineHeight: 1.5, padding: 12, border: '1px solid #d6dae0', borderRadius: 8, color: '#0f172a', background: '#ffffff', resize: 'vertical' }}
+                />
+                <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                  <button style={btn} onClick={() => saveConfig(s.id)} disabled={cfgSaving === s.id}>{cfgSaving === s.id ? 'Saving…' : 'Save config'}</button>
+                  <button onClick={() => setCfgText(t => ({ ...t, [s.id]: IMAGE_TEMPLATE }))} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Image template</button>
+                  <button onClick={() => setCfgText(t => ({ ...t, [s.id]: TEXT_TEMPLATE }))} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Text template</button>
+                  {cfgMsg[s.id] && <span style={{ ...label, color: cfgMsg[s.id].includes('✓') ? '#15a34a' : '#dc2626' }}>{cfgMsg[s.id]}</span>}
+                </div>
+              </div>
+            )}
+
+            {reportData[s.id] && (
+              <div style={{ marginTop: 16, padding: 16, border: '1px solid #d9f0e0', background: '#f4fbf6', borderRadius: 10 }}>
+                {reportData[s.id].error ? (
+                  <p style={{ color: '#dc2626', fontSize: 13 }}>{reportData[s.id].error}</p>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                      <span style={{ ...label, color: '#15803d' }}>Report</span>
+                      <button onClick={() => setReportData(r => { const n = { ...r }; delete n[s.id]; return n })} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Hide</button>
+                    </div>
+                    <p style={{ fontSize: 15, margin: '8px 0 4px' }}>
+                      <strong style={{ fontSize: 22 }}>{rpct(reportData[s.id].accuracy?.value)}</strong>{' '}
+                      accuracy
+                      {reportData[s.id].accuracy?.assessable != null && (
+                        <span style={{ color: '#475569' }}>, {reportData[s.id].accuracy?.correct}/{reportData[s.id].accuracy?.assessable} correct</span>
+                      )}
+                    </p>
+                    {reportData[s.id].qa && (
+                      <p style={{ fontSize: 13, margin: '2px 0 4px', color: '#334155' }}>
+                        <strong>{rpct(reportData[s.id].qa.mean_agreement)}</strong> inter-reviewer agreement
+                        {' '}({reportData[s.id].qa.reviewers} reviewers/item)
+                        {reportData[s.id].qa.disagreements > 0 && (
+                          <span style={{ color: '#b45309' }}> · {reportData[s.id].qa.disagreements} to adjudicate</span>
+                        )}
+                      </p>
+                    )}
+                    {Array.isArray(reportData[s.id].critical_misses) && reportData[s.id].critical_misses.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <span style={{ ...label, color: '#b91c1c' }}>Critical misses ({reportData[s.id].critical_misses.length})</span>
+                        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any  */}
+                        {reportData[s.id].critical_misses.map((c: any, i: number) => (
+                          <div key={i} style={{ fontSize: 13, marginTop: 8, lineHeight: 1.5, paddingTop: 8, borderTop: i ? '1px solid #eef0f2' : 'none' }}>
+                            <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                              <code style={{ fontFamily: 'Geist Mono, monospace', color: '#334155' }}>{c.case_id || `#${c.idx}`}</code>
+                              {c.finding && <span style={{ color: '#b91c1c', fontWeight: 600, fontSize: 12 }}>{c.finding}</span>}
+                            </div>
+                            {c.prompt && <p style={{ margin: '5px 0 6px', color: '#0f172a' }}>&ldquo;{c.prompt}&rdquo;</p>}
+                            <span>model said <strong>{c.model_prediction ?? ', '}</strong>{' → clinician read '}<strong>{c.correct_label ?? ', '}</strong></span>
+                            {c.rationale && <p style={{ margin: '5px 0 0', color: '#64748b', fontStyle: 'italic' }}>{c.rationale}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {apiKey[s.id] && (
+              <div style={{ marginTop: 16, padding: 16, border: '1px solid #eef0f2', borderRadius: 10, background: '#0f172a', color: '#e2e8f0' }}>
+                <p style={{ ...label, color: '#7dd3fc', marginBottom: 10 }}>API key for this project — send to the client</p>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+                  <code style={{ fontFamily: 'Geist Mono, monospace', fontSize: 12, background: '#020617', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 10px', wordBreak: 'break-all', flex: 1, minWidth: 240 }}>{apiKey[s.id]}</code>
+                  <button onClick={() => { navigator.clipboard?.writeText(apiKey[s.id]); setCopied('apikey' + s.id); setTimeout(() => setCopied(c => (c === 'apikey' + s.id ? null : c)), 1500) }} style={{ ...btn, padding: '8px 14px', fontSize: 12 }}>
+                    {copied === 'apikey' + s.id ? 'Copied ✓' : 'Copy'}
+                  </button>
+                </div>
+                <p style={{ fontFamily: 'Geist Mono, monospace', fontSize: 11.5, color: '#94a3b8', lineHeight: 1.8 }}>
+                  Base: {API_BASE}<br />
+                  POST /ingest &nbsp;·&nbsp; body {'{'} project_id: <span style={{ color: '#7dd3fc' }}>{s.id}</span>, items: [...], webhook_url? {'}'}<br />
+                  GET&nbsp; /results?project_id=<span style={{ color: '#7dd3fc' }}>{s.id}</span><br />
+                  Auth: header <span style={{ color: '#e2e8f0' }}>Authorization: Bearer &lt;key&gt;</span>
+                </p>
+              </div>
+            )}
+
             {openId === s.id && (
               <div style={{ marginTop: 16 }}>
                 {!parsed[s.id] ? (
@@ -546,7 +763,7 @@ export default function AdminPage() {
                       />
                       <span style={{ color: '#0f172a', fontWeight: 500, fontSize: 15 }}>Drop a CSV or JSON file</span>
                       <span style={{ display: 'block', marginTop: 6, fontSize: 13, color: '#475569' }}>
-                        or click to browse — each row becomes one task
+                        or click to browse, each row becomes one task
                       </span>
                     </label>
                     {parseErr[s.id] && <p style={{ color: '#dc2626', fontSize: 13, marginTop: 10 }}>{parseErr[s.id]}</p>}

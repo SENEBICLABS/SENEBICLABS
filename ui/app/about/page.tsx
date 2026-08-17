@@ -20,7 +20,7 @@ export default function AboutPage() {
     <>
       <NavBar active="about" />
 
-      {/* HERO */}
+      {/* HERO  */}
       <section style={{ padding: 'clamp(120px, 15vw, 180px) 0 clamp(48px, 6vw, 80px)' }}>
         <div className="wrap">
           <Label>About us</Label>
@@ -50,7 +50,7 @@ export default function AboutPage() {
         </div>
       </section>
 
-      {/* THE STORY */}
+      {/* THE STORY  */}
       <section style={{ padding: 'clamp(64px, 8vw, 100px) 0', borderTop: '1px solid var(--hairline)' }}>
         <div className="wrap">
           <div className="about-2col">
@@ -92,7 +92,7 @@ export default function AboutPage() {
         </div>
       </section>
 
-      {/* WHAT WE'RE BUILDING */}
+      {/* WHAT WE'RE BUILDING  */}
       <section style={{ padding: 'clamp(64px, 8vw, 100px) 0', borderTop: '1px solid var(--hairline)' }}>
         <div className="wrap">
           <div className="about-2col">
@@ -136,7 +136,7 @@ export default function AboutPage() {
         </div>
       </section>
 
-      {/* HOW WE WORK */}
+      {/* HOW WE WORK  */}
       <section style={{ padding: 'clamp(64px, 8vw, 100px) 0', borderTop: '1px solid var(--hairline)' }}>
         <div className="wrap">
           <Label>How we work</Label>

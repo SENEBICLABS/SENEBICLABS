@@ -5,7 +5,7 @@ from an eval_config schema. Run: python tests/test_label_config.py
 """
 import xml.dom.minidom as minidom
 
-from app.services.labelstudio import build_label_config
+from app.services.labelstudio import build_label_config, required_data_keys
 
 SAMPLE = {
     "title": "Chest X-ray classification review",
@@ -62,7 +62,43 @@ def test_invalid_configs_fail_loudly():
         raise AssertionError(f"expected ValueError for: {why}")
 
 
+TEXT_SAMPLE = {
+    "title": "Response review",
+    "schema": {
+        "input": "text",
+        "context": [{"key": "prompt", "label": "Prompt"}, {"key": "output", "label": "Model output"}],
+        "classes": ["Correct", "Incorrect"],
+        "fields": {
+            "verdict": {"type": "single", "options": ["Correct", "Incorrect"], "required": True},
+            "quality": {"type": "scale", "max": 5},
+            "notes": {"type": "text"},
+        },
+    },
+}
+
+
+def test_text_mode_binds_controls_to_an_anchor():
+    xml = build_label_config(TEXT_SAMPLE)
+    minidom.parseString(xml)  # valid XML
+    # No <Image> in text mode, but exactly one object tag named "image" so the
+    # field controls (toName="image") still bind.
+    assert "<Image" not in xml, "text config must not emit an Image tag"
+    assert 'name="image"' in xml, "text config needs an 'image'-named anchor for controls"
+    # context keys are shown; the primary output is the anchor
+    assert 'value="$prompt"' in xml and 'value="$output"' in xml
+
+
+def test_required_data_keys_by_input_type():
+    # Derived from the config's object tags: image mode needs the image + prediction
+    # it displays; text mode needs the prompt + output it displays.
+    assert required_data_keys(SAMPLE) == ["image", "prediction"]
+    assert required_data_keys(TEXT_SAMPLE) == ["output", "prompt"]
+    assert required_data_keys(None) == []
+
+
 if __name__ == "__main__":
     test_generates_valid_config_from_schema()
     test_invalid_configs_fail_loudly()
+    test_text_mode_binds_controls_to_an_anchor()
+    test_required_data_keys_by_input_type()
     print("PASS: tests/test_label_config.py (schema -> valid config, conditionals, loud failures)")

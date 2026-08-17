@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL("https://senebiclabs.com"),
   title: {
-    default: "Senebiclabs — Biological intelligence, starting with respiratory",
+    default: "Senebiclabs: Biological intelligence, starting with respiratory",
     template: "%s · Senebiclabs",
   },
   description:
@@ -19,13 +19,13 @@ export const metadata: Metadata = {
     type: "website",
     url: "https://senebiclabs.com",
     siteName: "Senebiclabs",
-    title: "Senebiclabs — Biological intelligence, starting with respiratory",
+    title: "Senebiclabs: Biological intelligence, starting with respiratory",
     description:
       "Connecting patients, clinicians, and researchers. Currently focused on the respiratory system.",
   },
   twitter: {
     card: "summary",
-    title: "Senebiclabs — Biological intelligence, starting with respiratory",
+    title: "Senebiclabs: Biological intelligence, starting with respiratory",
     description:
       "Connecting patients, clinicians, and researchers. Currently focused on the respiratory system.",
   },

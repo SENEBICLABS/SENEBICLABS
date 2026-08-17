@@ -560,23 +560,133 @@ def build_label_config(eval_config: dict) -> str:
     if not fields:
         raise ValueError("eval_config.schema.fields is empty")
 
-    title = _esc(eval_config.get("title", "Classification review"))
-    subtitle = _esc(eval_config.get("subtitle", "Review the image and complete each field."))
+    # What the clinician reviews: an image (X-ray, scan) or text (prompt + model
+    # output). The field controls all attach toName="image", so whichever mode we
+    # pick MUST emit exactly one object tag named "image" for them to bind to.
+    input_type = str(schema.get("input") or eval_config.get("input") or "image").lower()
+
+    title = _esc(eval_config.get("title", "Review"))
+    if input_type == "text":
+        default_sub = "Review the response and complete each field."
+    elif input_type in ("audio", "video"):
+        default_sub = "Review the recording and complete each field."
+    else:
+        default_sub = "Review the image and complete each field."
+    subtitle = _esc(eval_config.get("subtitle", default_sub))
     header = (
         f'<View style="{_HEAD}"><Header value="{title}" style="{_TITLE}"/>'
         f'<Header value="{subtitle}" style="{_SUB}"/></View>'
     )
-    # Image renderer = Label Studio <Image> ("ls_image"); Slice #6 makes this pluggable.
-    image = (
-        f'<View style="{_CARD_HI}"><Image name="image" value="$image" '
-        f'zoom="true" zoomControl="true" rotateControl="true" width="100%"/></View>'
-    )
-    prediction = (
-        f'<View style="{_CARD}"><Header value="Model prediction" style="{_CAPS}"/>'
-        f'<Text name="prediction" value="$prediction" style="{_BODY}"/></View>'
-    )
+
+    if input_type == "text":
+        # Text review: show each context key (default prompt + model output) as a
+        # read-only block. The primary block is the "image"-named anchor the controls
+        # bind to (a Text object tag works; LS doesn't require the name to be literal).
+        context = schema.get("context") or [
+            {"key": "prompt", "label": "Prompt"},
+            {"key": "output", "label": "Model output"},
+        ]
+        if not context:
+            raise ValueError("text config needs schema.context (which data keys to show)")
+        blocks, n = [], len(context)
+        for i, c in enumerate(context):
+            ckey = c.get("key")
+            if not ckey:
+                raise ValueError("each schema.context entry needs a 'key'")
+            lbl = _esc(c.get("label") or ckey)
+            anchor = "image" if i == n - 1 else f"ctx_{i}"
+            style = _CARD_HI if i == n - 1 else _CARD
+            blocks.append(
+                f'<View style="{style}"><Header value="{lbl}" style="{_CAPS}"/>'
+                f'<Text name="{anchor}" value="${_esc(ckey)}" style="{_BODY}"/></View>'
+            )
+        media = "".join(blocks)
+    elif input_type in ("audio", "video"):
+        # Recording review: the media player is the "image"-named anchor the controls
+        # bind to; any other context keys render as read-only text (transcript, prompt).
+        # The clip streams straight from its URL (e.g. a pre-signed S3 link) — the bytes
+        # never pass through us. Each item carries the URL under `audio`/`video` (or a
+        # custom schema.media_key).
+        tag = "Audio" if input_type == "audio" else "Video"
+        media_key = _esc(schema.get("media_key") or input_type)
+        extra = ' hotkey="space"' if tag == "Audio" else ' width="100%"'
+        context = schema.get("context") or []
+        blocks = [f'<View style="{_CARD_HI}"><{tag} name="image" value="${media_key}"{extra}/></View>']
+        for c in context:
+            ckey = c.get("key")
+            if not ckey or ckey == media_key:
+                continue
+            lbl = _esc(c.get("label") or ckey)
+            blocks.append(
+                f'<View style="{_CARD}"><Header value="{lbl}" style="{_CAPS}"/>'
+                f'<Text name="{_esc(ckey)}" value="${_esc(ckey)}" style="{_BODY}"/></View>'
+            )
+        media = "".join(blocks)
+    else:
+        # Image renderer = Label Studio <Image> ("ls_image"); Slice #6 makes this pluggable.
+        media = (
+            f'<View style="{_CARD_HI}"><Image name="image" value="$image" '
+            f'zoom="true" zoomControl="true" rotateControl="true" width="100%"/></View>'
+            f'<View style="{_CARD}"><Header value="Model prediction" style="{_CAPS}"/>'
+            f'<Text name="prediction" value="$prediction" style="{_BODY}"/></View>'
+        )
     body = "".join(_field_block(n, d, classes, fields) for n, d in fields.items())
-    return f'<View style="{_WRAP}">{header}{image}{prediction}{body}</View>'
+    return f'<View style="{_WRAP}">{header}{media}{body}</View>'
+
+
+def required_data_keys(eval_config: dict | None) -> list[str]:
+    """Data keys every task MUST carry for this config to import into Label Studio.
+
+    LS's import validates every object tag (<Image>, <Text>, …) and rejects a task
+    that is missing any `value="$key"` the config references — for image AND text
+    configs alike. So we derive the requirement straight from the generated config
+    rather than guessing per mode; a control-only field (Choices/Rating) has no
+    `value="$…"` and imposes nothing.
+    """
+    if not eval_config:
+        return []
+    try:
+        cfg = build_label_config(eval_config)
+    except ValueError:
+        return []
+    return sorted(set(re.findall(r'value="\$(\w+)"', cfg)))
+
+
+def update_project_config(ls_project_id: int, label_config: str, reviewers: int | None = None) -> None:
+    """Keep an existing LS project's labeling config in step with the current
+    eval_config, so edits made after the first sync actually take effect.
+    `reviewers` sets overlap (maximum_annotations): each task needs that many
+    independent clinician annotations before it is complete."""
+    body: dict = {"label_config": label_config}
+    if reviewers is not None and reviewers > 0:
+        body["maximum_annotations"] = int(reviewers)
+    r = httpx.patch(
+        f"{_base()}/api/projects/{ls_project_id}/",
+        headers=_headers(),
+        json=body,
+        timeout=30,
+    )
+    r.raise_for_status()
+
+
+def explain_ls_error(exc: "httpx.HTTPStatusError") -> str:
+    """Turn a Label Studio HTTP error into a human sentence instead of a generic
+    'check LS_URL/LS_TOKEN' that sends the operator hunting the wrong thing."""
+    try:
+        data = exc.response.json()
+    except Exception:
+        return f"Label Studio returned {exc.response.status_code}."
+    if isinstance(data, dict):
+        ve = data.get("validation_errors")
+        if isinstance(ve, dict):
+            msgs: list[str] = []
+            for v in ve.values():
+                msgs.extend(v if isinstance(v, list) else [v])
+            if msgs:
+                return "Label Studio rejected the request: " + "; ".join(str(m) for m in msgs)
+        if data.get("detail"):
+            return f"Label Studio: {data['detail']}"
+    return f"Label Studio returned {exc.response.status_code}."
 
 
 def is_configured() -> bool:
@@ -591,29 +701,55 @@ def _headers() -> dict:
     return {"Authorization": f"Token {settings.LS_TOKEN}"}
 
 
-def create_project(title: str, label_config: str = DEFAULT_LABEL_CONFIG) -> int:
+def _register_webhook(ls_project_id: int) -> None:
+    """Point Label Studio at our /ls/webhook for this project, so annotations flow back
+    automatically as clinicians create them (auto-pull). Best-effort; manual pull is the
+    fallback if this fails."""
+    url = getattr(settings, "LS_CALLBACK_URL", None) or \
+        "https://senebiclabs-api-777437555578.us-central1.run.app/api/v1/ls/webhook"
+    hdrs = {"X-Ls-Secret": settings.LS_WEBHOOK_SECRET} if settings.LS_WEBHOOK_SECRET else {}
+    try:
+        httpx.post(
+            f"{_base()}/api/webhooks/",
+            headers=_headers(),
+            json={"project": ls_project_id, "url": url, "send_for_all_actions": False,
+                  "actions": ["ANNOTATION_CREATED", "ANNOTATION_UPDATED"], "headers": hdrs, "is_active": True},
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+
+def create_project(title: str, label_config: str = DEFAULT_LABEL_CONFIG, reviewers: int = 1) -> int:
+    body: dict = {"title": title, "label_config": label_config}
+    if reviewers and reviewers > 1:
+        body["maximum_annotations"] = int(reviewers)   # overlap: N clinicians per task
     r = httpx.post(
         f"{_base()}/api/projects/",
         headers=_headers(),
-        json={"title": title, "label_config": label_config},
+        json=body,
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["id"]
+    pid = r.json()["id"]
+    _register_webhook(pid)                              # auto-pull annotations as they land
+    return pid
 
 
-def push_tasks(ls_project_id: int, items: list[dict]) -> int:
-    """Import items as tasks. Each item is {id, content}; we carry id as _item_id."""
+def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500) -> int:
+    """Import items as tasks. Each item is {id, content}; we carry id as _item_id.
+    Pushed in chunks so a bulk batch never exceeds Label Studio's import limits."""
     tasks = [{"data": {**(it.get("content") or {}), "_item_id": it["id"]}} for it in items]
     if not tasks:
         return 0
-    r = httpx.post(
-        f"{_base()}/api/projects/{ls_project_id}/import",
-        headers=_headers(),
-        json=tasks,
-        timeout=120,
-    )
-    r.raise_for_status()
+    for i in range(0, len(tasks), chunk):
+        r = httpx.post(
+            f"{_base()}/api/projects/{ls_project_id}/import",
+            headers=_headers(),
+            json=tasks[i:i + chunk],
+            timeout=120,
+        )
+        r.raise_for_status()
     return len(tasks)
 
 

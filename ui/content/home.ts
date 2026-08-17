@@ -21,7 +21,7 @@ export interface ValuePoint {
   body:    string
 }
 
-// ─── HERO ────────────────────────────────────────────────────────────────────
+// HERO
 
 export const HERO = {
   tagline: 'Connecting Patients, Intelligence, and Experts for Better Health Care.',
@@ -32,7 +32,7 @@ export const HERO = {
   p3:      'When a new sample enters the system, the model returns ranked deviations: which cell populations are expanded or depleted, which genes fall outside their reference range, and which biological pathways are dysregulated. The output is traceable to its source. Experts interpret it. The model does not guess.',
 }
 
-// ─── LATEST ──────────────────────────────────────────────────────────────────
+// LATEST
 
 export const LATEST = {
   label: 'Latest from Senebiclabs',
@@ -52,7 +52,7 @@ export const LATEST = {
   ],
 }
 
-// ─── GOAL ────────────────────────────────────────────────────────────────────
+// GOAL
 
 export const GOAL = {
   label: 'our goal',
@@ -61,7 +61,7 @@ export const GOAL = {
   href:  '/about',
 }
 
-// ─── THREE BLOCKS ─────────────────────────────────────────────────────────────
+// THREE BLOCKS
 
 export const BLOCKS = [
   {
@@ -84,7 +84,7 @@ export const BLOCKS = [
   },
 ]
 
-// ─── SENEBICLABS SECTION ─────────────────────────────────────────────────────────
+// SENEBICLABS SECTION
 
 export const SENEBICLABS_SECTION = {
   label: 'Senebiclabs',
@@ -93,7 +93,7 @@ export const SENEBICLABS_SECTION = {
   p3: 'Every model we refine, and every expert annotation we collect, brings us closer to our mission: to detect, characterise, and ultimately correct every disease that departs from the healthy human baseline, through better diagnostics, targeted treatment, and precision drug discovery.',
 }
 
-// ─── FOOTER ──────────────────────────────────────────────────────────────────
+// FOOTER
 
 export const FOOTER = {
   tagline: 'Starting with the lung. Building toward every disease.',
@@ -107,6 +107,7 @@ export const FOOTER = {
     ] satisfies NavItem[],
     company: [
       { label: 'About', href: '/about' },
+      { label: 'Research', href: '/research' },
     ] satisfies NavItem[],
     legal: [
       { label: 'Privacy', href: '/privacy' },

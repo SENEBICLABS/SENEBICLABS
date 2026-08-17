@@ -40,7 +40,7 @@ const STEPS = [
   },
 ]
 
-// ── STEP FORM ────────────────────────────────────────────────────────────────
+// STEP FORM
 
 const STORAGE_KEY = 'senebiclabs_expert_applied'
 
@@ -127,7 +127,7 @@ function StepForm() {
 
   return (
     <div>
-      {/* completed rows */}
+      {/* completed rows  */}
       {FIELDS.slice(0, step).map((f, i) => (
         <div key={f.key} style={{
           display: 'flex',
@@ -140,7 +140,7 @@ function StepForm() {
             {f.label}
           </span>
           <span style={{ fontSize: 16, flex: 1 }}>
-            {form[f.key] || '—'}
+            {form[f.key] || ', '}
           </span>
           <button
             onClick={() => setStep(i)}
@@ -151,7 +151,7 @@ function StepForm() {
         </div>
       ))}
 
-      {/* active field */}
+      {/* active field  */}
       {step < FIELDS.length && (
         <div style={{ padding: '28px 0 8px' }}>
           <label style={{ display: 'block', fontFamily: 'Geist Mono, monospace', fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink)', marginBottom: 16 }}>
@@ -202,7 +202,7 @@ function StepForm() {
             </button>
           </div>
 
-          {/* progress bar */}
+          {/* progress bar  */}
           <div style={{ display: 'flex', gap: 4, marginTop: 24 }}>
             {FIELDS.map((_, i) => (
               <div key={i} style={{ flex: 1, height: 2, borderRadius: 1, background: i <= step ? '#FFFFFF' : 'transparent', border: i <= step ? 'none' : '1px solid #FFFFFF' }} />
@@ -211,7 +211,7 @@ function StepForm() {
         </div>
       )}
 
-      {/* confirm step */}
+      {/* confirm step  */}
       {step === FIELDS.length && (
         <div style={{ paddingTop: 32 }}>
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 14, cursor: 'pointer' }}>
@@ -278,14 +278,14 @@ function StepForm() {
   )
 }
 
-// ── PAGE ──────────────────────────────────────────────────────────────────────
+// PAGE
 
 export default function ExpertsPage() {
   return (
     <>
       <NavBar active="experts" />
 
-      {/* Hero */}
+      {/* Hero  */}
       <section className="experts-hero" style={{ textAlign: 'center' }}>
         <div className="wrap">
           <span className="micro" style={{ display: 'block', color: 'var(--ink)', marginBottom: 28 }}>Senebic App · Pre-launch</span>
@@ -310,7 +310,7 @@ export default function ExpertsPage() {
         </div>
       </section>
 
-      {/* How the app works */}
+      {/* How the app works  */}
       <section style={{ padding: '80px 0 60px', borderTop: '1px solid var(--hairline)' }}>
         <div className="wrap">
           <span className="micro" style={{ display: 'block', color: 'var(--ink)', marginBottom: 52, textAlign: 'center' }}>How the app works</span>
@@ -330,7 +330,7 @@ export default function ExpertsPage() {
         </div>
       </section>
 
-      {/* Why join now */}
+      {/* Why join now  */}
       <section style={{ padding: '80px 0', borderTop: '1px solid var(--hairline)', textAlign: 'center' }}>
         <div className="wrap">
           <div style={{ maxWidth: 680, margin: '0 auto', marginBottom: 64 }}>
@@ -345,7 +345,7 @@ export default function ExpertsPage() {
         </div>
       </section>
 
-      {/* How to join */}
+      {/* How to join  */}
       <section style={{ padding: '0 0 80px', borderTop: '1px solid var(--hairline)' }}>
         <div className="wrap" style={{ paddingTop: 80 }}>
           <span className="micro" style={{ display: 'block', color: 'var(--ink)', marginBottom: 52, textAlign: 'center' }}>How to join</span>
@@ -361,7 +361,7 @@ export default function ExpertsPage() {
         </div>
       </section>
 
-      {/* Application */}
+      {/* Application  */}
       <section id="apply" style={{ padding: '80px 0 120px', borderTop: '1px solid var(--hairline)', textAlign: 'center' }}>
         <div className="wrap">
           <div style={{ maxWidth: 560, margin: '0 auto' }}>

@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server'
  * Represents a pulmonary fibrosis–like profile built from real HLCA biology.
  * All field names and values match the DeviationReport + BiologicalInterpretation
  * Pydantic schemas in app/models/schemas.py exactly.
- */
+  */
 export async function POST() {
   const now = new Date().toISOString()
 

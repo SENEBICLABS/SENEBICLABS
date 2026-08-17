@@ -33,3 +33,6 @@ render.yaml
 railway.json
 Procfile
 README.md
+
+# Demo dataset (thousands of NIH images — never deploy)
+Demo/

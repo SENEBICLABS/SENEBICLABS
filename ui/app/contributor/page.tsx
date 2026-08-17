@@ -91,7 +91,7 @@ export default function ContributorPage() {
     load(c)
   }, [load])
 
-  // ── code gate ───────────────────────────────────────────────────────────────
+  // code gate
   if (needCode) {
     const inp: React.CSSProperties = { width: '100%', background: 'var(--cx-surface-2)', border: '1px solid var(--cx-border)', borderRadius: 10, padding: '12px 14px', color: 'var(--cx-text)', fontFamily: 'inherit', fontSize: 14, outline: 'none' }
     return (
@@ -126,10 +126,10 @@ export default function ContributorPage() {
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ')
 
   const stats = [
-    { label: 'Earned this week', value: data ? `$${data.earned_week.toFixed(2)}` : '—', icon: 'earnings' },
-    { label: 'Items this week', value: data ? String(data.this_week) : '—', icon: 'trend' },
-    { label: 'Day streak', value: data ? String(data.streak) : '—', icon: 'flame' },
-    { label: 'Total labeled', value: data ? data.total_labeled.toLocaleString() : '—', icon: 'check' },
+    { label: 'Earned this week', value: data ? `$${data.earned_week.toFixed(2)}` : ', ', icon: 'earnings' },
+    { label: 'Items this week', value: data ? String(data.this_week) : ', ', icon: 'trend' },
+    { label: 'Day streak', value: data ? String(data.streak) : ', ', icon: 'flame' },
+    { label: 'Total labeled', value: data ? data.total_labeled.toLocaleString() : ', ', icon: 'check' },
   ]
 
   return (

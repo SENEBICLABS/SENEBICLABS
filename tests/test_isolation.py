@@ -24,6 +24,10 @@ from app.services.supabase_client import get_client
 from app.api.v1.project import work_brief
 
 SCRATCH = os.environ.get("SCRATCH", "/tmp")
+# Set API_BASE_URL to prove Gate B against the DEPLOYED instance over HTTP (the prod
+# re-verify step), e.g. API_BASE_URL=https://senebiclabs-api-xxxxx.run.app. When unset,
+# Gate B exercises the in-process function locally.
+API_BASE = os.environ.get("API_BASE_URL", "").rstrip("/")
 
 
 def _png(path: str, seed: int) -> str:
@@ -73,12 +77,18 @@ def gate_a_storage(db):
                 pass
 
 
-def _expect_403(project_id, code):
+def _brief_status(project_id, code) -> int:
+    """Status of GET work/brief — against the deployed API if API_BASE_URL is set, else
+    the in-process function. Same DB either way, so DB-created fixtures are visible to both."""
+    if API_BASE:
+        r = httpx.get(f"{API_BASE}/api/v1/project/work/brief",
+                      params={"project_id": project_id}, headers={"X-Work-Code": code}, timeout=30)
+        return r.status_code
     try:
         work_brief(project_id, x_work_code=code)
-        return False
+        return 200
     except HTTPException as e:
-        return e.status_code == 403
+        return e.status_code
 
 
 def gate_b_scoping(db):
@@ -93,10 +103,11 @@ def gate_b_scoping(db):
     ).execute().data[0]
     cid, pid = cli["id"], proj["id"]
 
+    target = f"deployed {API_BASE}" if API_BASE else "local (in-process)"
     assigned = False
     try:
         # NEGATIVE: unassigned clinician must be denied.
-        assert _expect_403(pid, code), "unassigned clinician was NOT denied (403 expected)"
+        assert _brief_status(pid, code) == 403, "unassigned clinician was NOT denied (403 expected)"
 
         # POSITIVE: assign, then the same clinician must no longer be denied.
         try:
@@ -108,8 +119,8 @@ def gate_b_scoping(db):
                 f"({exc}).\nApply supabase_schema.sql in Supabase (project_clinicians table "
                 "+ the eval_config column), then re-run this test."
             )
-        assert not _expect_403(pid, code), "assigned clinician was still denied — scoping check is broken"
-        print("  gate B: PASS (unassigned -> 403; assigned -> allowed)")
+        assert _brief_status(pid, code) != 403, "assigned clinician was still denied — scoping check is broken"
+        print(f"  gate B: PASS (unassigned -> 403; assigned -> allowed) [{target}]")
     finally:
         try:
             if assigned:

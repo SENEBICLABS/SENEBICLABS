@@ -25,7 +25,7 @@ export default function TermsPage() {
       <Section heading="Not medical advice">
         <p>
           Senebiclabs does not provide medical advice, diagnosis, or treatment, and does not create a
-          doctor&ndash;patient relationship. Any information or output from our tools is for research and
+          doctor-patient relationship. Any information or output from our tools is for research and
           informational purposes only and must be interpreted by a qualified professional. Always seek
           the advice of a licensed clinician for any medical condition. Never disregard or delay medical
           care because of something you read or generate here.

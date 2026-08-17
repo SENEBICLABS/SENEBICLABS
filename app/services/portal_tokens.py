@@ -44,6 +44,13 @@ def make_token(email: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:
     return f"{body}.{_sign(body)}"
 
 
+def make_api_key(email: str) -> str:
+    """A long-lived, programmatic key for API clients (10 years). Same signed
+    format as a portal token, so verify_token validates it; the long expiry is
+    what makes it usable from code instead of a 14-day magic link."""
+    return make_token(email, ttl_seconds=10 * 365 * 24 * 3600)
+
+
 def verify_token(token: str) -> str | None:
     """Return the email if the token is valid and unexpired, else None."""
     try:

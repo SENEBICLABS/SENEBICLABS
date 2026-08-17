@@ -5,7 +5,7 @@ export interface StatEntry {
 }
 
 // Single source of truth for all reference model numbers.
-// These appear in hero, engine console, and trust grid — update here only.
+// These appear in hero, engine console, and trust grid, update here only.
 export const REFERENCE_STATS: Record<string, StatEntry> = {
   cells:     { value: '2.28', unit: 'M', label: 'Lung cells in the healthy reference' },
   cellTypes: { value: '60',   unit: '',  label: 'Cell types tracked' },

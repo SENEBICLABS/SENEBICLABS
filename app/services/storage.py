@@ -60,6 +60,16 @@ def upload_image(client_id: str, local_path: str, db=None) -> str:
     return key
 
 
+def upload_image_bytes(client_id: str, original_name: str, data: bytes, db=None) -> str:
+    """Upload one image from raw bytes (e.g. a browser upload) under the client's prefix with
+    a de-identified key. Same isolation/de-id as upload_image; the original name never leaves."""
+    db = _db(db)
+    key = _deid_key(client_id, original_name or "image.png")
+    ctype = mimetypes.guess_type(original_name or "image.png")[0] or "image/png"
+    db.storage.from_(BUCKET).upload(key, data, {"content-type": ctype, "upsert": "true"})
+    return key
+
+
 def signed_url(path: str, ttl: int = DEFAULT_SIGNED_URL_TTL, db=None) -> str:
     """A time-limited URL for one object. Does NOT auto-refresh: if a review window
     outlives the TTL, re-run sync to regenerate URLs (see README)."""

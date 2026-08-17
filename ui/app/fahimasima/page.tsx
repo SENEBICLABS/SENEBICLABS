@@ -123,7 +123,7 @@ function detectAndParse(text: string): ParseResult {
     const rows = dataRows
       .map(r => ({ gene: r[0]?.toUpperCase().trim() ?? '', value: r[1]?.trim() ?? '' }))
       .filter(r => r.gene && !isNaN(parseFloat(r.value)))
-    warnings.push('Could not detect expression columns — using first two columns.')
+    warnings.push('Could not detect expression columns, using first two columns.')
     return { rows, warnings, format: 'fallback' }
   }
 
@@ -135,7 +135,7 @@ function detectAndParse(text: string): ParseResult {
     return { rows, warnings, format: 'single-expression-column' }
   }
 
-  // Multiple samples — return options so user can pick
+  // Multiple samples, return options so user can pick
   const columnOptions: ColumnOption[] = numericCols.map((ci, idx) => ({
     name: colNames[ci - 1]?.trim() || `Sample ${idx + 1}`,
     rows: dataRows
@@ -296,7 +296,7 @@ export default function AnalysePage() {
   const handleFile = useCallback(async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (ext === 'h5ad' || ext === 'zip') {
-      // h5ad and CellRanger MEX zips cannot be parsed in the browser — send to backend
+      // h5ad and CellRanger MEX zips cannot be parsed in the browser, send to backend
       await uploadH5ad(file)
       return
     }
@@ -613,10 +613,10 @@ export default function AnalysePage() {
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px' }}>
                       {[
-                        { l: 'Cells',      v: modelStatus?.n_healthy_cells?.toLocaleString() ?? '—' },
-                        { l: 'Donors',     v: String(modelStatus?.n_donors ?? '—') },
-                        { l: 'Cell types', v: String(modelStatus?.n_cell_types ?? '—') },
-                        { l: 'Pathways',   v: String(modelStatus?.n_pathways ?? '—') },
+                        { l: 'Cells',      v: modelStatus?.n_healthy_cells?.toLocaleString() ?? ', ' },
+                        { l: 'Donors',     v: String(modelStatus?.n_donors ?? ', ') },
+                        { l: 'Cell types', v: String(modelStatus?.n_cell_types ?? ', ') },
+                        { l: 'Pathways',   v: String(modelStatus?.n_pathways ?? ', ') },
                       ].map(({ l, v }) => (
                         <div key={l}>
                           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, fontFamily: 'monospace', marginBottom: 2 }}>{l}</div>
@@ -640,7 +640,7 @@ export default function AnalysePage() {
           {/* ── Layout ── */}
           <div className="analyse-layout">
 
-            {/* ════════════════════ LEFT — Input ════════════════════ */}
+            {/* ════════════════════ LEFT, Input ════════════════════ */}
             <div className="sidebar">
               <div style={{ padding: '28px 28px 32px' }}>
 
@@ -716,7 +716,7 @@ FN1       3.84`}</pre>
                       </p>
                     </div>
 
-                    {/* Manual entry — always available */}
+                    {/* Manual entry, always available */}
                     <div style={{ marginTop: 20, padding: '16px 16px 14px', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9 }}>
                       <p style={{ fontSize: 13, fontFamily: 'Geist Mono, monospace', letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'rgba(255,255,255,0.88)', marginBottom: 12 }}>
                         Or enter genes manually
@@ -803,7 +803,7 @@ FN1       3.84`}</pre>
                       </table>
                     </div>
 
-                    {/* Manual entry row — always at bottom of table */}
+                    {/* Manual entry row, always at bottom of table */}
                     <div style={{ marginBottom: 18 }}>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <input ref={geneInputRef} className="gene-input" placeholder="Add gene…" value={geneInput}
@@ -868,7 +868,7 @@ FN1       3.84`}</pre>
               </div>
             </div>
 
-            {/* ════════════════════ RIGHT — Results ════════════════════ */}
+            {/* ════════════════════ RIGHT, Results ════════════════════ */}
             <div>
 
               {/* Empty */}
@@ -1078,7 +1078,7 @@ FN1       3.84`}</pre>
                                     <span style={{ fontSize: 13, fontFamily: 'Geist Mono, monospace', color: 'rgba(255,255,255,0.95)', fontWeight: 600 }}>sample {g.sample_value.toFixed(2)}</span>
                                     <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.88)', fontFamily: 'monospace' }}>vs ref</span>
                                     <span style={{ fontSize: 14, fontFamily: 'Geist Mono, monospace', color: 'rgba(255,255,255,0.85)' }}>{g.healthy_mean.toFixed(2)} ±{g.healthy_std.toFixed(2)}</span>
-                                    <span style={{ fontSize: 14, fontFamily: 'Geist Mono, monospace', color: 'rgba(255,255,255,0.92)' }}>(p5–p95: {g.healthy_p5.toFixed(2)}–{g.healthy_p95.toFixed(2)})</span>
+                                    <span style={{ fontSize: 14, fontFamily: 'Geist Mono, monospace', color: 'rgba(255,255,255,0.92)' }}>(p5-p95: {g.healthy_p5.toFixed(2)}-{g.healthy_p95.toFixed(2)})</span>
                                   </div>
                                 </div>
                               )
