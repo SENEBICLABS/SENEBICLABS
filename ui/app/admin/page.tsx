@@ -4,7 +4,7 @@ import { parseDataset, type ParsedDataset } from '../lib/dataset'
 
 const STAGES = ['submitted', 'scoping', 'agreement', 'pilot', 'production', 'delivered']
 const STORAGE_KEY = 'senebiclabs_admin_key'
-const API_BASE = 'https://senebiclabs-api-777437555578.us-central1.run.app/api/v1/project'
+const API_BASE = 'https://api.senebiclabs.com/api/v1/project'
 // value, label, required data columns
 const LS_TASK_TYPES: [string, string, string][] = [
   ['eval_rating', 'Rate response (1-5)', 'prompt, output'],

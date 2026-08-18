@@ -101,14 +101,86 @@ TEMPLATES: dict[str, dict] = {
             },
         },
     },
+    "case_review": {
+        "title": "Clinical case / audit review",
+        "description": "Clinicians review a full case and its AI-assisted workflow and judge "
+                       "whether the AI helped, hurt, or had no effect. You get an audit dataset "
+                       "with the distribution of impact and inter-reviewer agreement.",
+        "needs": "Each item carries the `case` and the `ai_involvement` (the AI's decision log "
+                 "or output in the workflow).",
+        "eval_config": {
+            "title": "Clinical case review",
+            "purpose": "label",
+            "schema": {
+                "input": "text",
+                "context": [
+                    {"key": "case", "label": "Patient case"},
+                    {"key": "ai_involvement", "label": "AI involvement / decision log"},
+                ],
+                "case_id_field": "case_id",
+                "fields": {
+                    "ai_effect": {"type": "single", "options": ["Improved", "No effect", "Degraded", "Harmful"], "required": True},
+                    "quality": {"type": "scale", "max": 5},
+                    "notes": {"type": "text"},
+                },
+            },
+        },
+    },
+    "benchmark_creation": {
+        "title": "Create an evaluation benchmark",
+        "description": "Clinicians author challenging test cases for a clinical area. You get a "
+                       "benchmark dataset of scenarios with expected answers, plus a coverage summary.",
+        "needs": "Each item carries a `topic` (the clinical area to write a case for).",
+        "eval_config": {
+            "title": "Benchmark creation",
+            "purpose": "create",
+            "schema": {
+                "input": "text",
+                "context": [{"key": "topic", "label": "Topic / clinical area"}],
+                "case_id_field": "case_id",
+                "fields": {
+                    "case": {"type": "text", "required": True},
+                    "expected_answer": {"type": "text", "required": True},
+                    "difficulty": {"type": "single", "options": ["Standard", "Hard", "Edge case"]},
+                    "notes": {"type": "text"},
+                },
+            },
+        },
+    },
+    "adversarial_prompts": {
+        "title": "Create adversarial prompts",
+        "description": "Clinicians write medical questions designed to expose a model's gaps — "
+                       "edge cases, ambiguous presentations, misleading clusters. You get a "
+                       "red-teaming test set plus a coverage summary.",
+        "needs": "Each item carries a `target_area` (the topic or capability to probe).",
+        "eval_config": {
+            "title": "Adversarial prompt creation",
+            "purpose": "create",
+            "schema": {
+                "input": "text",
+                "context": [{"key": "target_area", "label": "Target area to probe"}],
+                "case_id_field": "case_id",
+                "fields": {
+                    "prompt": {"type": "text", "required": True},
+                    "failure_mode": {"type": "single", "options": ["Ambiguous presentation", "Rare condition", "Misleading cluster", "Edge case", "Other"]},
+                    "expected_correct": {"type": "text"},
+                    "notes": {"type": "text"},
+                },
+            },
+        },
+    },
 }
 
 
 def list_templates() -> list[dict]:
-    """The catalog a client picks from — name, what it's for, and its purpose."""
+    """The catalog a client picks from — name, what it's for, its purpose, and the full
+    `eval_config` it expands to. A serious client can take that config, tune it to their own
+    rubric, and submit it as a custom `eval_config` — so 'template -> customise' is a smooth
+    two-step, not a cliff between one-click and a blank page."""
     return [
         {"name": name, "title": t["title"], "description": t["description"],
-         "needs": t["needs"], "purpose": t["eval_config"]["purpose"]}
+         "needs": t["needs"], "purpose": t["eval_config"]["purpose"],
+         "eval_config": copy.deepcopy(t["eval_config"])}
         for name, t in TEMPLATES.items()
     ]
 

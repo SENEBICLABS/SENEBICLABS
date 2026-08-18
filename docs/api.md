@@ -22,7 +22,7 @@ Set it once with `purpose` in your config (defaults to `evaluate`).
 **Base URL**
 
 ```
-https://senebiclabs-api-777437555578.us-central1.run.app/api/v1/project
+https://api.senebiclabs.com/api/v1/project
 ```
 
 **Auth** — every request carries your API key as a bearer token:
@@ -55,6 +55,9 @@ List the outcomes with `GET /templates`:
 | `data_labeling` | your data back, labelled → labelled dataset + summary |
 | `rlhf_preference` | pick the better of two responses → preference pairs for RLHF |
 | `gold_answers` | write the ideal answer → gold dataset for fine-tuning |
+| `case_review` | judge whether AI helped or hurt on full cases → audit dataset + impact distribution |
+| `benchmark_creation` | author challenging test cases → an evaluation benchmark |
+| `adversarial_prompts` | write probes that expose model gaps → a red-teaming test set |
 
 Create from one, supplying your own `classes` (label set) where it applies:
 
@@ -68,6 +71,11 @@ curl -X POST "$BASE/projects" \
     "webhook_url": "https://your-app.com/hooks/senebiclabs"
   }'
 ```
+
+**Tune a template to your own rubric.** `GET /templates` also returns each template's full
+`eval_config`. Take the closest one, edit it to fit your exact task (add rating axes, change
+fields or context), and submit it as a custom `eval_config` (below) instead of `template`.
+That way you start from a working, validated config rather than a blank page.
 
 That is all most projects need. The rest of this section is the **advanced** path —
 authoring a full config yourself.
