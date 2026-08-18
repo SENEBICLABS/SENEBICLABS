@@ -58,6 +58,9 @@ List the outcomes with `GET /templates`:
 | `case_review` | judge whether AI helped or hurt on full cases → audit dataset + impact distribution |
 | `benchmark_creation` | author challenging test cases → an evaluation benchmark |
 | `adversarial_prompts` | write probes that expose model gaps → a red-teaming test set |
+| `fact_checking` | highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset |
+| `dialogue_creation` | author realistic patient-clinician dialogues → synthetic training data |
+| `response_ranking` | rank two answers on accuracy/empathy/clarity/safety → preference pairs with per-axis scores |
 
 Create from one, supplying your own `classes` (label set) where it applies:
 
@@ -150,7 +153,8 @@ pairs with a coverage/agreement summary instead of a scorecard.
   - `structured` — yes/no plus which finding (from classes)
   - `scale` — a 1..`max` rating
   - `flag` — a single checkbox
-  - `text` — free-text notes
+  - `text` — free-text notes (`rows` sets the box height for long-form)
+  - `spans` — highlight text in the model output and tag each span with one of `options` (text input only)
 - Optional on any field: `required: true`, `visible_when: "field!=value"`.
 
 ---

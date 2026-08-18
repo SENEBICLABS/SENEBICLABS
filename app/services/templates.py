@@ -169,6 +169,81 @@ TEMPLATES: dict[str, dict] = {
             },
         },
     },
+    "fact_checking": {
+        "title": "Fact-check model output",
+        "description": "Clinicians read the model's answer, highlight the exact erroneous spans, "
+                       "rewrite the passage correctly, and cite a source. You get the accuracy "
+                       "distribution plus a corrections dataset.",
+        "needs": "Each item carries the `topic` (the question) and the `prediction` (the model's "
+                 "answer to fact-check).",
+        "eval_config": {
+            "title": "Clinical fact-check",
+            "purpose": "label",
+            "schema": {
+                "input": "text",
+                "context": [
+                    {"key": "topic", "label": "Question / topic"},
+                    {"key": "prediction", "label": "Model output"},
+                ],
+                "case_id_field": "case_id",
+                "fields": {
+                    "verdict": {"type": "single", "options": ["Accurate", "Has errors", "Partially accurate"], "required": True},
+                    "error_spans": {"type": "spans", "options": ["Hallucination", "Wrong dose / guideline", "Unsupported claim", "Outdated"]},
+                    "correction": {"type": "text", "rows": 6, "placeholder": "Rewrite the passage to be clinically correct"},
+                    "citation": {"type": "text", "placeholder": "Cite peer-reviewed source(s)"},
+                },
+            },
+        },
+    },
+    "dialogue_creation": {
+        "title": "Simulate clinical dialogues",
+        "description": "Clinicians author realistic patient-clinician dialogues for a given "
+                       "presentation. You get high-fidelity synthetic training data plus a "
+                       "coverage summary.",
+        "needs": "Each item carries a `scenario` (the clinical presentation to write a dialogue for).",
+        "eval_config": {
+            "title": "Clinical dialogue creation",
+            "purpose": "create",
+            "schema": {
+                "input": "text",
+                "context": [{"key": "scenario", "label": "Clinical scenario"}],
+                "case_id_field": "case_id",
+                "fields": {
+                    "dialogue": {"type": "text", "rows": 14, "required": True,
+                                 "placeholder": "Write a realistic patient-clinician dialogue for this scenario"},
+                    "notes": {"type": "text"},
+                },
+            },
+        },
+    },
+    "response_ranking": {
+        "title": "Rank responses on clinical axes",
+        "description": "Clinicians compare two model answers and rank them on accuracy, empathy, "
+                       "clarity, and safety, with a written rationale. You get preference pairs "
+                       "with per-axis scores for RLHF.",
+        "needs": "Each item carries a `prompt` and two responses, `response_a` and `response_b`.",
+        "eval_config": {
+            "title": "Clinical response ranking",
+            "purpose": "create",
+            "schema": {
+                "input": "text",
+                "context": [
+                    {"key": "prompt", "label": "Prompt"},
+                    {"key": "response_a", "label": "Response A"},
+                    {"key": "response_b", "label": "Response B"},
+                ],
+                "case_id_field": "case_id",
+                "fields": {
+                    "preference": {"type": "single", "options": ["Response A", "Response B", "Tie"], "required": True},
+                    "accuracy": {"type": "scale", "max": 5},
+                    "empathy": {"type": "scale", "max": 5},
+                    "clarity": {"type": "scale", "max": 5},
+                    "safety": {"type": "scale", "max": 5},
+                    "rationale": {"type": "text", "rows": 4, "required": True},
+                },
+            },
+        },
+    },
 }
 
 

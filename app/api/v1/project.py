@@ -46,10 +46,16 @@ def _normalize_purpose(ec: dict) -> str:
     return p if p in _PURPOSES else "evaluate"
 
 
-def _default_reviewers(purpose: str) -> int:
-    """Reviewer default by purpose: judgments (evaluate/label) get N-way consensus; free-text
-    creation is authored by a single expert (add a review layer via POST /admin/reviewers)."""
-    return 1 if purpose == "create" else int(settings.DEFAULT_REVIEWERS_PER_ITEM)
+def _default_reviewers(ec: dict) -> int:
+    """Reviewer default: judgments get N-way consensus; PURE free-text creation (gold answers,
+    dialogues, authored prompts) is written by a single expert, since you can't majority-vote
+    prose. A 'create' task that still makes a categorical pick — a preference/ranking — gets
+    consensus. Operator can override per project via POST /admin/reviewers."""
+    fields = ((ec or {}).get("schema") or {}).get("fields") or {}
+    required = [f for f in fields.values() if (f or {}).get("required")]
+    authoring = (_normalize_purpose(ec) == "create" and required
+                 and all((f or {}).get("type") in ("text", "spans") for f in required))
+    return 1 if authoring else int(settings.DEFAULT_REVIEWERS_PER_ITEM)
 
 
 def _stale(iso: str | None, minutes: int) -> bool:
@@ -613,10 +619,10 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
     # 'create' produces new data (gold answers / preferences). Defaults to 'evaluate'.
     ec["purpose"] = _normalize_purpose(ec)
     # How many clinicians review each item is our quality call, not the client's — it is
-    # the main cost/quality lever. Judgments (evaluate/label) get N-way consensus; free-text
-    # creation is authored by one expert (a review layer can be added). Operator tunes it
-    # per project via POST /admin/reviewers.
-    ec["reviewers_per_item"] = _default_reviewers(ec["purpose"])
+    # the main cost/quality lever. Judgments (evaluate/label/preference) get N-way consensus;
+    # pure free-text creation is authored by one expert. Operator tunes it per project via
+    # POST /admin/reviewers.
+    ec["reviewers_per_item"] = _default_reviewers(ec)
     if body.webhook_url:
         ec["_webhook_url"] = body.webhook_url
         ec.setdefault("_webhook_secret", secrets.token_hex(32))

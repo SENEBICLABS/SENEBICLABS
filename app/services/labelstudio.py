@@ -464,7 +464,7 @@ def get_config(task_type: str | None) -> str:
 # NOTE: the image renderer here is Label Studio's <Image> (renderer "ls_image").
 # Slice #6 abstracts this behind a seam so a DICOM/Cornerstone renderer can drop in.
 
-_ALLOWED_FIELD_TYPES = {"single", "from_classes", "structured", "scale", "flag", "text"}
+_ALLOWED_FIELD_TYPES = {"single", "from_classes", "structured", "scale", "flag", "text", "spans"}
 
 
 def _esc(v) -> str:
@@ -534,8 +534,19 @@ def _control_xml(name: str, fdef: dict, classes: list) -> str:
         label = _esc(fdef.get("label", "Cannot assess"))
         return f'<Choices name="{_esc(name)}" toName="image" choice="single" showInline="true"><Choice value="{label}"/></Choices>'
 
-    # text
-    return f'<TextArea name="{_esc(name)}" toName="image" placeholder="{_esc(fdef.get("placeholder", "Notes"))}" rows="3"{req}/>'
+    if ftype == "spans":
+        # In-text highlighting: the clinician selects text and tags each span with one of
+        # these labels (e.g. an error type). Binds to the "image"-named Text object, so it
+        # highlights the primary (last) context block — the model output. Text input only.
+        opts = fdef.get("options") or classes
+        if not opts:
+            raise ValueError(f"Field {name!r} of type 'spans' needs 'options' (or schema.classes)")
+        labels = "".join(f'<Label value="{_esc(o)}"/>' for o in opts)
+        return f'<Labels name="{_esc(name)}" toName="image"{req}>{labels}</Labels>'
+
+    # text (rows lets long-form fields like a dialogue script get a bigger box)
+    rows = int(fdef.get("rows", 3))
+    return f'<TextArea name="{_esc(name)}" toName="image" placeholder="{_esc(fdef.get("placeholder", "Notes"))}" rows="{rows}"{req}/>'
 
 
 def _field_block(name: str, fdef: dict, classes: list, fields: dict) -> str:
@@ -564,6 +575,10 @@ def build_label_config(eval_config: dict) -> str:
     # output). The field controls all attach toName="image", so whichever mode we
     # pick MUST emit exactly one object tag named "image" for them to bind to.
     input_type = str(schema.get("input") or eval_config.get("input") or "image").lower()
+
+    # 'spans' (in-text highlighting) can only bind to a text region.
+    if input_type != "text" and any((f or {}).get("type") == "spans" for f in fields.values()):
+        raise ValueError("'spans' fields require input: 'text'")
 
     title = _esc(eval_config.get("title", "Review"))
     if input_type == "text":

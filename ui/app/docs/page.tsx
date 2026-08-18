@@ -142,6 +142,9 @@ KEY="your_api_key"`}</Code>
             <li><C>case_review</C> — judge whether AI helped or hurt on full cases → audit dataset + impact distribution</li>
             <li><C>benchmark_creation</C> — author challenging test cases → an evaluation benchmark</li>
             <li><C>adversarial_prompts</C> — write probes that expose model gaps → a red-teaming test set</li>
+            <li><C>fact_checking</C> — highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset</li>
+            <li><C>dialogue_creation</C> — author realistic patient-clinician dialogues → synthetic training data</li>
+            <li><C>response_ranking</C> — rank two answers on accuracy/empathy/clarity/safety → preference pairs with per-axis scores</li>
           </ul>
           <p>Create from one, supplying your own <C>classes</C> (label set) where it applies:</p>
           <Code>{`curl -X POST "$BASE/projects" \\
@@ -400,7 +403,8 @@ async def hook(request: Request):
             <li><C>structured</C>: yes or no, plus which finding (from classes).</li>
             <li><C>scale</C>: a rating from 1 to <C>max</C>.</li>
             <li><C>flag</C>: a single checkbox.</li>
-            <li><C>text</C>: free-text notes.</li>
+            <li><C>text</C>: free-text notes (<C>rows</C> sets the box height for long-form).</li>
+            <li><C>spans</C>: highlight text in the model output and tag each span with one of <C>options</C> (text input only).</li>
           </ul>
           <p>
             Any field can add <C>required: true</C> and <C>{'visible_when: "field!=value"'}</C>.

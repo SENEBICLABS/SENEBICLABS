@@ -81,6 +81,16 @@ def _parse_result(result: list) -> dict:
     return _collapse_structured(label)
 
 
+def _is_span_value(x) -> bool:
+    """True if a value is an in-text span highlight, or a list of them (start/end + labels,
+    not a structured yes/no). Spans are preserved across reviewers, never majority-voted."""
+    if isinstance(x, dict):
+        return ("start" in x or "labels" in x) and "present" not in x
+    if isinstance(x, list):
+        return any(isinstance(e, dict) and ("start" in e or "labels" in e) for e in x)
+    return False
+
+
 def _consensus(labels: list[dict]) -> tuple[dict, float, bool]:
     """Combine N reviewer labels into a majority-vote consensus, plus the agreement
     on the primary `verdict` field (fraction of reviewers who chose the top answer)
@@ -98,6 +108,13 @@ def _consensus(labels: list[dict]) -> tuple[dict, float, bool]:
     for k in keys:
         vals = [l.get(k) for l in labels if l.get(k) is not None]
         if not vals:
+            continue
+        # In-text spans don't vote — keep the union of every reviewer's highlights.
+        if any(_is_span_value(v) for v in vals):
+            merged: list = []
+            for v in vals:
+                merged.extend(v if isinstance(v, list) else [v])
+            consensus[k] = merged
             continue
         if all(isinstance(v, dict) for v in vals):
             present = sum(1 for v in vals if v.get("present")) * 2 > n
