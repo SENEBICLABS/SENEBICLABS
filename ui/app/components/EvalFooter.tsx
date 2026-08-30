@@ -9,7 +9,7 @@ const NAV = {
     { label: 'Book a demo', href: '/submit' },
   ],
   company: [
-    { label: 'About', href: '/#about' },
+    { label: 'About', href: '/about' },
     { label: 'Research', href: '/research' },
     { label: 'Contact', href: 'mailto:senebiclabs@gmail.com' },
   ],

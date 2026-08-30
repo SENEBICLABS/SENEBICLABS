@@ -1,51 +1,68 @@
+'use client'
+
+import { useState } from 'react'
 import Logo from './Logo'
 
-// Conversion nav for the /evaluate sell page. Brand-consistent with the site nav
-// (same .top pill, hairline, fonts, monochrome) but stripped for selling: one exit
-// home via the logo, two in-page anchors to the proof, one persistent CTA. No site
-// directory links (they are exits away from converting), no hamburger.
+// Nav for the data-business (eval) side. Reachable from ANY page: the homepage-section
+// links are absolute (/#...) so they work off the homepage, the pages (Docs, About) are
+// always one click away, and there is a mobile menu. No links into the science side.
+const LINKS: { label: string; href: string }[] = [
+  { label: 'What we do', href: '/#what-you-get' },
+  { label: 'How it works', href: '/#how' },
+  { label: 'Docs', href: '/docs' },
+  { label: 'About', href: '/about' },
+]
+
 export default function EvalNav() {
+  const [open, setOpen] = useState(false)
+
   return (
-    <nav className="top scrolled">
+    <nav className={`top scrolled${open ? ' nav-open' : ''}`}>
       <div className="wrap row">
 
-        {/* The one clean exit: logo -> home  */}
-        <a className="brand" href="/">
+        <a className="brand" href="/" onClick={() => setOpen(false)}>
           <span className="mark"><Logo size={20} /></span>
           Senebiclabs
         </a>
 
-        {/* In-page anchors to the proof (desktop only; .nav-links hides under 768px).
-            All four are on-page section jumps, About is this service's #about, not the
-            main-site company About. No directory links, no dropdowns.  */}
+        {/* Desktop links  */}
         <div className="nav-links">
-          <a href="#what-you-get">What we do</a>
-          <a href="#how">How it works</a>
-          <a href="#modalities">Modalities</a>
-          <a href="#why-us">Why us</a>
+          {LINKS.map((l) => (
+            <a key={l.href} href={l.href}>{l.label}</a>
+          ))}
         </div>
 
-        {/* Persistent CTA, always visible, including mobile. API link sits beside it so
-            developer visitors (a qualified audience) can reach the docs from any viewport. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, gridColumn: 3 }}>
-          <a
-            href="/docs"
-            style={{
-              fontFamily: "'Geist Mono', monospace",
-              fontSize: 11,
-              letterSpacing: '0.12em',
-              textTransform: 'uppercase',
-              color: 'var(--ink)',
-              textDecoration: 'none',
-              opacity: 0.72,
-            }}
+        {/* CTA (desktop) + hamburger (mobile)  */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, gridColumn: 3 }}>
+          <a href="/submit" className="nav-join-cta nav-cta-desktop">Book a demo →</a>
+          <button
+            className="nav-hamburger"
+            onClick={() => setOpen((o) => !o)}
+            aria-label={open ? 'Close menu' : 'Open menu'}
           >
-            API
-          </a>
-          <a href="/submit" className="nav-join-cta">Book a demo →</a>
+            {open ? (
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M2 2l14 14M16 2L2 16" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
         </div>
 
       </div>
+
+      {/* Mobile menu  */}
+      {open && (
+        <div className="nav-mobile-menu">
+          {LINKS.map((l) => (
+            <a key={l.href} href={l.href} onClick={() => setOpen(false)}>{l.label}</a>
+          ))}
+          <a href="/submit" className="nav-join-cta" onClick={() => setOpen(false)}>Book a demo →</a>
+        </div>
+      )}
     </nav>
   )
 }

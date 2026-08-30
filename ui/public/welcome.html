@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Senebiclabs · Welcome</title>
+<meta name="description" content="Welcome to the Senebiclabs clinical panel — get oriented and start reviewing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+  :root{
+    --ground:#FAFBFC; --panel:#FFFFFF; --mist:#ECF3F2; --ink:#10233B; --slate:#47566A;
+    --teal:#0E7C74; --teal-deep:#0B5E58; --hairline:#E3E8EC; --mute:#8492A2;
+    --serif:"Source Serif 4", Georgia, "Times New Roman", serif;
+    --sans:"IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; }
+  body{ background:var(--ground); color:var(--slate); font-family:var(--sans); line-height:1.62; -webkit-font-smoothing:antialiased; }
+  .sheet{ max-width:660px; margin:0 auto; padding:56px 44px 52px; }
+  .brand{ display:flex; align-items:center; justify-content:center; gap:9px; }
+  .brand .dot{ width:11px; height:11px; border-radius:3px; background:var(--teal); }
+  .brand .name{ font-weight:600; letter-spacing:0.2em; font-size:15px; color:var(--ink); text-transform:uppercase; }
+  .eyebrow{ text-align:center; margin-top:30px; font-size:11px; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:var(--teal-deep); }
+  h1{ font-family:var(--serif); font-weight:600; color:var(--ink); text-align:center; font-size:34px; line-height:1.2; letter-spacing:-0.01em; margin:12px auto 0; max-width:16ch; }
+  .lead{ text-align:center; font-size:16.5px; color:var(--slate); max-width:52ch; margin:18px auto 0; }
+
+  .primary{ text-align:center; margin-top:30px; }
+  .cta-btn{ display:inline-block; background:var(--teal-deep); color:#fff; font-family:var(--sans); font-weight:600; font-size:15.5px; letter-spacing:0.01em; text-decoration:none; padding:15px 30px; border-radius:11px; box-shadow:0 1px 2px rgba(16,35,59,0.12); }
+  .cta-btn:hover{ background:#0a4f4a; }
+  .cta-note{ margin-top:11px; font-size:12.5px; color:var(--mute); }
+
+  .divide{ height:1px; background:var(--hairline); margin:44px 0 0; }
+
+  h2{ font-family:var(--serif); font-weight:600; color:var(--ink); font-size:19px; margin:38px 0 0; text-align:center; }
+  .sec > p{ margin:10px auto 0; max-width:56ch; font-size:15px; text-align:center; }
+  .sec > p b{ color:var(--ink); font-weight:600; }
+
+  .steps{ list-style:none; counter-reset:step; padding:0; margin:20px auto 0; max-width:48ch; display:flex; flex-direction:column; gap:14px; }
+  .steps li{ counter-increment:step; position:relative; padding-left:44px; min-height:30px; display:flex; align-items:center; font-size:15px; }
+  .steps li::before{ content:counter(step); position:absolute; left:0; top:0; width:30px; height:30px; border-radius:50%; background:var(--mist); color:var(--teal-deep); font-weight:600; font-size:14px; display:flex; align-items:center; justify-content:center; border:1px solid #D5E7E4; }
+  .steps li b{ color:var(--ink); font-weight:600; }
+
+  .notes{ list-style:none; padding:0; margin:18px auto 0; max-width:54ch; display:flex; flex-direction:column; gap:9px; }
+  .notes li{ position:relative; padding-left:22px; font-size:15px; }
+  .notes li::before{ content:""; position:absolute; left:3px; top:9px; width:6px; height:6px; border-radius:50%; background:var(--teal); }
+  .notes li b{ color:var(--ink); font-weight:600; }
+
+  .support{ margin-top:42px; background:var(--mist); border:1px solid #DBE8E6; border-radius:14px; padding:24px 26px; text-align:center; }
+  .support .t{ font-family:var(--serif); font-weight:600; color:var(--ink); font-size:18px; }
+  .support p{ margin:8px auto 0; font-size:14px; color:var(--slate); max-width:46ch; }
+  .support a{ color:var(--teal-deep); text-decoration:none; font-weight:500; }
+
+  .closing{ text-align:center; font-family:var(--serif); font-size:16px; color:var(--ink); margin:38px auto 0; max-width:50ch; line-height:1.5; }
+  .foot{ text-align:center; margin-top:30px; font-size:11.5px; color:var(--mute); letter-spacing:0.02em; }
+
+  @media (max-width:520px){ .sheet{ padding:40px 22px; } h1{ font-size:27px; } }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="brand"><span class="dot"></span><span class="name">Senebiclabs</span></div>
+
+  <div class="eyebrow">Welcome aboard</div>
+  <h1>Welcome to the clinical panel.</h1>
+  <p class="lead">You're one of a small group of clinicians we trust to review and shape medical AI. Here's everything you need to begin &mdash; it takes a minute.</p>
+
+  <div class="primary">
+    <a class="cta-btn" href="https://annotate.senebiclabs.com">Open your task workspace &rarr;</a>
+    <div class="cta-note">Sign in with the details we sent you. New here? Read on first.</div>
+  </div>
+
+  <div class="divide"></div>
+
+  <div class="sec">
+    <h2>What you'll be doing</h2>
+    <p>You'll review AI responses to clinical questions and apply your judgment &mdash; <b>check they're accurate, judge whether they're safe, rank which is stronger,</b> and sometimes write the gold-standard answer yourself. Your expertise is what makes these tools safe for real patients.</p>
+  </div>
+
+  <div class="sec">
+    <h2>How it works</h2>
+    <ul class="steps">
+      <li><span><b>Open your workspace</b> &mdash; the button above takes you to your tasks.</span></li>
+      <li><span><b>Review one at a time</b> &mdash; read the item, complete the fields, submit.</span></li>
+      <li><span><b>Continue at your pace</b> &mdash; the next task loads automatically. Stop anytime; your place is saved.</span></li>
+    </ul>
+  </div>
+
+  <div class="sec">
+    <h2>How you're paid</h2>
+    <p>You're paid at <b>professional rates</b> for every task you complete, sent reliably via <b>M-Pesa</b>. We'll confirm your rate with you before you begin.</p>
+  </div>
+
+  <div class="sec">
+    <h2>Good to know</h2>
+    <ul class="notes">
+      <li>Use your clinical judgment freely &mdash; <b>add a rationale</b> whenever it helps.</li>
+      <li>If a case is unclear or outside your area, <b>flag it</b> rather than guess.</li>
+      <li>A real person is always a message away. <b>No question is too small.</b></li>
+    </ul>
+  </div>
+
+  <div class="support">
+    <div class="t">Questions? Reach us anytime.</div>
+    <p>Godwin &middot; <a href="mailto:senebiclabs@gmail.com">senebiclabs@gmail.com</a> &middot; <a href="https://wa.me/254795933390">WhatsApp +254 795 933 390</a></p>
+  </div>
+
+  <p class="closing">Thank you for lending your expertise to this. The standard you set is the standard these tools are held to &mdash; welcome aboard.</p>
+  <div class="foot">Senebiclabs &mdash; clinician-grade data for medical AI.</div>
+</div>
+</body>
+</html>

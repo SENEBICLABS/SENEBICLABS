@@ -72,6 +72,37 @@ def _stale(iso: str | None, minutes: int) -> bool:
     return (datetime.now(timezone.utc) - t) > timedelta(minutes=minutes)
 
 
+# The parts of an eval_config that define HOW an item is judged — the guideline and the task
+# layout. Once a project has reviewed items these are frozen (see admin_set_eval_config), so a
+# mid-batch change can't silently split the data into items judged by different rules. Everything
+# NOT listed here — reviewer count, adjudicate, auto_deliver, internal _-markers — stays editable.
+_GRADING_KEYS = ("purpose", "instructions", "title", "subtitle")
+_GRADING_SCHEMA_KEYS = ("input", "context", "classes", "case_id_field", "media_key", "fields")
+
+
+def _grading_signature(ec: dict) -> dict:
+    """The judgment-defining slice of a config, for comparing whether an edit changes how items
+    are graded (vs only an operational setting)."""
+    ec = ec or {}
+    schema = ec.get("schema") or {}
+    sig = {k: ec.get(k) for k in _GRADING_KEYS}
+    sig["schema"] = {k: schema.get(k) for k in _GRADING_SCHEMA_KEYS}
+    return sig
+
+
+def _project_has_reviews(db, project_id: str) -> bool:
+    """True once any item has been reviewed — a clinician has produced data under the current
+    config, so the grading config is frozen for batch consistency."""
+    try:
+        r = (db.table("project_items").select("id")
+             .eq("project_id", project_id)
+             .in_("status", ["in_progress", "done", "needs_adjudication"])
+             .limit(1).execute())
+        return bool(r.data)
+    except Exception:
+        return False
+
+
 def _resolve_labeler(db, code: str | None) -> dict | None:
     """Resolve a work access code to a labeler.
 
@@ -168,6 +199,13 @@ class ReviewersIn(BaseModel):
     reviewers_per_item: int
 
 
+class AdjudicateIn(BaseModel):
+    project_id: str
+    idx: int                         # the item's stable idx (as shown in the adjudication queue)
+    final_label: dict                # the senior reviewer's resolving answer, e.g. {"verdict": "Accurate"}
+    note: str | None = None
+
+
 class ClinicianIn(BaseModel):
     name: str
     email: EmailStr | None = None
@@ -176,6 +214,7 @@ class ClinicianIn(BaseModel):
 class EvalConfigIn(BaseModel):
     project_id: str
     eval_config: dict
+    force: bool = False              # override the guideline-lock on a project that already has reviews
 
 
 class AssignClinicianIn(BaseModel):
@@ -1133,6 +1172,114 @@ def admin_report(project_id: str, x_admin_key: str | None = Header(default=None)
         raise HTTPException(status_code=500, detail="Could not build the report.")
 
 
+@router.get("/admin/adjudication/{project_id}", summary="Items awaiting adjudication — reviewers disagreed (admin)")
+def admin_adjudication_queue(project_id: str, x_admin_key: str | None = Header(default=None)):
+    """The QA queue: items where reviewers split, held out of the deliverable until resolved.
+    Each carries every reviewer's own answer so a senior reviewer can see the disagreement and
+    decide. Populated only when a project runs with eval_config.adjudicate on."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    rows = (
+        db.table("project_items").select("idx,content,label")
+        .eq("project_id", project_id).eq("status", "needs_adjudication").order("idx").execute()
+    ).data or []
+    queue = []
+    for r in rows:
+        lbl = r.get("label") or {}
+        queue.append({
+            "idx": r.get("idx"),
+            "agreement": lbl.get("_agreement"),
+            "reviewers": lbl.get("_reviewers"),
+            "consensus_verdict": lbl.get("verdict"),
+            "annotations": lbl.get("_annotations"),      # each reviewer's answer — the split, laid out
+            "content": r.get("content"),
+        })
+    return {"ok": True, "project_id": project_id, "count": len(queue), "items": queue}
+
+
+@router.post("/admin/adjudicate", response_model=SubmissionResponse, summary="Resolve a disagreed item with a final answer (admin)")
+def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(default=None)):
+    """A senior reviewer resolves a split: the final_label wins over the provisional consensus,
+    the item is marked done, and — if this was the last thing holding the batch — the sign-off
+    gate is re-checked. The reviewers' original answers are preserved on the label for audit."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    row = (
+        db.table("project_items").select("id,label,status")
+        .eq("project_id", body.project_id).eq("idx", body.idx).limit(1).execute()
+    )
+    if not row.data:
+        raise HTTPException(status_code=404, detail="Item not found in this project.")
+    it = row.data[0]
+    if it.get("status") != "needs_adjudication":
+        raise HTTPException(status_code=409,
+                            detail=f"Item {body.idx} is not awaiting adjudication (status: {it.get('status')}).")
+    label = dict(it.get("label") or {})
+    label.update(body.final_label)                        # the resolving answer replaces the split verdict
+    label["_adjudicated"] = True
+    label["_adjudicated_at"] = _now_iso()
+    if body.note:
+        label["_adjudication_note"] = body.note
+    db.table("project_items").update(
+        {"label": label, "status": "done", "labeled_at": _now_iso()}
+    ).eq("id", it["id"]).execute()
+    try:
+        audit.record(db, item_id=it["id"], project_id=body.project_id, action=audit.LABEL,
+                     actor_id="adjudicator", actor_name="adjudicator", source="adjudication", value=label)
+    except Exception:
+        pass
+    try:
+        from app.api.v1.ls import _maybe_auto_deliver    # lazy: avoid circular import
+        _maybe_auto_deliver(db, body.project_id)
+    except Exception:
+        pass
+    return SubmissionResponse(ok=True, message=f"Item {body.idx} adjudicated and marked done.")
+
+
+@router.get("/admin/reviewers/{project_id}", summary="Per-reviewer quality: consensus agreement + gold accuracy (admin)")
+def admin_reviewer_quality(project_id: str, x_admin_key: str | None = Header(default=None)):
+    """Continuous QA on the people: each reviewer's agreement with consensus and accuracy on
+    gold (known-answer) items, with anyone under the floor flagged. Read-only; computed from
+    what is already stored, so it works on any multi-reviewed project."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    rows = (
+        db.table("project_items").select("idx,content,label,status,labeled_by")
+        .eq("project_id", project_id).execute()
+    ).data or []
+    # Real per-clinician attribution comes from the workforce system of record: the LS
+    # annotations all carry one service user, so who-reviewed-what lives in task_completions.
+    # Bridge project -> LS project -> pool(s) -> completions, keyed by the item's _ls_task_id.
+    completions_by_task: dict = {}
+    clinician_names: dict = {}
+    try:
+        sub = db.table("project_submissions").select("ls_project_id").eq("id", project_id).limit(1).execute()
+        ls_pid = sub.data[0].get("ls_project_id") if sub.data else None
+        if ls_pid:
+            pools = db.table("pools").select("id").eq("ls_project_id", int(ls_pid)).execute().data or []
+            pool_ids = [p["id"] for p in pools]
+            if pool_ids:
+                comps = (db.table("task_completions").select("clinician_id,ls_task_id,annotation_data")
+                         .in_("pool_id", pool_ids).execute().data or [])
+                for c in comps:
+                    completions_by_task.setdefault(c.get("ls_task_id"), []).append(c)
+                cids = list({c.get("clinician_id") for c in comps if c.get("clinician_id")})
+                for i in range(0, len(cids), 100):
+                    for cl in (db.table("clinicians").select("id,name,email")
+                               .in_("id", cids[i:i + 100]).execute().data or []):
+                        clinician_names[cl["id"]] = cl.get("email") or cl.get("name") or cl["id"]
+    except Exception as exc:
+        logger.warning("reviewer_quality attribution join failed for %s: %s", project_id, exc)
+    return {"ok": True, "project_id": project_id,
+            **report_svc.reviewer_quality(rows, completions_by_task or None, clinician_names or None)}
+
+
 @router.get("/admin/audit/{project_id}", summary="Audit trail for a project (admin)")
 def admin_audit(project_id: str, x_admin_key: str | None = Header(default=None)):
     _require_admin(x_admin_key)
@@ -1287,22 +1434,41 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
         ls.build_label_config(body.eval_config)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid eval config: {exc}")
-    # Preserve a registered webhook URL — it lives in eval_config, so a plain overwrite
-    # would wipe it when the operator edits the task config.
     new_ec = dict(body.eval_config)
     try:
         cur = db.table("project_submissions").select("eval_config").eq("id", body.project_id).limit(1).execute()
         old_ec = (cur.data[0].get("eval_config") if cur.data else None) or {}
-        if old_ec.get("_webhook_url") and "_webhook_url" not in new_ec:
-            new_ec["_webhook_url"] = old_ec["_webhook_url"]
     except Exception:
-        pass
+        old_ec = {}
+
+    # Guideline-lock: once a project has reviewed items, its guideline + task layout are frozen so
+    # a mid-batch change can't silently split the data into items judged by different rules.
+    # Operational settings (reviewers, adjudicate, auto_deliver, internal _-markers) stay editable.
+    # An operator can override deliberately with force=true (logged) — e.g. to fix a rubric typo.
+    grading_changed = _grading_signature(old_ec) != _grading_signature(new_ec)
+    if grading_changed and _project_has_reviews(db, body.project_id):
+        if not body.force:
+            raise HTTPException(status_code=409, detail=(
+                "This project already has reviewed items, so its guideline and task layout are "
+                "locked to keep every item judged by the same standard. You can still change "
+                "operational settings (reviewer count, adjudication, auto-deliver). To change the "
+                "rubric, fields, classes, or purpose, start a new batch — or override intentionally "
+                "with force=true."))
+        logger.warning("Guideline-lock OVERRIDDEN (force=true) on project %s that already has reviews.", body.project_id)
+
+    # Preserve internal _-markers (webhook URL/secret, manifest state, ready flags) that a full
+    # config overwrite would otherwise wipe.
+    for k, v in old_ec.items():
+        if k.startswith("_") and k not in new_ec:
+            new_ec[k] = v
+
     try:
         db.table("project_submissions").update({"eval_config": new_ec}).eq("id", body.project_id).execute()
     except Exception as exc:
         logger.error("Set eval_config failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not save the config.")
-    return SubmissionResponse(ok=True, message="Config saved.")
+    msg = "Config saved." + (" Guideline-lock overridden." if (grading_changed and body.force) else "")
+    return SubmissionResponse(ok=True, message=msg)
 
 
 @router.post("/admin/api-key", summary="Generate a long-lived API key for a client (admin)")

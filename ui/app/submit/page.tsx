@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import NavBar from '../components/NavBar'
+import EvalNav from '../components/EvalNav'
 import EvalFooter from '../components/EvalFooter'
 import Toast from '../components/ui/Toast'
 
@@ -90,7 +90,7 @@ export default function SubmitPage() {
   return (
     <>
       <div className="submit-page">
-      <NavBar minimal />
+      <EvalNav />
 
       <section className="submit-section">
         <div className="wrap">
