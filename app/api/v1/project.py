@@ -505,6 +505,19 @@ async def portal_upload_image(
     return SubmissionResponse(ok=True, message=f"Uploaded {file.filename}")
 
 
+def _client_item(row: dict) -> dict:
+    """A delivered item, stripped of internal (_-prefixed) keys so a client NEVER
+    receives gold answers (content._gold_expected) or reviewer-level detail and
+    identities (label._annotations carries each reviewer's `by`). Reviewers stay
+    private to clients; aggregate QA lives in the report, not the per-item payload."""
+    content = {k: v for k, v in (row.get("content") or {}).items() if not str(k).startswith("_")}
+    label = {k: v for k, v in (row.get("label") or {}).items() if not str(k).startswith("_")}
+    out = {"idx": row.get("idx"), "content": content, "label": label}
+    if "labeled_at" in row:
+        out["labeled_at"] = row.get("labeled_at")
+    return out
+
+
 @router.get("/portal/results", summary="Customer downloads their delivered results (magic-link token)")
 def portal_results(token: str, project_id: str):
     email = verify_token(token)
@@ -541,7 +554,8 @@ def portal_results(token: str, project_id: str):
     except Exception as exc:
         logger.error("Portal report build failed: %s", exc)
         rep = None
-    return {"ok": True, "company": s.get("company"), "items": rows.data or [], "report": rep}
+    return {"ok": True, "company": s.get("company"),
+            "items": [_client_item(r) for r in (rows.data or [])], "report": rep}
 
 
 # ── Self-serve API keys (magic-link verified) ────────────────────────────────────
@@ -1106,7 +1120,7 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
                 db.table("project_items").select("idx,content,label,labeled_at")
                 .eq("project_id", project_id).order("idx").execute()
             )
-            out["items"] = rows.data or []
+            out["items"] = [_client_item(r) for r in (rows.data or [])]
             out["report"] = report_svc.build_report(db, project_id)
         except Exception as exc:
             logger.error("API results build failed: %s", exc)
@@ -1133,7 +1147,7 @@ def _fire_webhook(db, project_id: str) -> None:
             "project_id": project_id,
             "company": (sub.data[0].get("company") if sub.data else None),
             "report": report_svc.build_report(db, project_id),
-            "items": rows.data or [],
+            "items": [_client_item(r) for r in (rows.data or [])],
         }
         
         body_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()

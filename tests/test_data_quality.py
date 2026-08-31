@@ -58,6 +58,18 @@ def test_deliverable_catches_defects():
     assert not rep["passed"]
 
 
+def test_deliverable_blocks_internal_key_leak():
+    # gold answers and reviewer-level detail/identities must never ship to a client
+    df = pd.DataFrame([
+        {"verdict": "correct", "status": "done", "agreement": 1.0,
+         "_gold_expected": {"verdict": "correct"},
+         "_annotations": [{"by": "clinicianA@example.com"}]},
+    ])
+    rep = validate_deliverable(df, VERDICTS, CLASSES)
+    assert not rep["passed"]
+    assert "no_internal_keys_leaked" in _failed(rep)
+
+
 if __name__ == "__main__":
     for _n, _f in list(globals().items()):
         if _n.startswith("test_") and callable(_f):

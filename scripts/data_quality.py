@@ -67,7 +67,17 @@ def validate_deliverable(df, verdict_values, classes=None):
         if classes and "correct_label" in df.columns:
             suite.add_expectation(gx.expectations.ExpectColumnValuesToBeInSet(column="correct_label", value_set=list(classes)))
         return suite
-    return _validate(df, build)
+    report = _validate(df, build)
+    # Confidentiality guard (not a GX map expectation — a table-shape assertion): a
+    # delivered item must carry NO internal (_-prefixed) field, so gold answers
+    # (_gold_expected) and reviewer detail/identities (_annotations) can never ship.
+    leaked = [c for c in df.columns if str(c).startswith("_")]
+    report["checks"].append({"expectation": "no_internal_keys_leaked",
+                             "column": leaked or None, "passed": not leaked,
+                             "unexpected": leaked or None})
+    if leaked:
+        report["passed"] = False
+    return report
 
 
 def _print(report, title=""):
