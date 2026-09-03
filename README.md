@@ -1,81 +1,71 @@
-# Senebiclabs — Respiratory Intelligence
+# Senebiclabs — Clinician-Grade Data for Medical AI
 
-**A model of health, built from the cell up. Starting with the lung.**
-
-> Connecting Patients, Intelligence, and Experts for Better Health Care.
-
-Senebiclabs builds a model of what a *healthy* human respiratory system looks like at
-the cellular level, precise enough that anything departing from it can be detected,
-characterised, and eventually corrected. Instead of training a separate detector for
-each disease, we model **health** and let disease reveal itself as a **deviation** from
-it. The model is built only from healthy cells, so it carries no disease bias and can,
-in principle, flag deviations it has never seen before.
+**The data layer behind medical AI. Certified clinicians evaluate, correct, and create the
+data that medical models are trained and measured against, with the consensus, adjudication,
+and provenance that make it trustworthy enough to build on.**
 
 **Live:** [senebiclabs.com](https://senebiclabs.com)
 
 ---
 
-## Mission
+## The problem
 
-Senebiclabs rests on one foundational insight: **if a system deeply understands what a
-healthy human body looks like at the cellular level, it can detect anything that deviates
-from it, known or novel, and eventually guide the correction of it.**
-
-We are building toward a future where illness is recognised the moment the body departs
-from health, and ultimately guided back to it. We start with the respiratory system, and
-build toward the whole body.
+A medical model is only as good as its data. In high-stakes domains that data cannot be
+crowd-labeled, and it cannot be trusted to another model, it takes licensed clinicians,
+which almost no one supplies at scale. Senebiclabs is the infrastructure that does.
 
 ---
 
-## The idea
+## What we produce
 
-Medicine characterises the body mostly through disease, one trained detector at a time.
-We invert it: build a precise, cellular-resolution model of health, and treat disease as
-a measurable departure from it.
+- **Evaluation** — expert judgment on what a model gets right and where it fails: an
+  accuracy scorecard plus corrected, gold-standard labels.
+- **Creation** — data that doesn't exist yet: gold answers, preferences (RLHF), and
+  benchmarks, authored by clinicians.
+- **Labeling** — expert-reviewed, categorised datasets.
 
-- The model **describes** the deviation (which cell populations and genes are off, which
-  pathways are dysregulated).
-- It does **not** name the disease. Naming and clinical judgment belong to a clinician.
-
----
-
-## The platform (four layers)
-
-1. **Patient portal** — a person describes symptoms and is matched to the specialist
-   whose expertise fits their presentation.
-2. **Intelligence engine** — a healthy-cell reference of the lung that scores how a sample
-   deviates from healthy, across cell-type composition, gene expression, and pathways.
-3. **Expert network** — clinicians and researchers confirm, correct, and annotate the
-   model's findings, sharpening it over time.
-4. **Treatment intelligence** — reasoning about how to reverse a characterised deviation.
-   The destination, not yet built.
+Every deliverable is multi-reviewed by default, disagreements are adjudicated, per-reviewer
+quality is tracked, and every judgment is attributable.
 
 ---
 
-## What's built
+## How it works
 
-- A **healthy-lung reference** constructed from the Human Lung Cell Atlas, restricted to
-  `disease == normal` cells. Per-donor, per-cell-type statistics give a sample-level
-  baseline for what "normal" looks like.
-- A **deviation engine** that returns ranked deviations (cell-type composition, gene-level
-  Z-scores, pathway activity) for a submitted expression profile.
-- A deployed **FastAPI** backend and **Next.js** front end.
-
-**Status:** research stage. The reference detects deviation well *in-distribution*
-(same-source data). Making detection robust across **different labs** (batch effects) is
-the active research problem. The model characterises deviations; it does not diagnose.
+1. **Create a project** — the client defines the task (an `eval_config`: input, fields,
+   classes, rubric) via API, or from a ready template.
+2. **Ingest data** — inline, or a manifest pointing at the client's own storage. The bytes
+   stay in the client's bucket; only references flow in. Bulk-safe via a bounded rolling
+   window into review.
+3. **Expert review** — certified clinicians review each item; N-way consensus forms the
+   answer, and disagreements are held for senior adjudication.
+4. **Deliver** — a QA'd result (scorecard + corrected data + per-reviewer quality) by API
+   poll or a signed webhook. Each client's data is isolated; reviewers are anonymous to the
+   client.
 
 ---
 
-## Principles (hard rules)
+## Architecture
 
-1. **The model learns from data. Nothing biological is hardcoded.** Every reference
-   statistic is computed from real healthy cells. No curated disease signatures.
-2. **The model describes biology. Experts name diseases.** Outputs are deviations and
-   scores, not disease labels.
-3. **Every output carries a safety disclaimer.** It is part of the schema.
-4. **Memory-safe by default.** Large `.h5ad` files are read with `backed='r'`; never loaded
-   fully into RAM.
+Two repositories over one shared database:
+
+- **HEALTH** (this repo) — the system of record: project creation, ingestion, consensus,
+  adjudication, aggregation, and delivery. FastAPI on Cloud Run.
+- **workforce** — the clinician-serving application (task UI, auth, pools). Next.js on Vercel.
+- **Label Studio** — the shared annotation store.
+- **Supabase (Postgres)** — the shared system of record.
+
+---
+
+## Principles
+
+1. **Human expert judgment, not automated eval.** In high-stakes medicine, a model judging a
+   model is not trustworthy. Licensed clinicians are the authority.
+2. **Consensus, not one opinion.** Multiple experts per item; disagreements are adjudicated,
+   never silently averaged.
+3. **Confidential by construction.** Each client's data is isolated; reviewers never see other
+   clients' work and stay anonymous to the client.
+4. **Provenance.** Every judgment is attributable and auditable. The deliverable is evidence,
+   not opinion.
 
 ---
 
@@ -84,9 +74,10 @@ the active research problem. The model characterises deviations; it does not dia
 | Component | Technology |
 |---|---|
 | API | FastAPI + uvicorn, Pydantic v2 |
-| Single-cell data | scanpy + anndata |
-| Representation learning | scVI / scArches (research) |
+| Database | Supabase (Postgres) |
+| Annotation store | Label Studio |
 | Frontend | Next.js 14 |
+| Data quality | Great Expectations (offline / CI) |
 | Deploy | Cloud Run + Vercel |
 
 ---
@@ -94,13 +85,12 @@ the active research problem. The model characterises deviations; it does not dia
 ## Repository layout
 
 ```
-app/            FastAPI backend (services, schemas, API routes)
-ui/             Next.js frontend
-scripts/        Model build + validation scripts
-notebooks/      Exploratory work
-models/         Trained model artefacts (gitignored, large)
-data/           .h5ad datasets (gitignored, large)
-CLAUDE.md       Full developer reference
+app/            FastAPI backend
+  api/v1/       API routes — project intake, ingestion, consensus, delivery
+  services/     scoring/report, Label Studio integration, task templates
+ui/             Next.js frontend — public site + client portal
+scripts/        data-quality validators + ops tooling
+tests/          unit + numeric (numpy oracle) + browser (Playwright)
 ```
 
 ---
@@ -124,10 +114,15 @@ cd ui && npm install && npm run dev
 
 ## Disclaimer
 
-This is a **research and decision-support system**, not a diagnostic. It characterises
-how a sample deviates from a healthy reference; it does not provide clinical diagnoses,
-and no output should be acted on without review by a qualified medical professional.
+Senebiclabs provides expert-reviewed evaluation and labeling data for medical-AI development.
+It is not a diagnostic or clinical-care system.
 
 ---
 
-*Senebiclabs — a model of health, starting with the lung, building toward the whole body.*
+> **Note:** This repository also contains earlier respiratory-intelligence research — a
+> healthy-cell reference that characterises how a sample deviates from healthy. That is a
+> separate research thread; the clinician data platform above is the primary system.
+
+---
+
+*Senebiclabs — clinician-grade data for medical AI.*
