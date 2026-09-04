@@ -68,3 +68,6 @@ Thumbs.db
 
 # Internal demo assets (NIH images) — local only
 Demo/
+
+# Next.js build output (never commit)
+.next/

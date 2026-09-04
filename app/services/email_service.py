@@ -49,7 +49,7 @@ def _base(body: str) -> str:
       {body}
       <div style="margin-top:48px;padding-top:24px;border-top:1px solid #eee;
                   font-size:12px;color:#999;line-height:1.6;">
-        Senebiclabs · Respiratory Intelligence Platform<br>
+        Senebiclabs · Data Infrastructure for Medical AI<br>
         This email was sent because you interacted with senebiclabs.com.
       </div>
     </div>
