@@ -5,6 +5,7 @@ POST /ls/sync     — (admin) create the LS project if needed and push pending i
 POST /ls/webhook  — (Label Studio) receives annotations and writes them back to project_items
 """
 
+import hmac
 import logging
 from collections import Counter
 
@@ -441,7 +442,17 @@ def ls_pull(body: PullIn, x_admin_key: str | None = Header(default=None)):
 
 @router.post("/webhook", summary="Receive annotations from Label Studio")
 async def ls_webhook(req: Request, x_ls_secret: str | None = Header(default=None)):
-    if settings.LS_WEBHOOK_SECRET and x_ls_secret != settings.LS_WEBHOOK_SECRET:
+    # Fail CLOSED. This previously read `if settings.LS_WEBHOOK_SECRET and ...`, so an
+    # unset secret skipped the check entirely — and it was unset in production, leaving
+    # the endpoint open. The payload is not trusted (annotations are re-fetched from
+    # Label Studio with our own token), but an unauthenticated caller could still name
+    # arbitrary task ids and force database writes, audit rows and outbound LS calls.
+    # A protection that silently disappears when a config value is missing is not a
+    # protection, so a missing secret now rejects rather than admits.
+    if not settings.LS_WEBHOOK_SECRET:
+        logger.error("LS webhook rejected: LS_WEBHOOK_SECRET is not configured.")
+        raise HTTPException(status_code=503, detail="Webhook not configured.")
+    if not hmac.compare_digest(x_ls_secret or "", settings.LS_WEBHOOK_SECRET):
         raise HTTPException(status_code=403, detail="Bad webhook secret.")
     body = await req.json()
     if body.get("action") not in ("ANNOTATION_CREATED", "ANNOTATION_UPDATED"):

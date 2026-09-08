@@ -54,3 +54,25 @@ def test_client_endpoints_reject_a_missing_api_key(client):
               "/api/v1/project/failures",
               "/api/v1/project/failures/patterns"):
         assert client.get(p).status_code == 401, f"{p} did not require a key"
+
+
+def test_the_label_studio_webhook_fails_closed_without_a_secret(client, monkeypatch):
+    """Regression: the check was `if settings.LS_WEBHOOK_SECRET and ...`, so an unset
+    secret skipped it — and it WAS unset in production, leaving the endpoint open to
+    anyone who knew the URL. A protection that vanishes when a config value is missing
+    is not a protection."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "LS_WEBHOOK_SECRET", None)
+    r = client.post("/api/v1/ls/webhook", json={"action": "PING"})
+    assert r.status_code == 503, "an unset secret must reject, never admit"
+
+
+def test_the_label_studio_webhook_rejects_a_wrong_secret(client, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "LS_WEBHOOK_SECRET", "right")
+    assert client.post("/api/v1/ls/webhook", json={"action": "PING"}).status_code == 403
+    assert client.post("/api/v1/ls/webhook", json={"action": "PING"},
+                       headers={"X-Ls-Secret": "wrong"}).status_code == 403
+    # The correct secret gets through (PING is a no-op action).
+    assert client.post("/api/v1/ls/webhook", json={"action": "PING"},
+                       headers={"X-Ls-Secret": "right"}).status_code == 200
