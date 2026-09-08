@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/project", tags=["Project Intake"])
 
 # The six customer-facing phases, in order. `stage` on a submission is one of these.
+# Ceiling on a single library read. Beyond this we refuse rather than silently act on
+# a partial view — see _library_rows.
+_LIBRARY_READ_CAP = 50_000
+
 STAGES = ["submitted", "scoping", "agreement", "pilot", "production", "delivered"]
 
 # How long a claimed-but-unsubmitted item is held before it returns to the pool.
@@ -1244,11 +1248,30 @@ def _library_rows(db, email: str, **filters) -> list[dict]:
     for col, val in filters.items():
         if val:
             q = q.eq(col, val)
+    # Page explicitly rather than relying on an unbounded select. PostgREST can be
+    # configured with a max-rows cap, and a truncated read here is not a visible error —
+    # it is silent corruption: capture would see a known case as new, resetting its
+    # occurrences and first_seen and losing the fixed -> regressed history that is the
+    # whole point of the library.
+    page, out = 1000, []
     try:
-        return (q.order("last_seen", desc=True).execute()).data or []
+        for start in range(0, _LIBRARY_READ_CAP, page):
+            batch = (q.order("last_seen", desc=True)
+                     .range(start, start + page - 1).execute()).data or []
+            out.extend(batch)
+            if len(batch) < page:
+                return out
     except Exception as exc:
         logger.error("Failure library read failed: %s", exc)
         raise HTTPException(status_code=503, detail="Failure library unavailable — apply supabase_schema.sql.")
+    # Hit the ceiling: report it rather than operate on a partial view of the library.
+    logger.error("Failure library for %s exceeds %s rows — refusing a partial read.",
+                 email, _LIBRARY_READ_CAP)
+    raise HTTPException(
+        status_code=507,
+        detail=(f"This account's failure library exceeds {_LIBRARY_READ_CAP} cases. "
+                "Filter the query, or contact us to raise the limit — we will not "
+                "operate on a partial view of your library."))
 
 
 @router.post("/failures/capture", summary="API: record a finished evaluation's failures in the library (Bearer API key)")

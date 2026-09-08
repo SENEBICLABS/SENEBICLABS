@@ -1,14 +1,15 @@
 name: tests
 
+# Every hermetic test runs on every push that touches the code or the tests. Listing
+# individual test files here is how the failure-library, regression-gate and webhook
+# tests came to exist without CI ever running them; a glob cannot drift that way.
 on:
   push:
     paths:
       - "app/**"
       - "scripts/data_quality.py"
-      - "tests/test_data_quality.py"
-      - "tests/test_report.py"
-      - "tests/test_report_numeric.py"
-      - "tests/test_consensus_numeric.py"
+      - "tests/**"
+      - "supabase_schema.sql"
       - "requirements-ci.txt"
       - ".github/workflows/tests.yml"
   pull_request:
@@ -16,6 +17,7 @@ on:
       - "app/**"
       - "scripts/data_quality.py"
       - "tests/**"
+      - "supabase_schema.sql"
       - "requirements-ci.txt"
 
 jobs:
@@ -30,10 +32,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-ci.txt
-      - name: Hermetic unit tests — data quality + scoring + consensus
-        run: >-
-          PYTHONPATH=. pytest -q
-          tests/test_data_quality.py
-          tests/test_report.py
-          tests/test_report_numeric.py
-          tests/test_consensus_numeric.py
+      # Hermetic: no database, no Label Studio, no network. tests/e2e is excluded because
+      # it drives a real browser against a running server.
+      - name: Unit tests
+        run: PYTHONPATH=. pytest -q tests --ignore=tests/e2e
