@@ -287,3 +287,8 @@ create index if not exists clinical_failures_client_status
   on clinical_failures (client_email, status);
 create index if not exists clinical_failures_benchmark
   on clinical_failures (client_email, in_benchmark);
+
+-- RLS: service key only, same as the other tables. With RLS on and no policy defined,
+-- only the service role (which bypasses RLS) can reach this table — the anon key cannot,
+-- which matters because a client's failure library is their competitive information.
+alter table clinical_failures enable row level security;

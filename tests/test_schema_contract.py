@@ -88,3 +88,16 @@ def test_status_values_the_code_writes_are_the_ones_the_schema_documents():
     assert {fl.OPEN, fl.FIXED, fl.REGRESSED} <= documented, (
         f"code writes statuses the schema does not document: "
         f"{ {fl.OPEN, fl.FIXED, fl.REGRESSED} - documented }")
+
+
+def test_every_table_has_row_level_security():
+    """RLS on with no policy means service-key-only, which is how this platform isolates
+    client data. A table added without it is silently reachable by the anon key — the
+    exact mistake clinical_failures shipped with in migration 002."""
+    sql = SCHEMA.read_text()
+    tables = set(re.findall(r"create table if not exists (\w+)", sql))
+    protected = set(re.findall(r"alter table (\w+) enable row level security", sql))
+    missing = tables - protected
+    assert not missing, (
+        f"table(s) without row level security: {sorted(missing)} — "
+        f"add `alter table <t> enable row level security;` to supabase_schema.sql")
