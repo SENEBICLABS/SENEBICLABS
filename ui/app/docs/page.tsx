@@ -141,6 +141,7 @@ KEY="your_api_key"`}</Code>
             <li><C>gold_answers</C> — write the ideal answer → gold dataset for fine-tuning</li>
             <li><C>case_review</C> — judge whether AI helped or hurt on full cases → audit dataset + impact distribution</li>
             <li><C>benchmark_creation</C> — author challenging test cases → an evaluation benchmark</li>
+            <li><C>rubric_creation</C> — design the scorecard your model is graded against → a reusable grading rubric</li>
             <li><C>adversarial_prompts</C> — write probes that expose model gaps → a red-teaming test set</li>
             <li><C>fact_checking</C> — highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset</li>
             <li><C>dialogue_creation</C> — author realistic patient-clinician dialogues → synthetic training data</li>
@@ -398,6 +399,7 @@ async def hook(request: Request):
             <li><C>context</C>: for text tasks, which data keys to show the clinician, in order.</li>
             <li><C>classes</C>: the label set used by <C>from_classes</C> and <C>structured</C> fields.</li>
             <li><C>case_id_field</C>: which item field ties a result back to your own record.</li>
+            <li><C>primary_field</C>: which answer decides reviewer agreement, and so which items are held for adjudication. Defaults to the first required <C>single</C> / <C>from_classes</C> field.</li>
           </ul>
           <p><C>fields</C> is a map of what the clinician fills. Each has a <C>type</C>:</p>
           <ul>

@@ -57,6 +57,7 @@ List the outcomes with `GET /templates`:
 | `gold_answers` | write the ideal answer → gold dataset for fine-tuning |
 | `case_review` | judge whether AI helped or hurt on full cases → audit dataset + impact distribution |
 | `benchmark_creation` | author challenging test cases → an evaluation benchmark |
+| `rubric_creation` | design the scorecard your model is graded against → a reusable grading rubric |
 | `adversarial_prompts` | write probes that expose model gaps → a red-teaming test set |
 | `fact_checking` | highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset |
 | `dialogue_creation` | author realistic patient-clinician dialogues → synthetic training data |
@@ -157,6 +158,9 @@ pairs with a coverage/agreement summary instead of a scorecard.
 - `context` — text mode only: which data keys to show the clinician, in order.
 - `classes` — the label set used by `from_classes` and `structured` fields.
 - `case_id_field` — which item field ties a result back to your own record.
+- `primary_field` — which answer decides reviewer agreement, and so which items are held
+  for adjudication. Defaults to the first required `single` / `from_classes` field, so you
+  only need to set it when a schema has several and the deciding one is not the first.
 - `fields` — a map of what the clinician fills. Each has a `type`:
   - `single` — choose one of `options`
   - `from_classes` — choose one of the project `classes`
