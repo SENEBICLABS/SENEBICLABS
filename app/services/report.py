@@ -28,6 +28,8 @@ import io
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+from app.services import clinical_analytics
+
 # A project's purpose decides its deliverable: 'evaluate' -> a model-performance scorecard;
 # 'label'/'create' -> a summary of the produced dataset (there is no prediction to score).
 PURPOSES = ("evaluate", "label", "create")
@@ -521,6 +523,13 @@ def build_report(db, project_id: str) -> dict:
     else:
         report = compute_dataset_report(items, schema.get("fields") or {}, purpose, case_id_field=case_id_field)
 
+    # Clinical analytics (triage direction, severity, failure taxonomy, per-domain slices).
+    # Opt-in per project via eval_config.analytics: declared -> the section appears;
+    # not declared -> the report is exactly what it was before.
+    clinical = clinical_analytics.compute(items, ec.get("analytics"), case_id_field=case_id_field)
+    if clinical:
+        report["clinical"] = clinical
+
     report["project_id"] = project_id
     report["generated_at"] = datetime.now(timezone.utc).isoformat()
     return report
@@ -641,11 +650,101 @@ def render_markdown(rep: dict) -> str:
             out.append(f"| {c['idx']} | {c.get('verdict')} | {c.get('model_prediction')} | {c['reason']} |")
         out.append("")
 
+    out.extend(render_clinical_markdown(rep.get("clinical")))
+
     out.append("## Read this before quoting the numbers")
     for c in rep["caveats"]:
         out.append(f"- {c}")
     out.append("")
     return "\n".join(out)
+
+
+def render_clinical_markdown(clin: dict | None) -> list[str]:
+    """The clinical-analytics sections, as markdown lines. Empty when the project did not
+    declare any, so the deliverable is unchanged for projects that never asked for them."""
+    if not clin:
+        return []
+    out: list[str] = []
+
+    tri = clin.get("triage")
+    if tri:
+        out.append("## Triage")
+        out.append(f"**Triage accuracy: {_pct(tri['accuracy'])}** "
+                   f"({tri['exact']} of {tri['compared']} cases at the expected level).")
+        out.append("")
+        me = tri["missed_emergency"]
+        # Under-triage first, and missed emergencies first of all: the order a clinical
+        # reader should meet these in is most-dangerous-first, not alphabetical.
+        out.append(f"- **Missed {me['level'].lower()}: {me['count']}** "
+                   f"— the case needed {me['level']} and the model said less.")
+        out.append(f"- Under-triage (too calm): **{tri['under_triage']['count']}** "
+                   f"({_pct(tri['under_triage']['rate'])})")
+        out.append(f"- Over-triage (too alarmed): **{tri['over_triage']['count']}** "
+                   f"({_pct(tri['over_triage']['rate'])})")
+        out.append(f"- Mean levels off: **{tri['mean_levels_off']}**")
+        if tri.get("unrankable"):
+            out.append(f"- Not scored (level outside the declared scale): {tri['unrankable']}")
+        out.append("")
+        lv = tri["matrix"]["labels"]
+        out.append("| expected \\ model | " + " | ".join(lv) + " |")
+        out.append("|---" * (len(lv) + 1) + "|")
+        for name, row in zip(lv, tri["matrix"]["matrix"]):
+            out.append(f"| **{name}** | " + " | ".join(str(n) for n in row) + " |")
+        out.append("")
+        worst = (me["cases"] or tri["under_triage"]["cases"])[:15]
+        if worst:
+            out.append("### Most dangerous triage errors")
+            out.append("| case | expected | model said | levels off |")
+            out.append("|---|---|---|---|")
+            for c in worst:
+                out.append(f"| {c.get('case_id') or c.get('idx')} | {c['expected']} | "
+                           f"{c['model']} | {c['levels_off']} |")
+            out.append("")
+
+    sev = clin.get("severity")
+    if sev:
+        out.append("## Error severity")
+        out.append("| severity | cases |")
+        out.append("|---|---|")
+        for lvl in sev["scale"]:
+            out.append(f"| {lvl} | {sev['distribution'].get(lvl, 0)} |")
+        out.append("")
+        if sev["serious"]["cases"]:
+            out.append(f"### {' / '.join(sev['serious']['levels'])} errors "
+                       f"({sev['serious']['count']})")
+            out.append("| case | severity | clinician rationale |")
+            out.append("|---|---|---|")
+            for c in sev["serious"]["cases"][:20]:
+                out.append(f"| {c.get('case_id') or c.get('idx')} | {c['severity']} | "
+                           f"{_text_display(c.get('rationale'))[:160]} |")
+            out.append("")
+
+    tax = clin.get("taxonomy")
+    if tax:
+        out.append("## Failure modes")
+        serious = tax.get("serious_by_category") or {}
+        has_serious = bool(serious)
+        out.append("| failure mode | cases |" + (" high-severity |" if has_serious else ""))
+        out.append("|---|---|" + ("---|" if has_serious else ""))
+        for cat in tax["ranked"]:
+            row = f"| {cat} | {tax['distribution'][cat]} |"
+            if has_serious:
+                row += f" {serious.get(cat, 0)} |"
+            out.append(row)
+        out.append("")
+
+    slices = clin.get("slices")
+    if slices:
+        out.append("## Performance by slice")
+        for key, buckets in slices.items():
+            out.append(f"### By {key.replace('_', ' ')}")
+            out.append("| value | n | accuracy | critical misses |")
+            out.append("|---|---|---|---|")
+            for name, b in buckets.items():
+                thin = " ⚠︎ thin" if b["n"] < THIN_SUPPORT else ""
+                out.append(f"| {name} | {b['n']}{thin} | {_pct(b['accuracy'])} | {b['critical_miss']} |")
+            out.append("")
+    return out
 
 
 # Cells starting with these are interpreted as live formulas by Excel/Sheets (CSV injection).
