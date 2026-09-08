@@ -62,6 +62,10 @@ List the outcomes with `GET /templates`:
 | `fact_checking` | highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset |
 | `dialogue_creation` | author realistic patient-clinician dialogues → synthetic training data |
 | `response_ranking` | rank two answers on accuracy/empathy/clarity/safety → preference pairs with per-axis scores |
+| `clinical_safety_eval` | full safety review: correctness, triage, red flags, reasoning → safety scorecard with severity + failure modes |
+| `triage_eval` | is the urgency right → triage accuracy split into under-triage, over-triage, missed emergencies |
+| `reasoning_eval` | score the reasoning step by step → where in the reasoning it fails |
+| `grounding_eval` | retrieval, grounding, citations, hallucination → RAG failure breakdown |
 
 Create from one, supplying your own `classes` (label set) where it applies:
 
@@ -294,9 +298,73 @@ your fields must use these exact names: `verdict` (`Correct` / `Incorrect` / `Pa
 `correct_label` is excluded, never guessed. `label` and `create` projects skip scoring and
 return every reviewed item in `items` as a content-and-label pair.
 
+### Clinical analytics (optional)
+
+Declare `analytics` on your `eval_config` and the report gains a `clinical` section.
+Nothing is assumed: the ORDER of a triage or severity scale is a clinical fact you
+declare, so the report can tell over-triage from under-triage.
+
+```json
+"analytics": {
+  "triage":   { "order": ["Self-care", "Routine", "Urgent", "Emergency"],
+                "model_field": "triage",
+                "expected_field": "expected_triage",
+                "correct_field": "correct_triage" },
+  "severity": { "field": "severity",
+                "order": ["Minor", "Moderate", "High", "Critical"] },
+  "taxonomy": { "field": "error_category" },
+  "slice_by": ["clinical_domain", "case_type"]
+}
+```
+
+- **`triage`** — triage accuracy, plus `under_triage` / `over_triage` / `missed_emergency`
+  counted separately (they are opposite failures and are never summed), mean levels off,
+  and an expected-vs-model matrix.
+- **`severity`** — distribution in scale order, with the top two levels listed case by case.
+- **`taxonomy`** — failure-mode distribution, crossed with severity so you see which modes
+  carry the dangerous errors.
+- **`slice_by`** — accuracy per clinical domain / case type, so a headline number cannot
+  hide a domain the model is unsafe in.
+
+The four clinical templates above ship with this configured.
+
 ---
 
-## 4. Webhook (optional, signed) — we call you
+## 4. Compare two versions — `GET /compare`
+
+Evaluate a new model version against the same cases, then diff the two runs. Cases are
+matched on **your** case id, so the candidate run just needs to carry the same ids.
+
+```
+GET /api/v1/project/compare?baseline=<project_id>&candidate=<project_id>
+Authorization: Bearer <api key>
+```
+
+```json
+{ "ok": true, "comparison": {
+  "matched": 4,
+  "pass_rate": { "baseline": 0.5, "candidate": 0.75, "delta": 0.25 },
+  "fixed":     { "count": 2, "cases": [...] },
+  "regressed": { "count": 1, "cases": [{ "case_id": "PMX-2", "severity": "Critical", ... }] },
+  "still_failing": { "count": 0, "cases": [] },
+  "clinical_deltas": { "missed_emergency": { "baseline": 1, "candidate": 0, "delta": -1 } },
+  "verdict": { "recommendation": "block", "serious_regressions": 1,
+               "reason": "1 case(s) that passed before now fail at Critical/High severity" }
+}}
+```
+
+`fixed` and `regressed` are **never netted off against each other**. In the example above
+every headline metric improved and the verdict is still `block`, because one case that
+used to pass now fails critically — which is the entire reason to keep a regression suite.
+`recommendation` is `block` (a serious regression), `review` (a regression), or `pass`.
+
+Cases present in only one run are listed in `only_in_baseline` / `only_in_candidate` and
+excluded from the comparison, so a benchmark that quietly drops a case cannot manufacture
+a clean scorecard.
+
+---
+
+## 5. Webhook (optional, signed) — we call you
 
 If you registered a `webhook_url`, we `POST` it once when the batch is delivered. The
 body is the same shape as the delivered `GET /results` response:

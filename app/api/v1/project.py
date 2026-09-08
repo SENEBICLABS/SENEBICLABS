@@ -19,6 +19,7 @@ from app.services.supabase_client import get_client
 from app.services import email_service
 from app.services import audit
 from app.services import report as report_svc
+from app.services import clinical_analytics
 from app.services import storage
 from app.services.portal_tokens import make_token, make_api_key, verify_token
 
@@ -1127,6 +1128,67 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
             out["items"] = []
             out["report"] = None
     return out
+
+
+@router.get("/compare", summary="API: regression report between two evaluations (Bearer API key)")
+def api_compare(baseline: str, candidate: str, authorization: str | None = Header(default=None)):
+    """Run the same benchmark against two model versions and report what changed.
+
+    Cases are matched on the client's own case id, so `candidate` is any later project
+    carrying the same cases — re-ingest the benchmark, evaluate the new version, compare.
+    The response separates cases the release FIXED from ones it REGRESSED (passed before,
+    fails now) and never nets one off against the other: an aggregate can improve while a
+    release breaks a case that matters, which is the whole reason a regression suite exists.
+    `verdict.recommendation` is block / review / pass, for a release gate to act on.
+    """
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    if baseline == candidate:
+        raise HTTPException(status_code=422, detail="baseline and candidate must be different projects.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    subs = (db.table("project_submissions").select("id,email,eval_config,stage")
+            .in_("id", [baseline, candidate]).execute())
+    by_id = {s["id"]: s for s in (subs.data or [])}
+    for pid in (baseline, candidate):
+        # Ownership is checked per project: an API key must not be able to diff its own
+        # project against someone else's and read their cases out of the response.
+        if pid not in by_id or by_id[pid].get("email") != email:
+            raise HTTPException(status_code=403, detail="That project is not on this API key.")
+
+    ec_b = by_id[baseline].get("eval_config") or {}
+    ec_c = by_id[candidate].get("eval_config") or {}
+    schema_b = ec_b.get("schema") or {}
+    case_id_field = ec_c.get("case_id_field") or (ec_c.get("schema") or {}).get("case_id_field") \
+        or ec_b.get("case_id_field") or schema_b.get("case_id_field")
+
+    try:
+        rows_b = (db.table("project_items").select("idx,content,label,status")
+                  .eq("project_id", baseline).order("idx").execute()).data or []
+        rows_c = (db.table("project_items").select("idx,content,label,status")
+                  .eq("project_id", candidate).order("idx").execute()).data or []
+    except Exception as exc:
+        logger.error("Compare fetch failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not load the projects.")
+
+    rep = clinical_analytics.compare_runs(
+        rows_b, rows_c, case_id_field=case_id_field,
+        analytics_cfg=ec_c.get("analytics") or ec_b.get("analytics"))
+    rep["baseline"] = {"project_id": baseline, "model_version": ec_b.get("model_version")}
+    rep["candidate"] = {"project_id": candidate, "model_version": ec_c.get("model_version")}
+    rep["generated_at"] = _now_iso()
+    if not rep["matched"]:
+        rep["caveat"] = ("No cases matched between the two projects. They are compared on the "
+                         "client case id, so the candidate run must carry the same case ids as "
+                         "the baseline.")
+    elif rep["only_in_baseline"] or rep["only_in_candidate"]:
+        rep["caveat"] = (f"{len(rep['only_in_baseline'])} case(s) from the baseline are absent "
+                         f"from the candidate and {len(rep['only_in_candidate'])} are new. Only "
+                         f"the {rep['matched']} shared case(s) are compared.")
+    return {"ok": True, "comparison": rep}
 
 
 def _fire_webhook(db, project_id: str) -> None:

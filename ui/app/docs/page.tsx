@@ -40,6 +40,7 @@ export default function DocsPage() {
           <a href="#create">Create a project</a>
           <a href="#ingest">Push items</a>
           <a href="#results">Poll results</a>
+          <a href="#compare">Compare versions</a>
           <a href="#webhooks">Webhooks</a>
           <div className="grp">Reference</div>
           <a href="#config">Task config</a>
@@ -146,6 +147,10 @@ KEY="your_api_key"`}</Code>
             <li><C>fact_checking</C> — highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset</li>
             <li><C>dialogue_creation</C> — author realistic patient-clinician dialogues → synthetic training data</li>
             <li><C>response_ranking</C> — rank two answers on accuracy/empathy/clarity/safety → preference pairs with per-axis scores</li>
+            <li><C>clinical_safety_eval</C> — full safety review: correctness, triage, red flags, reasoning → safety scorecard with severity + failure modes</li>
+            <li><C>triage_eval</C> — is the urgency right → triage accuracy split into under-triage, over-triage, missed emergencies</li>
+            <li><C>reasoning_eval</C> — score the reasoning step by step → where in the reasoning it fails</li>
+            <li><C>grounding_eval</C> — retrieval, grounding, citations, hallucination → RAG failure breakdown</li>
           </ul>
           <p>Create from one, supplying your own <C>classes</C> (label set) where it applies:</p>
           <Code>{`curl -X POST "$BASE/projects" \\
@@ -325,6 +330,44 @@ KEY="your_api_key"`}</Code>
               <C>items</C> as a content-and-label pair.
             </p>
           </div>
+        </section>
+
+        {/* Compare */}
+        <section id="compare" className="docs-sec">
+          <span className="docs-eyebrow">Endpoint</span>
+          <h2>
+            <span className="m m-get">GET</span>
+            <span className="ep">/compare</span>
+            <span className="tag">Regression between two versions</span>
+          </h2>
+          <p>
+            Evaluate a new model version against the same cases, then diff the two runs. Cases
+            are matched on <C>your</C> case id, so the candidate run only needs to carry the same
+            ids as the baseline.
+          </p>
+          <Code>{`curl "$BASE/compare?baseline=PROJECT_A&candidate=PROJECT_B" \\
+  -H "Authorization: Bearer $API_KEY"`}</Code>
+          <Code>{`{ "ok": true, "comparison": {
+  "matched": 4,
+  "pass_rate": { "baseline": 0.5, "candidate": 0.75, "delta": 0.25 },
+  "fixed":     { "count": 2, "cases": [...] },
+  "regressed": { "count": 1, "cases": [{ "case_id": "PMX-2", "severity": "Critical" }] },
+  "clinical_deltas": { "missed_emergency": { "baseline": 1, "candidate": 0, "delta": -1 } },
+  "verdict": { "recommendation": "block", "serious_regressions": 1,
+               "reason": "1 case(s) that passed before now fail at Critical/High severity" }
+}}`}</Code>
+          <p>
+            <C>fixed</C> and <C>regressed</C> are never netted off against each other. In the
+            example above every headline metric improved and the verdict is still <C>block</C>,
+            because one case that used to pass now fails critically — which is the entire reason
+            to keep a regression suite. <C>recommendation</C> is <C>block</C> (a serious
+            regression), <C>review</C> (a regression), or <C>pass</C>.
+          </p>
+          <p>
+            Cases present in only one run are listed in <C>only_in_baseline</C> /{' '}
+            <C>only_in_candidate</C> and excluded from the comparison, so a benchmark that quietly
+            drops a case cannot manufacture a clean scorecard.
+          </p>
         </section>
 
         {/* Webhooks */}
