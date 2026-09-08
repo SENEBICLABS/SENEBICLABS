@@ -8,6 +8,7 @@ import logging
 import secrets
 import hmac
 import hashlib
+import time
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -256,6 +257,10 @@ class CreateProjectIn(BaseModel):
     # Carried onto every failure this run finds, so the library can answer "which version
     # introduced this?" and "which version fixed it?".
     model_version: str | None = None
+
+
+class RedeliverIn(BaseModel):
+    project_id: str
 
 
 class CaptureIn(BaseModel):
@@ -1151,6 +1156,11 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
             )
             out["items"] = [_client_item(r) for r in (rows.data or [])]
             out["report"] = report_svc.build_report(db, project_id)
+            # Whether the push actually landed. Without this a lost webhook looks exactly
+            # like one that was never due, and the client has no way to know to re-request.
+            last = (s.get("eval_config") or {}).get("_webhook_last")
+            if last:
+                out["webhook"] = {k: last.get(k) for k in ("delivered", "status", "attempts", "at")}
         except Exception as exc:
             logger.error("API results build failed: %s", exc)
             out["items"] = []
@@ -1469,10 +1479,79 @@ def _fire_webhook(db, project_id: str) -> None:
         
         
         import httpx
-        r = httpx.post(url, content=body_bytes, headers=headers, timeout=15)
-        logger.info("Webhook for %s -> %s (%s)", project_id, url, r.status_code)
+        # Retry a transient failure. A 5xx or a refused connection means the client's
+        # endpoint blipped, not that the payload is wrong, so give it three tries with a
+        # short backoff. A 4xx is NOT retried: the client rejected the request itself, and
+        # repeating it just delivers the same rejection.
+        attempts, status, error = 0, None, None
+        for delay in (0, 2, 6):
+            if delay:
+                time.sleep(delay)
+            attempts += 1
+            try:
+                r = httpx.post(url, content=body_bytes, headers=headers, timeout=15)
+                status = r.status_code
+                if r.status_code < 500:
+                    break
+                error = f"HTTP {r.status_code}"
+            except Exception as exc:                       # connection refused, timeout, DNS
+                error = f"{type(exc).__name__}: {exc}"
+                status = None
+        delivered = status is not None and 200 <= status < 300
+        logger.info("Webhook for %s -> %s (status=%s, attempts=%s, delivered=%s)",
+                    project_id, url, status, attempts, delivered)
+        # Record the outcome so the client can see, from GET /results, whether the push
+        # actually landed — otherwise a silently-lost webhook is indistinguishable from
+        # one that was never due, and polling stays the only trustworthy path.
+        _record_webhook_result(db, project_id, ec, delivered=delivered, status=status,
+                               attempts=attempts, error=error)
     except Exception as exc:
         logger.error("Webhook delivery failed for %s: %s", project_id, exc)
+
+
+def _record_webhook_result(db, project_id, ec, *, delivered, status, attempts, error) -> None:
+    """Persist the last delivery attempt on the project. Best-effort: a failure to record
+    the outcome must never mask the delivery itself."""
+    try:
+        ec = dict(ec or {})
+        ec["_webhook_last"] = {"delivered": delivered, "status": status,
+                               "attempts": attempts, "error": error, "at": _now_iso()}
+        db.table("project_submissions").update({"eval_config": ec}).eq("id", project_id).execute()
+    except Exception as exc:
+        logger.error("Could not record webhook result for %s: %s", project_id, exc)
+
+
+@router.post("/webhook/redeliver", response_model=SubmissionResponse,
+             summary="API: re-send the delivery webhook for a project (Bearer API key)")
+def api_webhook_redeliver(body: RedeliverIn, authorization: str | None = Header(default=None)):
+    """Re-send the delivered-results webhook.
+
+    For when your endpoint was down past the automatic retries, or you changed the URL.
+    Only a delivered project can be re-sent — there is nothing to push before then.
+    """
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    sub = (db.table("project_submissions").select("id,email,stage,eval_config")
+           .eq("id", body.project_id).limit(1).execute())
+    if not sub.data or sub.data[0].get("email") != email:
+        raise HTTPException(status_code=403, detail="That project is not on this API key.")
+    s = sub.data[0]
+    if (s.get("stage") or "") != "delivered":
+        raise HTTPException(status_code=422, detail="That project has not been delivered yet.")
+    ec = s.get("eval_config") or {}
+    if not ec.get("_webhook_url"):
+        raise HTTPException(status_code=422, detail="No webhook_url is registered on that project.")
+    _fire_webhook(db, body.project_id)
+    last = ((db.table("project_submissions").select("eval_config").eq("id", body.project_id)
+             .limit(1).execute()).data or [{}])[0].get("eval_config", {}).get("_webhook_last") or {}
+    return SubmissionResponse(
+        ok=bool(last.get("delivered")),
+        message=("Webhook redelivered." if last.get("delivered")
+                 else f"Redelivery failed (status={last.get('status')}, {last.get('attempts')} attempts)."))
 
 
 # ── Admin ──────────────────────────────────────────────────────────────────────

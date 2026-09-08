@@ -481,9 +481,20 @@ async def hook(request: Request):
     payload = json.loads(raw)   # trusted from here
     ...`}</Code>
           <p>
-            Return <C>2xx</C> to acknowledge. One call is made per delivery (no automatic
-            retries), so keep polling <C>GET /results</C> as the source of truth if delivery is
-            critical.
+            Return <C>2xx</C> to acknowledge. A <C>5xx</C> or a refused connection is retried up
+            to three times (immediately, then after 2s and 6s) — that pattern means your endpoint
+            blipped. A <C>4xx</C> is never retried: your service rejected the request itself, and
+            repeating it would just deliver the same rejection.
+          </p>
+          <p>
+            The outcome is recorded and returned by <C>GET /results</C> once delivered, so a lost
+            webhook is distinguishable from one that was never due:
+          </p>
+          <Code>{`"webhook": { "delivered": false, "status": 502, "attempts": 3, "at": "..." }`}</Code>
+          <p>
+            For an outage longer than the retries, or a changed URL, re-send it with{' '}
+            <C>POST /webhook/redeliver</C>. <C>GET /results</C> remains the source of truth if
+            delivery is critical.
           </p>
         </section>
 

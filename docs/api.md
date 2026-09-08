@@ -493,8 +493,28 @@ async def hook(request: Request):
     ...
 ```
 
-Return `2xx` to acknowledge. One call is made per delivery (no automatic retries), so
-keep polling `GET /results` as the source of truth if delivery is critical.
+Return `2xx` to acknowledge.
+
+**Retries.** A `5xx` or a refused connection is retried up to three times (immediately,
+then after 2s and 6s) — that pattern means your endpoint blipped. A **`4xx` is never
+retried**: your service rejected the request itself, and repeating it would just deliver
+the same rejection.
+
+**Was it delivered?** The outcome is recorded on the project and returned by
+`GET /results` once delivered, so a lost webhook is distinguishable from one that was
+never due:
+
+```json
+"webhook": { "delivered": false, "status": 502, "attempts": 3, "at": "2026-09-08T…" }
+```
+
+**Re-send it** — for an outage longer than the retries, or a changed URL:
+
+```
+POST /webhook/redeliver   { "project_id": "..." }
+```
+
+`GET /results` remains the source of truth if delivery is critical.
 
 ---
 
