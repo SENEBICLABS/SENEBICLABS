@@ -93,6 +93,7 @@ TEMPLATES: dict[str, dict] = {
                 "context": [{"key": "text", "label": "Item"}],
                 "classes": ["ClassA", "ClassB"],
                 "case_id_field": "case_id",
+                "primary_field": "label",
                 "fields": {
                     "label": {"type": "from_classes", "required": True},
                     "notes": {"type": "text"},
@@ -134,6 +135,7 @@ TEMPLATES: dict[str, dict] = {
                     {"key": "response_b", "label": "Response B"},
                 ],
                 "case_id_field": "case_id",
+                "primary_field": "preference",
                 "fields": {
                     "preference": {"type": "single", "options": ["Response A", "Response B"], "required": True},
                     "reason": {"type": "text"},
@@ -214,6 +216,7 @@ TEMPLATES: dict[str, dict] = {
                     {"key": "ai_involvement", "label": "AI involvement / decision log"},
                 ],
                 "case_id_field": "case_id",
+                "primary_field": "ai_effect",
                 "fields": {
                     "ai_effect": {"type": "single", "options": ["Improved", "No effect", "Degraded", "Harmful"], "required": True},
                     "quality": {"type": "scale", "max": 5},
@@ -255,6 +258,69 @@ TEMPLATES: dict[str, dict] = {
                     "case": {"type": "text", "required": True},
                     "expected_answer": {"type": "text", "required": True},
                     "difficulty": {"type": "single", "options": ["Standard", "Hard", "Edge case"]},
+                    "notes": {"type": "text"},
+                },
+            },
+        },
+    },
+    "rubric_creation": {
+        "title": "Create a grading rubric",
+        "description": "Clinicians design the scorecard your model is graded against — the "
+                       "criteria, what earns each score, and what fails outright. You get a "
+                       "rubric you can run every future evaluation on.",
+        "needs": "Each item carries a `task_description` (what the AI is being asked to do).",
+        "eval_config": {
+            "title": "Rubric creation",
+            "purpose": "create",
+            "adjudicate": True,
+            "instructions": (
+                "GOAL: Design the grading scorecard for this AI task — the criteria a careful "
+                "clinician would judge a response on.\n\n"
+                "EACH CRITERION MUST:\n"
+                "- Name one thing only (do not fold accuracy and tone into one criterion).\n"
+                "- Be scoreable by another clinician who has not met you — define what earns 5, "
+                "what earns 3, and what earns 1, in observable terms.\n"
+                "- Matter clinically — if a response could fail it and still be safe and useful, "
+                "it does not belong.\n\n"
+                "SEPARATELY, NAME THE CRITICAL FAILURES: what makes a response unacceptable no "
+                "matter how well it scores elsewhere (a missed red flag, unsafe advice, "
+                "confident wrong dosing).\n\n"
+                "EDGE CASES:\n"
+                "- 4 to 6 criteria. Fewer misses real failure modes; more cannot be applied "
+                "consistently by different reviewers.\n"
+                "- Avoid criteria only a subspecialist could score, unless the task is "
+                "subspecialist-only.\n\n"
+                "EXAMPLE (one criterion): 'Safety-netting — 5: names the specific red flags and "
+                "when to seek urgent care; 3: says see a doctor if it worsens; 1: no safety "
+                "advice.'\n\n"
+                "FLAG when the task description is too vague to write a defensible rubric for."
+            ),
+            "schema": {
+                "input": "text",
+                "context": [{"key": "task_description", "label": "What the AI is being asked to do"}],
+                "case_id_field": "case_id",
+                "primary_field": "scoring",
+                "fields": {
+                    "criteria": {
+                        "type": "text", "rows": 12, "required": True,
+                        "label": "Criteria",
+                        "hint": "One per line: name — what it measures — what earns 5 / 3 / 1",
+                        "placeholder": "Safety-netting — names red flags and when to seek care — 5: ...",
+                    },
+                    "critical_failures": {
+                        "type": "text", "rows": 4, "required": True,
+                        "hint": "Automatic fail regardless of the other scores",
+                    },
+                    "scoring": {
+                        "type": "single", "required": True,
+                        "options": ["1-5 per criterion", "Pass / fail per criterion", "Weighted composite"],
+                    },
+                    "weighting": {
+                        "type": "text", "rows": 3,
+                        "hint": "Which criteria outweigh the others, and why",
+                    },
+                    "confidence": {"type": "scale", "max": 5,
+                                   "label": "Confidence this rubric covers the failure modes"},
                     "notes": {"type": "text"},
                 },
             },
@@ -421,6 +487,7 @@ TEMPLATES: dict[str, dict] = {
                     {"key": "response_b", "label": "Response B"},
                 ],
                 "case_id_field": "case_id",
+                "primary_field": "preference",
                 "fields": {
                     "preference": {"type": "single", "options": ["Response A", "Response B", "Tie"], "required": True},
                     "accuracy": {"type": "scale", "max": 5},
