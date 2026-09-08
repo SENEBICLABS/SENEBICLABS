@@ -1280,30 +1280,44 @@ def api_capture_failures(body: CaptureIn, authorization: str | None = Header(def
     passed_keys = failure_library.resolved(rows, case_id_field=case_id_field)
 
     existing = {r["case_key"]: r for r in _library_rows(db, email)}
-    recorded, regressed, fixed = 0, 0, 0
+
+    # Merge in Python, then write in ONE upsert per group rather than one call per case.
+    # A 200-case evaluation was 200 sequential round trips, and a dropped connection
+    # partway left the library half-updated — with the client told only that it failed,
+    # and no way to know how much had landed. Batched, it is a single statement that
+    # either applies or does not, keyed by the same (client_email, case_key) unique index
+    # the schema declares.
+    to_write, regressed = [], 0
+    for inc in found:
+        prev = existing.get(inc["case_key"])
+        merged = failure_library.merge(prev, inc, model_version=version)
+        if prev:
+            merged["id"] = prev["id"]
+            if merged["status"] == failure_library.REGRESSED:
+                regressed += 1
+        to_write.append(merged)
+
+    # Close out what this version got right and the library still holds open. A full row
+    # is sent because upsert replaces rather than patches.
+    closing = []
+    for key in passed_keys:
+        prev = existing.get(key)
+        if prev and prev.get("status") != failure_library.FIXED:
+            closing.append({**prev, **failure_library.close(prev, model_version=version)})
+
     try:
-        for inc in found:
-            prev = existing.get(inc["case_key"])
-            merged = failure_library.merge(prev, inc, model_version=version)
-            if prev:
-                db.table("clinical_failures").update(merged).eq("id", prev["id"]).execute()
-                if merged["status"] == failure_library.REGRESSED:
-                    regressed += 1
-            else:
-                db.table("clinical_failures").insert(merged).execute()
-            recorded += 1
-        # Close out anything this version got right that the library still holds open.
-        for key in passed_keys:
-            prev = existing.get(key)
-            if prev and prev.get("status") != failure_library.FIXED:
-                db.table("clinical_failures").update(
-                    failure_library.close(prev, model_version=version)).eq("id", prev["id"]).execute()
-                fixed += 1
+        if to_write:
+            db.table("clinical_failures").upsert(
+                to_write, on_conflict="client_email,case_key").execute()
+        if closing:
+            db.table("clinical_failures").upsert(
+                closing, on_conflict="client_email,case_key").execute()
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Failure capture failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not update the failure library.")
+    recorded, fixed = len(to_write), len(closing)
 
     logger.info("Failure library: %s recorded, %s fixed, %s regressed (%s)", recorded, fixed, regressed, email)
     return {"ok": True, "recorded": recorded, "fixed": fixed, "regressed": regressed,
@@ -1377,9 +1391,11 @@ def api_benchmark_promote(body: PromoteIn, authorization: str | None = Header(de
     if not targets:
         return {"ok": True, "promoted": 0, "message": "No matching failures in the library."}
     try:
-        for r in targets:
-            db.table("clinical_failures").update(
-                {"in_benchmark": True, "updated_at": _now_iso()}).eq("id", r["id"]).execute()
+        # One statement, so a promotion cannot land for half the cases. `in` matches the
+        # rows already loaded and ownership-filtered above.
+        db.table("clinical_failures").update(
+            {"in_benchmark": True, "updated_at": _now_iso()}
+        ).in_("id", [r["id"] for r in targets]).execute()
     except Exception as exc:
         logger.error("Promote failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not update the benchmark.")
