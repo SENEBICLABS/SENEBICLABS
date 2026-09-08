@@ -80,3 +80,43 @@ def test_free_text_is_surfaced_not_voted():
     cons, a, d = _consensus(labels, text_fields={"correction"})
     assert isinstance(cons["correction"], list) and len(cons["correction"]) == 2
     assert a == 1.0 and d is False   # verdict itself is unanimous
+
+
+# ── Primary field: agreement is measured on the field the task actually collects ──────
+# Regression: _consensus once hardcoded "verdict" as the primary field, and `disagreed`
+# defaulted to True. Four templates (data_labeling, rlhf_preference, case_review,
+# response_ranking) collect their answer under a different name, so every one of their
+# items — unanimous included — was held as needs_adjudication and excluded from the
+# client's metrics. Agreement must follow the schema, not one hardcoded name.
+
+def test_unanimous_non_verdict_primary_is_not_a_disagreement():
+    labels = [{"preference": "Response A", "accuracy": 5}] * 3
+    _c, a, d = _consensus(labels, primary="preference")
+    assert a == 1.0 and d is False
+
+
+def test_split_on_non_verdict_primary_is_still_caught():
+    labels = [{"preference": "Response A"}, {"preference": "Response B"},
+              {"preference": "Tie"}]
+    _c, a, d = _consensus(labels, primary="preference")
+    assert a == round(1 / 3, 3) and d is True
+
+
+def test_absent_primary_field_does_not_manufacture_a_disagreement():
+    # A schema whose answer is entirely free text: nothing to vote on. Unmeasurable must
+    # not read as "disagreed" — that would route every item to adjudication.
+    labels = [{"dialogue": "one"}, {"dialogue": "two"}]
+    _c, a, d = _consensus(labels, text_fields={"dialogue"}, primary="verdict")
+    assert a == 0.0 and d is False
+
+
+def test_every_adjudicating_template_resolves_a_primary_field_it_collects():
+    from app.api.v1.ls import _primary_field
+    from app.services.templates import TEMPLATES
+    for name, t in TEMPLATES.items():
+        ec = t["eval_config"]
+        if not ec.get("adjudicate"):
+            continue
+        fields = ec["schema"]["fields"]
+        assert _primary_field(ec) in fields, (
+            f"{name}: adjudicate=True but its primary field is not one of {list(fields)}")
