@@ -41,6 +41,7 @@ export default function DocsPage() {
           <a href="#ingest">Push items</a>
           <a href="#results">Poll results</a>
           <a href="#compare">Compare versions</a>
+          <a href="#library">Failure library</a>
           <a href="#webhooks">Webhooks</a>
           <div className="grp">Reference</div>
           <a href="#config">Task config</a>
@@ -367,6 +368,66 @@ KEY="your_api_key"`}</Code>
             Cases present in only one run are listed in <C>only_in_baseline</C> /{' '}
             <C>only_in_candidate</C> and excluded from the comparison, so a benchmark that quietly
             drops a case cannot manufacture a clean scorecard.
+          </p>
+        </section>
+
+        {/* Failure library */}
+        <section id="library" className="docs-sec">
+          <span className="docs-eyebrow">Endpoints</span>
+          <h2>
+            <span className="ep">Failure library</span>
+            <span className="tag">Memory across versions</span>
+          </h2>
+          <p>
+            Everything above evaluates one version. These give the evaluation a memory: what
+            your model always gets wrong, whether a fix held, and a permanent suite every
+            future release is tested against. Tag a run with{' '}
+            <C>model_version</C> on <C>POST /projects</C>.
+          </p>
+          <h3>Record a finished evaluation</h3>
+          <Code>{`curl -X POST "$BASE/failures/capture" \\
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "project_id": "...", "model_version": "v2.3" }'
+
+{ "ok": true, "recorded": 12, "fixed": 4, "regressed": 1 }`}</Code>
+          <p>
+            Failures are upserted by <C>your</C> case id, so a case that keeps failing
+            accumulates <C>occurrences</C> rather than duplicating. Cases this run passed that
+            the library holds open are closed as <C>fixed</C>, tagged with the version that
+            fixed them. A case that was fixed and fails again becomes <C>regressed</C>, never
+            plain <C>open</C> — a fix that did not hold is the most important thing the library
+            knows.
+          </p>
+          <h3>Query and aggregate</h3>
+          <Code>{`GET $BASE/failures?severity=Critical&clinical_domain=Respiratory&status=open
+GET $BASE/failures/patterns
+
+{ "patterns": {
+  "by_status": { "open": 61, "fixed": 22, "regressed": 4 },
+  "by_error_category": { "Missed red flag": 19, "Triage failure": 14 },
+  "serious_by_domain": { "Respiratory": 12, "Cardiac": 9 },
+  "recurring": [ { "case_key": "PMX-47", "occurrences": 3, "status": "regressed" } ]
+}}`}</Code>
+          <h3>Promote, then re-run</h3>
+          <Code>{`POST $BASE/benchmark/promote  { "min_severity": "High" }
+POST $BASE/benchmark/run      { "model_version": "v2.4" }
+
+{ "ok": true, "project_id": "...", "cases": 34, "compare_with": "..." }`}</Code>
+          <p>
+            <C>benchmark/run</C> seeds a new evaluation with every benchmark case, replaying each
+            stored input verbatim — a regression test is only a test if the input does not drift
+            between runs — and reuses the source project&apos;s config so both runs are graded by
+            the same rubric.
+          </p>
+          <h3>The release gate, end to end</h3>
+          <Code>{`POST /benchmark/run      { "model_version": "v2.4" }   -> project_id, compare_with
+GET  /results?project_id=...                           -> poll until delivered
+GET  /compare?baseline=<compare_with>&candidate=<project_id>
+                                                       -> verdict: block | review | pass
+POST /failures/capture   { "project_id": "...", "model_version": "v2.4" }`}</Code>
+          <p>
+            Four calls. The last folds the new results back into the library, so the next release
+            is tested against everything learned so far.
           </p>
         </section>
 

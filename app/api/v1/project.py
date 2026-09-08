@@ -20,6 +20,7 @@ from app.services import email_service
 from app.services import audit
 from app.services import report as report_svc
 from app.services import clinical_analytics
+from app.services import failure_library
 from app.services import storage
 from app.services.portal_tokens import make_token, make_api_key, verify_token
 
@@ -250,6 +251,31 @@ class CreateProjectIn(BaseModel):
     template: str | None = None      # e.g. "model_evaluation" | "data_labeling" | "rlhf_preference" | "gold_answers"
     classes: list[str] | None = None # your label set, when a template needs one
     eval_config: dict | None = None  # full custom config (advanced) — the task schema you define
+    webhook_url: str | None = None
+    # Which build of your system this run evaluates ("v2.3", a git sha, a prompt hash).
+    # Carried onto every failure this run finds, so the library can answer "which version
+    # introduced this?" and "which version fixed it?".
+    model_version: str | None = None
+
+
+class CaptureIn(BaseModel):
+    project_id: str
+    model_version: str | None = None     # overrides the project's, if you tag it later
+
+
+class PromoteIn(BaseModel):
+    # Either name the cases, or promote everything at or above a severity.
+    case_keys: list[str] | None = None
+    min_severity: str | None = None
+    severity_order: list[str] | None = None   # defaults to Minor/Moderate/High/Critical
+
+
+class BenchmarkRunIn(BaseModel):
+    model_version: str                   # the build this run is testing
+    name: str | None = None
+    # Whose task config to reuse, so the new run is scored the same way as the baseline.
+    # Defaults to the project the benchmark cases came from.
+    template_project_id: str | None = None
     webhook_url: str | None = None
 
 
@@ -677,6 +703,8 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
     # pure free-text creation is authored by one expert. Operator tunes it per project via
     # POST /admin/reviewers.
     ec["reviewers_per_item"] = _default_reviewers(ec)
+    if body.model_version:
+        ec["model_version"] = body.model_version
     if body.webhook_url:
         ec["_webhook_url"] = body.webhook_url
         ec.setdefault("_webhook_secret", secrets.token_hex(32))
@@ -1189,6 +1217,225 @@ def api_compare(baseline: str, candidate: str, authorization: str | None = Heade
                          f"from the candidate and {len(rep['only_in_candidate'])} are new. Only "
                          f"the {rep['matched']} shared case(s) are compared.")
     return {"ok": True, "comparison": rep}
+
+
+# ── Clinical failure library + regression benchmark ───────────────────────────
+
+def _owned_project(db, project_id: str, email: str) -> dict:
+    sub = (db.table("project_submissions").select("id,email,eval_config")
+           .eq("id", project_id).limit(1).execute())
+    if not sub.data or sub.data[0].get("email") != email:
+        raise HTTPException(status_code=403, detail="That project is not on this API key.")
+    return sub.data[0]
+
+
+def _library_rows(db, email: str, **filters) -> list[dict]:
+    q = db.table("clinical_failures").select("*").eq("client_email", email)
+    for col, val in filters.items():
+        if val:
+            q = q.eq(col, val)
+    try:
+        return (q.order("last_seen", desc=True).execute()).data or []
+    except Exception as exc:
+        logger.error("Failure library read failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Failure library unavailable — apply supabase_schema.sql.")
+
+
+@router.post("/failures/capture", summary="API: record a finished evaluation's failures in the library (Bearer API key)")
+def api_capture_failures(body: CaptureIn, authorization: str | None = Header(default=None)):
+    """Fold one evaluation's results into the permanent failure library.
+
+    Failures are upserted by YOUR case id, so a case that keeps failing accumulates
+    occurrences on one record instead of spawning duplicates. Cases the run PASSED that
+    the library already holds are closed as `fixed`, tagged with the version that fixed
+    them — and a case previously fixed that fails again becomes `regressed`, never plain
+    `open`, because a fix that did not hold is the most important thing the library knows.
+    """
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    s = _owned_project(db, body.project_id, email)
+    ec = s.get("eval_config") or {}
+    version = body.model_version or ec.get("model_version")
+    case_id_field = ec.get("case_id_field") or (ec.get("schema") or {}).get("case_id_field")
+
+    rows = (db.table("project_items").select("idx,content,label,status")
+            .eq("project_id", body.project_id).order("idx").execute()).data or []
+
+    found = failure_library.extract(rows, client_email=email, project_id=body.project_id,
+                                    model_version=version, case_id_field=case_id_field)
+    passed_keys = failure_library.resolved(rows, case_id_field=case_id_field)
+
+    existing = {r["case_key"]: r for r in _library_rows(db, email)}
+    recorded, regressed, fixed = 0, 0, 0
+    try:
+        for inc in found:
+            prev = existing.get(inc["case_key"])
+            merged = failure_library.merge(prev, inc, model_version=version)
+            if prev:
+                db.table("clinical_failures").update(merged).eq("id", prev["id"]).execute()
+                if merged["status"] == failure_library.REGRESSED:
+                    regressed += 1
+            else:
+                db.table("clinical_failures").insert(merged).execute()
+            recorded += 1
+        # Close out anything this version got right that the library still holds open.
+        for key in passed_keys:
+            prev = existing.get(key)
+            if prev and prev.get("status") != failure_library.FIXED:
+                db.table("clinical_failures").update(
+                    failure_library.close(prev, model_version=version)).eq("id", prev["id"]).execute()
+                fixed += 1
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failure capture failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not update the failure library.")
+
+    logger.info("Failure library: %s recorded, %s fixed, %s regressed (%s)", recorded, fixed, regressed, email)
+    return {"ok": True, "recorded": recorded, "fixed": fixed, "regressed": regressed,
+            "model_version": version}
+
+
+@router.get("/failures", summary="API: query the clinical failure library (Bearer API key)")
+def api_failures(severity: str | None = None, clinical_domain: str | None = None,
+                 error_category: str | None = None, status: str | None = None,
+                 model_version: str | None = None, in_benchmark: bool | None = None,
+                 limit: int = 200, authorization: str | None = Header(default=None)):
+    """Every failure your model has been found to have, across every evaluation — with
+    the version it appeared in, whether a later version fixed it, and whether it came back."""
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    rows = _library_rows(db, email, severity=severity, clinical_domain=clinical_domain,
+                         error_category=error_category, status=status, model_version=model_version)
+    if in_benchmark is not None:
+        rows = [r for r in rows if bool(r.get("in_benchmark")) is in_benchmark]
+    return {"ok": True, "total": len(rows),
+            "failures": [failure_library.client_view(r) for r in rows[:max(1, min(limit, 1000))]]}
+
+
+@router.get("/failures/patterns", summary="API: aggregate view of the failure library (Bearer API key)")
+def api_failure_patterns(clinical_domain: str | None = None, model_version: str | None = None,
+                         authorization: str | None = Header(default=None)):
+    """The "what does this model always get wrong" view: counts by severity, failure mode
+    and domain, which domains carry the serious failures, what is still open, and which
+    cases have regressed after being fixed."""
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    rows = _library_rows(db, email, clinical_domain=clinical_domain, model_version=model_version)
+    return {"ok": True, "patterns": failure_library.patterns(rows)}
+
+
+@router.post("/benchmark/promote", summary="API: promote failures into the regression benchmark (Bearer API key)")
+def api_benchmark_promote(body: PromoteIn, authorization: str | None = Header(default=None)):
+    """Mark failures as permanent regression tests.
+
+    Pass `case_keys` for specific cases, or `min_severity` to promote everything at or
+    above a severity — the usual move after a first evaluation is to promote every High
+    and Critical failure in one call.
+    """
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    if not body.case_keys and not body.min_severity:
+        raise HTTPException(status_code=422, detail="Provide `case_keys` or `min_severity`.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    rows = _library_rows(db, email)
+    if body.case_keys:
+        targets = [r for r in rows if r.get("case_key") in set(body.case_keys)]
+    else:
+        order = body.severity_order or ["Minor", "Moderate", "High", "Critical"]
+        if body.min_severity not in order:
+            raise HTTPException(status_code=422,
+                                detail=f"min_severity must be one of: {', '.join(order)}.")
+        floor = order.index(body.min_severity)
+        targets = [r for r in rows
+                   if r.get("severity") in order and order.index(r["severity"]) >= floor]
+    if not targets:
+        return {"ok": True, "promoted": 0, "message": "No matching failures in the library."}
+    try:
+        for r in targets:
+            db.table("clinical_failures").update(
+                {"in_benchmark": True, "updated_at": _now_iso()}).eq("id", r["id"]).execute()
+    except Exception as exc:
+        logger.error("Promote failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not update the benchmark.")
+    return {"ok": True, "promoted": len(targets),
+            "case_keys": [r.get("case_key") for r in targets]}
+
+
+@router.post("/benchmark/run", summary="API: start a new evaluation seeded from the regression benchmark (Bearer API key)")
+def api_benchmark_run(body: BenchmarkRunIn, authorization: str | None = Header(default=None)):
+    """Re-run the whole regression suite against a new version, in one call.
+
+    Creates a project and seeds it with every benchmark case, replaying each stored input
+    verbatim — a regression test is only a test if the input does not drift between runs.
+    The returned `compare_with` is the project to diff against once review finishes, so
+    the release gate is: run this, poll /results, then GET /compare.
+    """
+    email = _api_client_email(authorization)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    rows = [r for r in _library_rows(db, email) if r.get("in_benchmark")]
+    if not rows:
+        raise HTTPException(status_code=422,
+                            detail="No cases in the benchmark yet. Promote failures with POST /benchmark/promote first.")
+
+    # Inherit the task config from the project that found these failures, so the new run
+    # is scored the same way as the baseline — comparing runs graded by different rubrics
+    # would be meaningless.
+    src_id = body.template_project_id or next((r.get("project_id") for r in rows if r.get("project_id")), None)
+    if not src_id:
+        raise HTTPException(status_code=422, detail="Provide `template_project_id` — the project whose config to reuse.")
+    src = _owned_project(db, src_id, email)
+    ec = dict(src.get("eval_config") or {})
+    if not ec:
+        raise HTTPException(status_code=422, detail="That project has no eval_config to reuse.")
+    ec["model_version"] = body.model_version
+    if body.webhook_url:
+        ec["_webhook_url"] = body.webhook_url
+        ec.setdefault("_webhook_secret", secrets.token_hex(32))
+
+    try:
+        res = db.table("project_submissions").insert({
+            "name": body.name or f"Regression suite — {body.model_version}",
+            "company": body.name or f"Regression suite — {body.model_version}",
+            "email": email, "description": "Regression run seeded from the failure library.",
+            "eval_config": ec, "stage": "submitted", "status": "new",
+        }).execute()
+        pid = res.data[0]["id"]
+        items = failure_library.as_items(rows)
+        db.table("project_items").insert(
+            [{"project_id": pid, "idx": it["idx"], "content": it["content"], "status": "pending"}
+             for it in items]).execute()
+    except Exception as exc:
+        logger.error("Benchmark run failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not start the regression run.")
+
+    _kick_sync(pid)
+    logger.info("Benchmark run %s seeded with %d cases (%s)", pid, len(rows), email)
+    resp = {"ok": True, "project_id": pid, "cases": len(rows),
+            "model_version": body.model_version, "compare_with": src_id}
+    if body.webhook_url:
+        resp["webhook_secret"] = ec["_webhook_secret"]
+    return resp
 
 
 def _fire_webhook(db, project_id: str) -> None:

@@ -364,7 +364,92 @@ a clean scorecard.
 
 ---
 
-## 5. Webhook (optional, signed) — we call you
+## 5. Failure library + regression benchmark
+
+Everything above evaluates one version. These endpoints give the evaluation a memory
+across versions: what your model always gets wrong, whether a fix held, and a permanent
+suite that every future release is tested against.
+
+Tag a run with the build it tests by passing `model_version` to `POST /projects`.
+
+### Record a finished evaluation — `POST /failures/capture`
+
+```
+POST /failures/capture   { "project_id": "...", "model_version": "v2.3" }
+→ { "ok": true, "recorded": 12, "fixed": 4, "regressed": 1, "model_version": "v2.3" }
+```
+
+Failures are upserted by **your** case id, so a case that keeps failing accumulates
+`occurrences` on one record instead of duplicating. Cases this run **passed** that the
+library holds open are closed as `fixed`, tagged with the version that fixed them. A case
+that was fixed and fails again becomes **`regressed`**, never plain `open` — a fix that
+did not hold is the most important thing the library knows.
+
+### Query it — `GET /failures`
+
+```
+GET /failures?severity=Critical&clinical_domain=Respiratory&status=open
+GET /failures?in_benchmark=true
+```
+
+Filters: `severity`, `clinical_domain`, `error_category`, `status`
+(`open` / `fixed` / `regressed`), `model_version`, `in_benchmark`, `limit`.
+
+### Aggregate it — `GET /failures/patterns`
+
+```json
+{ "patterns": {
+  "total": 87,
+  "by_status": { "open": 61, "fixed": 22, "regressed": 4 },
+  "by_error_category": { "Missed red flag": 19, "Triage failure": 14 },
+  "serious_by_domain": { "Respiratory": 12, "Cardiac": 9 },
+  "open_by_error_category": { "Missed red flag": 15 },
+  "regressed": { "count": 4, "cases": [...] },
+  "recurring": [ { "case_key": "PMX-47", "occurrences": 3, "status": "regressed" } ]
+}}
+```
+
+This is the view that answers *"what are our most common high-severity respiratory
+failures?"* and *"was case #47 ever actually fixed?"*.
+
+### Promote to the benchmark — `POST /benchmark/promote`
+
+```
+POST /benchmark/promote  { "min_severity": "High" }
+POST /benchmark/promote  { "case_keys": ["PMX-47", "PMX-12"] }
+```
+
+Marks failures as permanent regression tests. `min_severity` promotes everything at or
+above a level in one call — the usual move after a first evaluation.
+
+### Re-run the suite — `POST /benchmark/run`
+
+```
+POST /benchmark/run  { "model_version": "v2.4" }
+→ { "ok": true, "project_id": "...", "cases": 34, "compare_with": "<baseline project>" }
+```
+
+Creates a new evaluation seeded with every benchmark case, replaying each stored input
+**verbatim** — a regression test is only a test if the input does not drift between runs.
+It reuses the task config of the project the cases came from, so both runs are graded by
+the same rubric.
+
+### The release gate, end to end
+
+```
+POST /benchmark/run      { "model_version": "v2.4" }   → project_id, compare_with
+GET  /results?project_id=...                           → poll until delivered
+GET  /compare?baseline=<compare_with>&candidate=<project_id>
+                                                       → verdict: block | review | pass
+POST /failures/capture   { "project_id": "...", "model_version": "v2.4" }
+```
+
+Four calls. The last one folds the new results back into the library, so the next release
+is tested against everything learned so far.
+
+---
+
+## 6. Webhook (optional, signed) — we call you
 
 If you registered a `webhook_url`, we `POST` it once when the batch is delivered. The
 body is the same shape as the delivered `GET /results` response:
