@@ -53,7 +53,12 @@ class Settings(BaseSettings):
     # (queued or in review). The full backlog lives in our DB; /sync-pending tops LS up to
     # this many and refills as clinicians finish, so LS load stays flat no matter how large
     # the job is. Exhaustive ("all") ingestion relies on this to not overwhelm Label Studio.
-    LS_ACTIVE_WINDOW: int = 5000
+    # NOTE: counted PER PROJECT, so the load on Label Studio is this times the number
+    # of clients running at once. At 5000 three concurrent clients could put 15000
+    # active tasks on one 2-vCPU box; 1500 keeps the realistic ceiling near 4500 with
+    # no effect on throughput, because the backlog waits in our own database and the
+    # window refills as clinicians finish.
+    LS_ACTIVE_WINDOW: int = 1500
 
     # Portal magic-link signing secret — falls back to the Supabase service key
     PORTAL_SECRET: str | None = None

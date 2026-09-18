@@ -22,6 +22,7 @@ from app.services import audit
 from app.services import report as report_svc
 from app.services import clinical_analytics
 from app.services import failure_library
+from app.services.paging import fetch_all
 from app.services import storage
 from app.services.portal_tokens import make_token, make_api_key, verify_token
 
@@ -426,8 +427,10 @@ def portal_projects(token: str):
     counts: dict[str, dict[str, int]] = {}
     if subs:
         try:
-            its = db.table("project_items").select("project_id,status").in_("project_id", [s["id"] for s in subs]).execute()
-            for it in (its.data or []):
+            ids = [s["id"] for s in subs]
+            its = fetch_all(lambda: db.table("project_items").select("project_id,status")
+                            .in_("project_id", ids))
+            for it in its:
                 c = counts.setdefault(it["project_id"], {"total": 0, "done": 0})
                 c["total"] += 1
                 if it.get("status") == "done":
@@ -576,10 +579,9 @@ def portal_results(token: str, project_id: str):
         raise HTTPException(status_code=409, detail="Results are not ready yet. You can download them once the project is delivered.")
 
     try:
-        rows = (
-            db.table("project_items").select("idx,content,label,labeled_at")
-            .eq("project_id", project_id).order("idx").execute()
-        )
+        # Paged: the client downloads their whole delivered batch here.
+        rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+                         .eq("project_id", project_id).order("idx"))
     except Exception as exc:
         logger.error("Portal results fetch failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not load results. Please try again.")
@@ -591,7 +593,7 @@ def portal_results(token: str, project_id: str):
         logger.error("Portal report build failed: %s", exc)
         rep = None
     return {"ok": True, "company": s.get("company"),
-            "items": [_client_item(r) for r in (rows.data or [])], "report": rep}
+            "items": [_client_item(r) for r in rows], "report": rep}
 
 
 # ── Self-serve API keys (magic-link verified) ────────────────────────────────────
@@ -1154,11 +1156,11 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
     # stages just report status + counts so the client can loop without errors.
     if stage == "delivered":
         try:
-            rows = (
-                db.table("project_items").select("idx,content,label,labeled_at")
-                .eq("project_id", project_id).order("idx").execute()
-            )
-            out["items"] = [_client_item(r) for r in (rows.data or [])]
+            # Paged: the delivered payload must carry every reviewed item, not the
+            # first page of them.
+            rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+                             .eq("project_id", project_id).order("idx"))
+            out["items"] = [_client_item(r) for r in rows]
             out["report"] = report_svc.build_report(db, project_id)
             # Whether the push actually landed. Without this a lost webhook looks exactly
             # like one that was never due, and the client has no way to know to re-request.
@@ -1208,10 +1210,12 @@ def api_compare(baseline: str, candidate: str, authorization: str | None = Heade
         or ec_b.get("case_id_field") or schema_b.get("case_id_field")
 
     try:
-        rows_b = (db.table("project_items").select("idx,content,label,status")
-                  .eq("project_id", baseline).order("idx").execute()).data or []
-        rows_c = (db.table("project_items").select("idx,content,label,status")
-                  .eq("project_id", candidate).order("idx").execute()).data or []
+        # Paged: a truncated read on either side would compare partial runs and
+        # report "fixed" for cases it simply never saw.
+        rows_b = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+                           .eq("project_id", baseline).order("idx"))
+        rows_c = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+                           .eq("project_id", candidate).order("idx"))
     except Exception as exc:
         logger.error("Compare fetch failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not load the projects.")
@@ -1295,8 +1299,10 @@ def api_capture_failures(body: CaptureIn, authorization: str | None = Header(def
     version = body.model_version or ec.get("model_version")
     case_id_field = ec.get("case_id_field") or (ec.get("schema") or {}).get("case_id_field")
 
-    rows = (db.table("project_items").select("idx,content,label,status")
-            .eq("project_id", body.project_id).order("idx").execute()).data or []
+    # Paged: failures past the first page would never enter the library, and the
+    # cases this run passed would never be closed out.
+    rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+                     .eq("project_id", body.project_id).order("idx"))
 
     found = failure_library.extract(rows, client_email=email, project_id=body.project_id,
                                     model_version=version, case_id_field=case_id_field)
@@ -1496,16 +1502,14 @@ def _fire_webhook(db, project_id: str) -> None:
         url = ec.get("_webhook_url")
         if not url:
             return
-        rows = (
-            db.table("project_items").select("idx,content,label,labeled_at")
-            .eq("project_id", project_id).order("idx").execute()
-        )
+        rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+                         .eq("project_id", project_id).order("idx"))
         payload = {
             "event": "results.delivered",
             "project_id": project_id,
             "company": (sub.data[0].get("company") if sub.data else None),
             "report": report_svc.build_report(db, project_id),
-            "items": [_client_item(r) for r in (rows.data or [])],
+            "items": [_client_item(r) for r in rows],
         }
         
         body_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
@@ -1622,10 +1626,8 @@ def admin_adjudication_queue(project_id: str, x_admin_key: str | None = Header(d
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    rows = (
-        db.table("project_items").select("idx,content,label")
-        .eq("project_id", project_id).eq("status", "needs_adjudication").order("idx").execute()
-    ).data or []
+    rows = fetch_all(lambda: db.table("project_items").select("idx,content,label")
+                     .eq("project_id", project_id).eq("status", "needs_adjudication").order("idx"))
     queue = []
     for r in rows:
         lbl = r.get("label") or {}
@@ -1690,10 +1692,9 @@ def admin_reviewer_quality(project_id: str, x_admin_key: str | None = Header(def
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    rows = (
-        db.table("project_items").select("idx,content,label,status,labeled_by")
-        .eq("project_id", project_id).execute()
-    ).data or []
+    rows = fetch_all(lambda: db.table("project_items")
+                     .select("idx,content,label,status,labeled_by")
+                     .eq("project_id", project_id))
     # Real per-clinician attribution comes from the workforce system of record: the LS
     # annotations all carry one service user, so who-reviewed-what lives in task_completions.
     # Bridge project -> LS project -> pool(s) -> completions, keyed by the item's _ls_task_id.
@@ -1761,9 +1762,11 @@ def admin_submissions(x_admin_key: str | None = Header(default=None)):
     subs = rows.data or []
     # Attach real item progress (total / done) to each submission in one query.
     try:
-        items = db.table("project_items").select("project_id,status").execute()
+        # Every item across every project: the one read most certain to outgrow a
+        # single page, and it drives the progress numbers an operator acts on.
+        items = fetch_all(lambda: db.table("project_items").select("project_id,status"))
         counts: dict[str, dict[str, int]] = {}
-        for it in (items.data or []):
+        for it in items:
             c = counts.setdefault(it["project_id"], {"total": 0, "done": 0})
             c["total"] += 1
             if it.get("status") == "done":
@@ -1937,8 +1940,11 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
 # ── Work: items + labeling ──────────────────────────────────────────────────────
 
 def _progress(db, project_id: str) -> tuple[int, int]:
-    rows = db.table("project_items").select("status").eq("project_id", project_id).execute()
-    data = rows.data or []
+    # Paged: this gates delivery. admin_advance refuses to mark a batch delivered
+    # until done == total, so a truncated read here would report 1000 of 1000 on a
+    # larger project and release a batch that was never finished.
+    data = fetch_all(lambda: db.table("project_items").select("status")
+                     .eq("project_id", project_id))
     return len(data), sum(1 for r in data if r.get("status") == "done")
 
 
@@ -2179,7 +2185,10 @@ def work_home(x_work_code: str | None = Header(default=None)):
             allowed = set()
 
     try:
-        items = db.table("project_items").select("project_id,status,labeled_by,labeled_at").execute()
+        # Every item across every project, driving a clinician's own counts. Truncated,
+        # their work would silently stop being counted past the first page.
+        items = fetch_all(lambda: db.table("project_items")
+                          .select("project_id,status,labeled_by,labeled_at"))
     except Exception as exc:
         logger.error("Work home aggregation failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not load your work.")
@@ -2197,7 +2206,7 @@ def work_home(x_work_code: str | None = Header(default=None)):
     my_by_proj: dict[str, dict[str, int]] = {}   # per-project counts of MY labels (total / this week)
     recent: list[tuple[str, str]] = []   # (labeled_at, project_id)
 
-    for it in (items.data or []):
+    for it in items:
         pid = it["project_id"]
         if allowed is not None and pid not in allowed:
             continue
@@ -2399,11 +2408,10 @@ def admin_export(project_id: str, x_admin_key: str | None = Header(default=None)
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     try:
-        rows = (
-            db.table("project_items").select("idx,content,label,status,labeled_by,labeled_at")
-            .eq("project_id", project_id).order("idx").execute()
-        )
+        rows = fetch_all(lambda: db.table("project_items")
+                         .select("idx,content,label,status,labeled_by,labeled_at")
+                         .eq("project_id", project_id).order("idx"))
     except Exception as exc:
         logger.error("Export failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not export.")
-    return {"ok": True, "items": rows.data or []}
+    return {"ok": True, "items": rows}

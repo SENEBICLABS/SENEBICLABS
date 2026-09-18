@@ -18,6 +18,7 @@ from app.core.config import settings
 from app.services.supabase_client import get_client
 from app.services import labelstudio as ls
 from app.services import audit
+from app.services.paging import fetch_all
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ls", tags=["Label Studio"])
@@ -266,7 +267,10 @@ def _maybe_auto_deliver(db, project_id: str) -> None:
         sub = db.table("project_submissions").select("stage,eval_config").eq("id", project_id).limit(1).execute()
         if sub.data and sub.data[0].get("stage") == "delivered":
             return
-        rows = db.table("project_items").select("status").eq("project_id", project_id).execute().data or []
+        # Paged: a truncated read would show every status as done when the pages past
+        # the first are still pending, and auto-deliver a half-reviewed batch.
+        rows = fetch_all(lambda: db.table("project_items").select("status")
+                         .eq("project_id", project_id))
         if not rows or any(r.get("status") != "done" for r in rows):
             return
         ec = (sub.data[0].get("eval_config") if sub.data else None) or {}
@@ -347,11 +351,8 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
     # Pull the pending items first so we can check them against the config BEFORE
     # touching Label Studio — a mismatch here gives the operator a plain instruction
     # instead of a raw 400 from the import endpoint.
-    items = (
-        db.table("project_items").select("id,content")
-        .eq("project_id", body.project_id).eq("status", "pending").execute()
-    )
-    rows = items.data or []
+    rows = fetch_all(lambda: db.table("project_items").select("id,content")
+                     .eq("project_id", body.project_id).eq("status", "pending"))
     if not rows:
         raise HTTPException(status_code=422, detail="No pending items to send. Add items to this project first.")
 

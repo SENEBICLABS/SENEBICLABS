@@ -29,6 +29,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from app.services import clinical_analytics
+from app.services.paging import fetch_all
 
 # A project's purpose decides its deliverable: 'evaluate' -> a model-performance scorecard;
 # 'label'/'create' -> a summary of the produced dataset (there is no prediction to score).
@@ -510,11 +511,10 @@ def build_report(db, project_id: str) -> dict:
         purpose = "evaluate"
     # The column carrying the client's own case/study id, so outputs bind to THEIR id.
     case_id_field = ec.get("case_id_field") or schema.get("case_id_field")
-    rows = (
-        db.table("project_items").select("idx,content,label,status")
-        .eq("project_id", project_id).order("idx").execute()
-    )
-    items = rows.data or []
+    # Paged: a truncated read here would score the client's model on part of their
+    # batch and report it as the whole thing.
+    items = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+                      .eq("project_id", project_id).order("idx"))
 
     if purpose == "evaluate":
         report = compute_report(items, schema.get("classes") or None, case_id_field=case_id_field)

@@ -39,6 +39,11 @@ class _FakeTable:
     def limit(self, _n):
         return self
 
+    def range(self, _start, _end):
+        # Reads are paged now (services/paging.py). The fake serves every row in the
+        # first window, so a second page comes back short and the loop ends.
+        return self
+
     def order(self, *_a, **_k):
         return self
 
