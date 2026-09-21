@@ -58,6 +58,7 @@ List the outcomes with `GET /templates`:
 | `case_review` | judge whether AI helped or hurt on full cases → audit dataset + impact distribution |
 | `benchmark_creation` | author challenging test cases → an evaluation benchmark |
 | `rubric_creation` | design the scorecard your model is graded against → a reusable grading rubric |
+| `contradiction_creation` | plant a clinically important conflict between a record and a source → a contradiction test set with the expected safe behaviour |
 | `adversarial_prompts` | write probes that expose model gaps → a red-teaming test set |
 | `fact_checking` | highlight errors in an answer, rewrite it, cite a source → accuracy + a corrections dataset |
 | `dialogue_creation` | author realistic patient-clinician dialogues → synthetic training data |
@@ -65,7 +66,8 @@ List the outcomes with `GET /templates`:
 | `clinical_safety_eval` | full safety review: correctness, triage, red flags, reasoning → safety scorecard with severity + failure modes |
 | `triage_eval` | is the urgency right → triage accuracy split into under-triage, over-triage, missed emergencies |
 | `reasoning_eval` | score the reasoning step by step → where in the reasoning it fails |
-| `grounding_eval` | retrieval, grounding, citations, hallucination → RAG failure breakdown |
+| `grounding_eval` | retrieval, grounding, citations, hallucination, conflicting evidence → RAG failure breakdown |
+| `agent_trace_eval` | grade a multi-step agent's whole trajectory → where it first went wrong, which steps failed and how |
 
 Create from one, supplying your own `classes` (label set) where it applies:
 
@@ -79,6 +81,20 @@ curl -X POST "$BASE/projects" \
     "webhook_url": "https://your-app.com/hooks/senebiclabs"
   }'
 ```
+
+**Second reading.** Authoring templates (`gold_answers`, `benchmark_creation`,
+`contradiction_creation`, `adversarial_prompts`, `dialogue_creation`) are written by one
+clinician, so a second clinician reads every item before it counts. The reader approves it
+or sends it back with the fix; the author revises their own draft; after three rounds
+without agreement a senior reviewer decides. Only approved items are delivered, and each
+carries `"second_reading": {"approved": true, "rounds": 1}` in your results. It is on by
+default for authoring projects; pass `"second_reading": false` to `POST /projects` to turn
+it off. Judgment templates don't use it: several clinicians review each item instead.
+
+**Agent traces.** For `agent_trace_eval`, send `trace` as a list of steps (objects or
+strings) or as text. Clinicians see it as numbered steps; your results keep it exactly as
+you sent it. The report adds `clinical.steps`: where trajectories first break
+(`median_first_failed_step` and the distribution).
 
 **Tune a template to your own rubric.** `GET /templates` also returns each template's full
 `eval_config`. Take the closest one, edit it to fit your exact task (add rating axes, change
@@ -349,6 +365,11 @@ GET /api/v1/project/compare?baseline=<project_id>&candidate=<project_id>
 Authorization: Bearer <api key>
 ```
 
+If a run was split across several projects (one per specialty, say), pass them all,
+comma-separated: `baseline=<id>,<id>&candidate=<id>`. Each side is pooled. A case id must
+be unique within a side; one that appears in two projects on the same side is refused with
+a `422` naming it, because pooling would silently keep only one of them.
+
 ```json
 { "ok": true, "comparison": {
   "matched": 4,
@@ -440,13 +461,17 @@ above a level in one call — the usual move after a first evaluation.
 
 ```
 POST /benchmark/run  { "model_version": "v2.4" }
-→ { "ok": true, "project_id": "...", "cases": 34, "compare_with": "<baseline project>" }
+→ { "ok": true, "project_id": "...", "cases": 34, "compare_with": "<id>,<id>",
+    "runs": [ { "project_id": "...", "cases": 34, "compare_with": "<id>,<id>", ... } ] }
 ```
 
 Creates a new evaluation seeded with every benchmark case, replaying each stored input
 **verbatim** — a regression test is only a test if the input does not drift between runs.
-It reuses the task config of the project the cases came from, so both runs are graded by
-the same rubric.
+Cases are graded by the same task config that found them. Cases from several projects
+graded the same way go into one run, and `compare_with` lists all of those projects, ready
+to pass to `/compare`. If your benchmark mixes tasks graded differently (a triage eval and
+a grounding eval, say), you get one run per task in `runs`, each with its own
+`compare_with`, and the top-level `project_id` is omitted.
 
 ### The release gate, end to end
 
@@ -455,6 +480,7 @@ POST /benchmark/run      { "model_version": "v2.4" }   → project_id, compare_w
 GET  /results?project_id=...                           → poll until delivered
 GET  /compare?baseline=<compare_with>&candidate=<project_id>
                                                        → verdict: block | review | pass
+                                   (with several runs: one /compare per entry in `runs`)
 POST /failures/capture   { "project_id": "...", "model_version": "v2.4" }
 ```
 

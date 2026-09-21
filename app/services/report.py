@@ -504,6 +504,7 @@ def compute_dataset_report(items: list[dict], fields: dict, purpose: str,
             "completed": completed,
             "in_progress": status_counts.get("in_progress", 0),
             "pending": status_counts.get("pending", 0) + status_counts.get("queued", 0),
+            "awaiting_second_reading": status_counts.get("second_reading", 0),
             "needs_adjudication": needs_adj,
             "coverage": round(completed / total, 3) if total else None,
         },
@@ -555,6 +556,12 @@ def build_report(db, project_id: str) -> dict:
     clinical = clinical_analytics.compute(items, ec.get("analytics"), case_id_field=case_id_field)
     if clinical:
         report["clinical"] = clinical
+
+    # Authored work read by a second clinician: how much was read and how much went back.
+    from app.services import second_reading
+    sr = second_reading.summary(items)
+    if sr:
+        report["second_reading"] = sr
 
     report["project_id"] = project_id
     report["generated_at"] = datetime.now(timezone.utc).isoformat()

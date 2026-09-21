@@ -88,6 +88,10 @@ _GRADING_KEYS = ("purpose", "instructions", "title", "subtitle")
 _GRADING_SCHEMA_KEYS = ("input", "context", "classes", "case_id_field", "media_key", "fields")
 
 
+# Item statuses that mean a clinician has already worked on the item.
+_REVIEW_STARTED = {"in_progress", "second_reading", "needs_adjudication", "done"}
+
+
 def _grading_signature(ec: dict) -> dict:
     """The judgment-defining slice of a config, for comparing whether an edit changes how items
     are graded (vs only an operational setting)."""
@@ -104,7 +108,7 @@ def _project_has_reviews(db, project_id: str) -> bool:
     try:
         r = (db.table("project_items").select("id")
              .eq("project_id", project_id)
-             .in_("status", ["in_progress", "done", "needs_adjudication"])
+             .in_("status", sorted(_REVIEW_STARTED))
              .limit(1).execute())
         return bool(r.data)
     except Exception:
@@ -262,6 +266,9 @@ class CreateProjectIn(BaseModel):
     # Carried onto every failure this run finds, so the library can answer "which version
     # introduced this?" and "which version fixed it?".
     model_version: str | None = None
+    # A second clinician reads every authored item before it counts. Defaults on for
+    # authoring tasks (single-author `create` projects); pass false to turn it off.
+    second_reading: bool | None = None
 
 
 class RedeliverIn(BaseModel):
@@ -552,6 +559,11 @@ def _client_item(row: dict) -> dict:
     content = {k: v for k, v in (row.get("content") or {}).items() if not str(k).startswith("_")}
     label = {k: v for k, v in (row.get("label") or {}).items() if not str(k).startswith("_")}
     out = {"idx": row.get("idx"), "content": content, "label": label}
+    # Evidence that authored work was independently read: approved, after how many rounds.
+    # Who read it stays private, like every reviewer identity.
+    sr = (row.get("label") or {}).get("_second_reading")
+    if isinstance(sr, dict):
+        out["second_reading"] = {"approved": bool(sr.get("approved")), "rounds": sr.get("rounds")}
     if "labeled_at" in row:
         out["labeled_at"] = row.get("labeled_at")
     return out
@@ -714,6 +726,13 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
     # pure free-text creation is authored by one expert. Operator tunes it per project via
     # POST /admin/reviewers.
     ec["reviewers_per_item"] = _default_reviewers(ec)
+    # Authored work is written by one clinician, so by default a second clinician reads
+    # every item before it counts (services/second_reading.py). Judgment tasks already get
+    # N-way consensus instead. A client can opt out with second_reading: false.
+    if body.second_reading is not None:
+        ec["second_reading"] = bool(body.second_reading)
+    else:
+        ec.setdefault("second_reading", ec["reviewers_per_item"] == 1 and ec["purpose"] == "create")
     if body.model_version:
         ec["model_version"] = body.model_version
     if body.webhook_url:
@@ -958,7 +977,7 @@ def sync_pending(project_id: str, x_admin_key: str | None = Header(default=None)
         return SubmissionResponse(ok=True, message="Chunk already claimed by a concurrent sync.")
 
     try:
-        ls.push_tasks(ls_pid, items)
+        ls.push_tasks(ls_pid, items, note_key=ls.revision_note_key(ec))
     except Exception as exc:
         # Push failed — return the claimed items to 'pending' so they get re-synced.
         for i in range(0, len(claimed_ids), 100):
@@ -1184,8 +1203,9 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
 def api_compare(baseline: str, candidate: str, authorization: str | None = Header(default=None)):
     """Run the same benchmark against two model versions and report what changed.
 
-    Cases are matched on the client's own case id, so `candidate` is any later project
-    carrying the same cases — re-ingest the benchmark, evaluate the new version, compare.
+    `baseline` and `candidate` are each a project id, or several comma-separated ids when a
+    run was split across projects (one per specialty, say). Each side is pooled and cases
+    are matched on the client's own case id, so a case id must be unique within a side.
     The response separates cases the release FIXED from ones it REGRESSED (passed before,
     fails now) and never nets one off against the other: an aggregate can improve while a
     release breaks a case that matters, which is the whole reason a regression suite exists.
@@ -1194,34 +1214,36 @@ def api_compare(baseline: str, candidate: str, authorization: str | None = Heade
     email = _api_client_email(authorization)
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or missing API key.")
-    if baseline == candidate:
+    base_ids = _id_list(baseline)
+    cand_ids = _id_list(candidate)
+    if not base_ids or not cand_ids:
+        raise HTTPException(status_code=422, detail="Give at least one project id for baseline and for candidate.")
+    if set(base_ids) & set(cand_ids):
         raise HTTPException(status_code=422, detail="baseline and candidate must be different projects.")
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
 
     subs = (db.table("project_submissions").select("id,email,eval_config,stage")
-            .in_("id", [baseline, candidate]).execute())
+            .in_("id", base_ids + cand_ids).execute())
     by_id = {s["id"]: s for s in (subs.data or [])}
-    for pid in (baseline, candidate):
+    for pid in base_ids + cand_ids:
         # Ownership is checked per project: an API key must not be able to diff its own
         # project against someone else's and read their cases out of the response.
         if pid not in by_id or by_id[pid].get("email") != email:
             raise HTTPException(status_code=403, detail="That project is not on this API key.")
 
-    ec_b = by_id[baseline].get("eval_config") or {}
-    ec_c = by_id[candidate].get("eval_config") or {}
-    schema_b = ec_b.get("schema") or {}
-    case_id_field = ec_c.get("case_id_field") or (ec_c.get("schema") or {}).get("case_id_field") \
-        or ec_b.get("case_id_field") or schema_b.get("case_id_field")
+    ec_b = by_id[base_ids[0]].get("eval_config") or {}
+    ec_c = by_id[cand_ids[0]].get("eval_config") or {}
+    case_id_field = _case_id_field(ec_c) or _case_id_field(ec_b)
 
     try:
         # Paged: a truncated read on either side would compare partial runs and
         # report "fixed" for cases it simply never saw.
-        rows_b = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
-                           .eq("project_id", baseline).order("idx"))
-        rows_c = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
-                           .eq("project_id", candidate).order("idx"))
+        rows_b = _pooled_rows(db, base_ids, case_id_field, "baseline")
+        rows_c = _pooled_rows(db, cand_ids, case_id_field, "candidate")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Compare fetch failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not load the projects.")
@@ -1229,11 +1251,13 @@ def api_compare(baseline: str, candidate: str, authorization: str | None = Heade
     rep = clinical_analytics.compare_runs(
         rows_b, rows_c, case_id_field=case_id_field,
         analytics_cfg=ec_c.get("analytics") or ec_b.get("analytics"))
-    rep["baseline"] = {"project_id": baseline, "model_version": ec_b.get("model_version")}
-    rep["candidate"] = {"project_id": candidate, "model_version": ec_c.get("model_version")}
+    rep["baseline"] = {"project_id": base_ids[0], "project_ids": base_ids,
+                       "model_version": ec_b.get("model_version")}
+    rep["candidate"] = {"project_id": cand_ids[0], "project_ids": cand_ids,
+                        "model_version": ec_c.get("model_version")}
     rep["generated_at"] = _now_iso()
     if not rep["matched"]:
-        rep["caveat"] = ("No cases matched between the two projects. They are compared on the "
+        rep["caveat"] = ("No cases matched between the two sides. They are compared on the "
                          "client case id, so the candidate run must carry the same case ids as "
                          "the baseline.")
     elif rep["only_in_baseline"] or rep["only_in_candidate"]:
@@ -1241,6 +1265,42 @@ def api_compare(baseline: str, candidate: str, authorization: str | None = Heade
                          f"from the candidate and {len(rep['only_in_candidate'])} are new. Only "
                          f"the {rep['matched']} shared case(s) are compared.")
     return {"ok": True, "comparison": rep}
+
+
+def _id_list(raw: str) -> list[str]:
+    """Comma-separated project ids, de-duplicated, order kept."""
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        p = part.strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _case_id_field(ec: dict) -> str | None:
+    return (ec or {}).get("case_id_field") or ((ec or {}).get("schema") or {}).get("case_id_field")
+
+
+def _pooled_rows(db, project_ids: list[str], case_id_field: str | None, side: str) -> list[dict]:
+    """Every item across a side's projects. A case id that appears in two of them is
+    refused: pooled, one would silently replace the other and the comparison would score
+    whichever happened to be read last."""
+    rows: list[dict] = []
+    seen: dict = {}
+    for pid in project_ids:
+        for r in fetch_all(lambda pid=pid: db.table("project_items").select("idx,content,label,status")
+                           .eq("project_id", pid).order("idx")):
+            key = clinical_analytics._key(r, case_id_field)
+            if key is not None and len(project_ids) > 1:
+                if key in seen and seen[key] != pid:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(f"Case id {key!r} appears in more than one {side} project "
+                                f"({seen[key]} and {pid}). Case ids must be unique across the "
+                                "projects on one side of a comparison."))
+                seen[key] = pid
+            rows.append(r)
+    return rows
 
 
 # ── Clinical failure library + regression benchmark ───────────────────────────
@@ -1446,10 +1506,14 @@ def api_benchmark_promote(body: PromoteIn, authorization: str | None = Header(de
 def api_benchmark_run(body: BenchmarkRunIn, authorization: str | None = Header(default=None)):
     """Re-run the whole regression suite against a new version, in one call.
 
-    Creates a project and seeds it with every benchmark case, replaying each stored input
+    Seeds new evaluation(s) with every benchmark case, replaying each stored input
     verbatim — a regression test is only a test if the input does not drift between runs.
-    The returned `compare_with` is the project to diff against once review finishes, so
-    the release gate is: run this, poll /results, then GET /compare.
+
+    Cases are scored the same way they were found. Benchmark cases can come from several
+    evaluations; those graded with the same task config go into one run, and cases graded
+    differently (a triage eval and a grounding eval, say) get a run each, since one rubric
+    cannot score both. Each run's `compare_with` lists every project its cases came from,
+    so the release gate is: run this, poll /results, then GET /compare for each run.
     """
     email = _api_client_email(authorization)
     if not email:
@@ -1463,44 +1527,100 @@ def api_benchmark_run(body: BenchmarkRunIn, authorization: str | None = Header(d
         raise HTTPException(status_code=422,
                             detail="No cases in the benchmark yet. Promote failures with POST /benchmark/promote first.")
 
-    # Inherit the task config from the project that found these failures, so the new run
-    # is scored the same way as the baseline — comparing runs graded by different rubrics
-    # would be meaningless.
-    src_id = body.template_project_id or next((r.get("project_id") for r in rows if r.get("project_id")), None)
-    if not src_id:
-        raise HTTPException(status_code=422, detail="Provide `template_project_id` — the project whose config to reuse.")
-    src = _owned_project(db, src_id, email)
-    ec = dict(src.get("eval_config") or {})
-    if not ec:
-        raise HTTPException(status_code=422, detail="That project has no eval_config to reuse.")
-    ec["model_version"] = body.model_version
-    if body.webhook_url:
-        ec["_webhook_url"] = body.webhook_url
-        ec.setdefault("_webhook_secret", secrets.token_hex(32))
+    groups = _benchmark_groups(db, email, rows, body.template_project_id)
 
-    try:
-        res = db.table("project_submissions").insert({
-            "name": body.name or f"Regression suite — {body.model_version}",
-            "company": body.name or f"Regression suite — {body.model_version}",
-            "email": email, "description": "Regression run seeded from the failure library.",
-            "eval_config": ec, "stage": "submitted", "status": "new",
-        }).execute()
-        pid = res.data[0]["id"]
-        items = failure_library.as_items(rows)
-        db.table("project_items").insert(
-            [{"project_id": pid, "idx": it["idx"], "content": it["content"], "status": "pending"}
-             for it in items]).execute()
-    except Exception as exc:
-        logger.error("Benchmark run failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Could not start the regression run.")
+    runs = []
+    for g in groups:
+        ec = _fresh_run_config(g["eval_config"], body.model_version)
+        if body.webhook_url:
+            ec["_webhook_url"] = body.webhook_url
+            ec["_webhook_secret"] = secrets.token_hex(32)
+        name = body.name or f"Regression suite — {body.model_version}"
+        if len(groups) > 1:
+            name = f"{name} ({ec.get('title') or 'suite'})"
+        try:
+            res = db.table("project_submissions").insert({
+                "name": name, "company": name,
+                "email": email, "description": "Regression run seeded from the failure library.",
+                "eval_config": ec, "stage": "submitted", "status": "new",
+            }).execute()
+            pid = res.data[0]["id"]
+            items = failure_library.as_items(g["rows"])
+            db.table("project_items").insert(
+                [{"project_id": pid, "idx": it["idx"], "content": it["content"], "status": "pending"}
+                 for it in items]).execute()
+        except Exception as exc:
+            logger.error("Benchmark run failed: %s", exc)
+            raise HTTPException(status_code=500, detail="Could not start the regression run.")
+        _kick_sync(pid)
+        run = {"project_id": pid, "cases": len(g["rows"]), "model_version": body.model_version,
+               "compare_with": ",".join(g["sources"]), "task": ec.get("title")}
+        if body.webhook_url:
+            run["webhook_secret"] = ec["_webhook_secret"]
+        runs.append(run)
+        logger.info("Benchmark run %s seeded with %d cases (%s)", pid, len(g["rows"]), email)
 
-    _kick_sync(pid)
-    logger.info("Benchmark run %s seeded with %d cases (%s)", pid, len(rows), email)
-    resp = {"ok": True, "project_id": pid, "cases": len(rows),
-            "model_version": body.model_version, "compare_with": src_id}
-    if body.webhook_url:
-        resp["webhook_secret"] = ec["_webhook_secret"]
+    resp = {"ok": True, "runs": runs, "cases": sum(r["cases"] for r in runs),
+            "model_version": body.model_version}
+    if len(runs) == 1:
+        # The single-run shape, unchanged for clients that read these fields directly.
+        resp.update({k: runs[0][k] for k in ("project_id", "compare_with")})
+        if "webhook_secret" in runs[0]:
+            resp["webhook_secret"] = runs[0]["webhook_secret"]
     return resp
+
+
+def _benchmark_groups(db, email: str, rows: list[dict], template_project_id: str | None) -> list[dict]:
+    """Split benchmark cases by the task config that graded them. Each group: its config,
+    its cases, and the source projects to compare against."""
+    if template_project_id:
+        src = _owned_project(db, template_project_id, email)
+        if not src.get("eval_config"):
+            raise HTTPException(status_code=422, detail="That project has no eval_config to reuse.")
+        sources = sorted({r["project_id"] for r in rows if r.get("project_id")}) or [template_project_id]
+        return [{"eval_config": src["eval_config"], "rows": rows, "sources": sources}]
+
+    src_ids = sorted({r["project_id"] for r in rows if r.get("project_id")})
+    if not src_ids:
+        raise HTTPException(status_code=422, detail="Provide `template_project_id` — the project whose config to reuse.")
+    subs = (db.table("project_submissions").select("id,email,eval_config")
+            .in_("id", src_ids).execute()).data or []
+    configs = {s["id"]: (s.get("eval_config") or {}) for s in subs if s.get("email") == email}
+
+    groups: dict[str, dict] = {}
+    orphans = []
+    for r in rows:
+        ec = configs.get(r.get("project_id"))
+        if not ec:
+            orphans.append(r)            # its source project is gone; placed below
+            continue
+        sig = json.dumps(_grading_signature(ec), sort_keys=True, default=str)
+        g = groups.setdefault(sig, {"eval_config": ec, "rows": [], "sources": []})
+        g["rows"].append(r)
+        if r["project_id"] not in g["sources"]:
+            g["sources"].append(r["project_id"])
+    if not groups:
+        raise HTTPException(status_code=422,
+                            detail="The projects these cases came from no longer exist. Provide `template_project_id`.")
+    if orphans:
+        # A deleted source project leaves no config to read. Keep the case in the suite
+        # rather than drop it, scored with the largest group's config.
+        max(groups.values(), key=lambda g: len(g["rows"]))["rows"].extend(orphans)
+    return list(groups.values())
+
+
+def _fresh_run_config(ec: dict, model_version: str) -> dict:
+    """A source project's task config without its operational state. Internal keys record
+    what happened to THAT project — its ingest keys, delivery sign-off, webhook outcome,
+    Label Studio companions — and copied onto a new run they would describe things that
+    never happened to it. The client's webhook endpoint and secret are kept: same client,
+    same endpoint."""
+    out = {k: v for k, v in (ec or {}).items() if not str(k).startswith("_")}
+    for k in ("_webhook_url", "_webhook_secret"):
+        if (ec or {}).get(k):
+            out[k] = ec[k]
+    out["model_version"] = model_version
+    return out
 
 
 def _fire_webhook(db, project_id: str) -> None:
@@ -1647,6 +1767,8 @@ def admin_adjudication_queue(project_id: str, x_admin_key: str | None = Header(d
             "reviewers": lbl.get("_reviewers"),
             "consensus_verdict": lbl.get("verdict"),
             "annotations": lbl.get("_annotations"),      # each reviewer's answer — the split, laid out
+            # An author and second reader who could not agree: every round, note and draft.
+            "second_reading": lbl.get("_second_reading"),
             "content": r.get("content"),
         })
     return {"ok": True, "project_id": project_id, "count": len(queue), "items": queue}
@@ -1949,8 +2071,6 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
 
 # ── Work: items + labeling ──────────────────────────────────────────────────────
 
-# Item statuses that mean a clinician has already worked on the item.
-_REVIEW_STARTED = {"in_progress", "needs_adjudication", "done"}
 
 
 def _item_statuses(db, project_id: str) -> list:

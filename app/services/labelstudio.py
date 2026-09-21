@@ -460,12 +460,12 @@ def get_config(task_type: str | None) -> str:
 #   { "title": str?, "subtitle": str?, "renderer": "ls_image",
 #     "schema": { "classes": [...], "multi_label": bool,
 #                 "fields": { <name>: { "type": ..., ...opts } } } }
-# Field types: single | from_classes | structured | scale | flag | text.
+# Field types: single | from_classes | structured | scale | number | flag | text | spans.
 # `visible_when` supports "<field>!=<value>" / "<field>==<value>".
 # NOTE: the image renderer here is Label Studio's <Image> (renderer "ls_image").
 # Slice #6 abstracts this behind a seam so a DICOM/Cornerstone renderer can drop in.
 
-_ALLOWED_FIELD_TYPES = {"single", "from_classes", "structured", "scale", "flag", "text", "spans"}
+_ALLOWED_FIELD_TYPES = {"single", "from_classes", "structured", "scale", "number", "flag", "text", "spans"}
 
 
 def _esc(v) -> str:
@@ -538,6 +538,12 @@ def _control_xml(name: str, fdef: dict, classes: list) -> str:
     if ftype == "scale":
         mx = int(fdef.get("max", 5))
         return f'<Rating name="{_esc(name)}" toName="image" maxRating="{mx}" size="medium"/>'
+
+    if ftype == "number":
+        # A whole number, e.g. the step of an agent trace where things first went wrong.
+        lo = f' min="{int(fdef["min"])}"' if fdef.get("min") is not None else ""
+        hi = f' max="{int(fdef["max"])}"' if fdef.get("max") is not None else ""
+        return f'<Number name="{_esc(name)}" toName="image"{lo}{hi}{req}/>'
 
     if ftype == "flag":
         label = _esc(fdef.get("label", "Cannot assess"))
@@ -773,17 +779,63 @@ def create_project(title: str, label_config: str = DEFAULT_LABEL_CONFIG, reviewe
     return pid
 
 
-def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500) -> int:
-    """Import items as tasks. Each item is {id, content}; we carry id as _item_id.
-    Pushed in chunks so a bulk batch never exceeds Label Studio's import limits.
+def render_value(v) -> str | int | float | bool | None:
+    """A task value as Label Studio can display it. Text objects show strings, so a
+    structured value — an agent trace sent as a list of steps, a tool call as an object —
+    is rendered as readable numbered text. Scalars pass through untouched. The stored
+    content keeps the client's original structure; only what the clinician sees is rendered."""
+    if isinstance(v, list):
+        out = []
+        for i, step in enumerate(v, 1):
+            if isinstance(step, dict):
+                body = "\n".join(f"   {k}: {_one_line(x)}" for k, x in step.items())
+                out.append(f"Step {i}\n{body}")
+            else:
+                out.append(f"Step {i}: {_one_line(step)}")
+        return "\n\n".join(out)
+    if isinstance(v, dict):
+        return "\n".join(f"{k}: {_one_line(x)}" for k, x in v.items())
+    return v
 
-    Internal content keys (any starting with `_`, e.g. a gold item's `_gold_expected`
-    answer) are stripped before the task reaches Label Studio, so a known-answer key can
-    never leak to a clinician. Only `_item_id` — needed to map the annotation back — is added."""
-    tasks = [{"data": {**{k: v for k, v in (it.get("content") or {}).items() if not k.startswith("_")},
-                       "_item_id": it["id"]}} for it in items]
-    if not tasks:
-        return 0
+
+def _one_line(x) -> str:
+    if isinstance(x, (dict, list)):
+        import json
+        return json.dumps(x, ensure_ascii=False)
+    return str(x)
+
+
+def revision_note_key(eval_config: dict | None) -> str | None:
+    """Where a second reader's revision note is shown to the author: the first context
+    block of a text task, which the author reads first. None for media tasks, whose context
+    is the image or recording itself."""
+    schema = (eval_config or {}).get("schema") or {}
+    if str(schema.get("input") or "image").lower() != "text":
+        return None
+    ctx = schema.get("context") or [{"key": "prompt"}]
+    return (ctx[0] or {}).get("key")
+
+
+def _task_for(it: dict, note_key: str | None) -> dict:
+    content = it.get("content") or {}
+    data = {k: render_value(v) for k, v in content.items() if not k.startswith("_")}
+    data["_item_id"] = it["id"]
+    task: dict = {"data": data}
+    # Sent back by a second reader: show the reader's note above the task, and pre-fill the
+    # author's previous draft so they revise it rather than start again.
+    rev = content.get("_revision")
+    if isinstance(rev, dict):
+        if note_key and note_key in data:
+            data[note_key] = (f"REVISION REQUESTED BY THE SECOND READER:\n{rev.get('note') or '(no note given)'}"
+                              f"\n\n———\n\n{data[note_key]}")
+        if rev.get("previous_result"):
+            task["predictions"] = [{"result": rev["previous_result"], "model_version": "previous draft"}]
+    return task
+
+
+def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 500) -> int:
+    """Import ready-built tasks ({data, predictions?}) in chunks, so a bulk batch never
+    exceeds Label Studio's import limits."""
     for i in range(0, len(tasks), chunk):
         r = httpx.post(
             f"{_base()}/api/projects/{ls_project_id}/import",
@@ -795,21 +847,60 @@ def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500) -> int:
     return len(tasks)
 
 
+def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500,
+               note_key: str | None = None) -> int:
+    """Import items as tasks. Each item is {id, content}; we carry id as _item_id.
+
+    Internal content keys (any starting with `_`, e.g. a gold item's `_gold_expected`
+    answer) are stripped before the task reaches Label Studio, so a known-answer key can
+    never leak to a clinician. Only `_item_id` — needed to map the annotation back — is added.
+    `note_key` is where a revision note is shown (see revision_note_key)."""
+    tasks = [_task_for(it, note_key) for it in items]
+    if not tasks:
+        return 0
+    return import_tasks(ls_project_id, tasks, chunk)
+
+
+def delete_task(task_id: int) -> None:
+    """Remove one task. A missing task is already the desired state, so 404 is not an error."""
+    r = httpx.delete(f"{_base()}/api/tasks/{task_id}/", headers=_headers(), timeout=30)
+    if r.status_code != 404:
+        r.raise_for_status()
+
+
 def get_task(task_id: int) -> dict:
     r = httpx.get(f"{_base()}/api/tasks/{task_id}", headers=_headers(), timeout=30)
     r.raise_for_status()
     return r.json()
 
 
-def export_tasks(ls_project_id: int) -> list:
-    """All tasks for a project, each with its annotations (used to pull results back)."""
-    r = httpx.get(
-        f"{_base()}/api/projects/{ls_project_id}/export?exportType=JSON",
-        headers=_headers(),
-        timeout=120,
-    )
-    r.raise_for_status()
-    return r.json()
+def export_tasks(ls_project_id: int, page_size: int = 500) -> list:
+    """All tasks for a project, each with its annotations (used to pull results back).
+
+    Read page by page. The one-shot export endpoint builds the whole project in a single
+    response — measured at 56s for 3,000 annotated tasks — so past roughly 6,000 it outruns
+    any sane timeout and the pull, the recovery path, fails exactly when there is the most
+    to recover. Paging keeps every request small whatever the project size."""
+    out: list = []
+    page = 1
+    while True:
+        r = httpx.get(
+            f"{_base()}/api/tasks/",
+            params={"project": ls_project_id, "page": page, "page_size": page_size, "fields": "all"},
+            headers=_headers(),
+            timeout=120,
+        )
+        if r.status_code == 404 and page > 1:
+            break                                   # past the last page
+        r.raise_for_status()
+        body = r.json()
+        batch = body.get("tasks", []) if isinstance(body, dict) else body
+        out.extend(batch)
+        total = body.get("total") if isinstance(body, dict) else None
+        if len(batch) < page_size or (total is not None and len(out) >= total):
+            break
+        page += 1
+    return out
 
 
 def get_project(ls_project_id: int) -> dict:

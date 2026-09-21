@@ -330,7 +330,47 @@ def compute(items, analytics_cfg, case_id_field=None) -> dict | None:
         r = slice_summary(items, cfg["slice_by"], case_id_field, sev_cfg)
         if r:
             out["slices"] = r
+    if cfg.get("steps"):
+        r = step_summary(items, cfg["steps"])
+        if r:
+            out["steps"] = r
     return out or None
+
+
+def step_summary(items, cfg) -> dict | None:
+    """Where multi-step agent trajectories first break, from a first-failed-step field.
+
+    The distribution answers "does this agent usually go wrong early (planning, retrieval)
+    or late (acting on what it found)?". Only finished items with a whole-number step
+    count; anything else is reported as unusable rather than guessed."""
+    field = (cfg or {}).get("field")
+    if not field:
+        return None
+    steps, unusable = [], 0
+    for it in items:
+        if it.get("status") != "done":
+            continue
+        v = (it.get("label") or {}).get(field)
+        if v in (None, ""):
+            continue
+        try:
+            n = int(float(v))
+        except (TypeError, ValueError):
+            unusable += 1
+            continue
+        if n < 1:
+            unusable += 1
+            continue
+        steps.append(n)
+    if not steps and not unusable:
+        return None
+    ordered = sorted(steps)
+    mid = len(ordered) // 2
+    median = (None if not ordered else
+              ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2)
+    dist = Counter(ordered)
+    return {"field": field, "n": len(steps), "median_first_failed_step": median,
+            "distribution": {str(k): dist[k] for k in sorted(dist)}, "unusable": unusable}
 
 
 # ── Version comparison / regression ──────────────────────────────────────────────
