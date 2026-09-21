@@ -1143,12 +1143,18 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
             logger.info("results: re-fired stalled manifest ingest for %s", project_id)
     except Exception:
         pass
-    total, done = _progress(db, project_id)
+    statuses = _item_statuses(db, project_id)
+    total, done = len(statuses), sum(1 for x in statuses if x == "done")
     stage = s.get("stage") or "submitted"
     # Client-facing status only. The internal delivery funnel (scoping/agreement/pilot/…) is
     # never disclosed — the client sees just what matters to them: received, in review, or
-    # delivered, alongside the total/done counts for progress.
-    client_status = "delivered" if stage == "delivered" else ("received" if stage == "submitted" else "in_review")
+    # delivered, alongside the total/done counts for progress. "in_review" follows the work,
+    # not the operator's stage: once any clinician has reviewed an item it is in review,
+    # even if nobody has moved the stage on by hand.
+    reviewing = any(x in _REVIEW_STARTED for x in statuses)
+    client_status = ("delivered" if stage == "delivered"
+                     else "in_review" if (stage != "submitted" or reviewing)
+                     else "received")
     purpose = _normalize_purpose(s.get("eval_config") or {})
     out: dict = {"ok": True, "project_id": project_id, "purpose": purpose,
                  "status": client_status, "total": total, "done": done}
@@ -1334,13 +1340,17 @@ def api_capture_failures(body: CaptureIn, authorization: str | None = Header(def
         if prev and prev.get("status") != failure_library.FIXED:
             closing.append({**prev, **failure_library.close(prev, model_version=version)})
 
+    # default_to_null=False: a batch mixing new failures (no id yet) with repeat ones (id
+    # set) is sent with the union of their keys, and PostgREST's default fills a key a row
+    # lacks with NULL — a NULL id, and the whole capture fails. Missing keys must take the
+    # column default instead, so a new failure gets a generated id.
     try:
         if to_write:
             db.table("clinical_failures").upsert(
-                to_write, on_conflict="client_email,case_key").execute()
+                to_write, on_conflict="client_email,case_key", default_to_null=False).execute()
         if closing:
             db.table("clinical_failures").upsert(
-                closing, on_conflict="client_email,case_key").execute()
+                closing, on_conflict="client_email,case_key", default_to_null=False).execute()
     except HTTPException:
         raise
     except Exception as exc:
@@ -1939,13 +1949,21 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
 
 # ── Work: items + labeling ──────────────────────────────────────────────────────
 
-def _progress(db, project_id: str) -> tuple[int, int]:
+# Item statuses that mean a clinician has already worked on the item.
+_REVIEW_STARTED = {"in_progress", "needs_adjudication", "done"}
+
+
+def _item_statuses(db, project_id: str) -> list:
     # Paged: this gates delivery. admin_advance refuses to mark a batch delivered
     # until done == total, so a truncated read here would report 1000 of 1000 on a
     # larger project and release a batch that was never finished.
-    data = fetch_all(lambda: db.table("project_items").select("status")
-                     .eq("project_id", project_id))
-    return len(data), sum(1 for r in data if r.get("status") == "done")
+    return [r.get("status") for r in fetch_all(lambda: db.table("project_items").select("status")
+                                               .eq("project_id", project_id))]
+
+
+def _progress(db, project_id: str) -> tuple[int, int]:
+    statuses = _item_statuses(db, project_id)
+    return len(statuses), sum(1 for x in statuses if x == "done")
 
 
 def _guard_item_keys(db, project_id: str, items: list[dict]) -> None:

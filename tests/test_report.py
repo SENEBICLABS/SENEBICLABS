@@ -56,7 +56,7 @@ def test_totals_and_exclusions():
 def test_accuracy():
     rep = R.compute_report(ITEMS, CLASSES)
     # correct verdicts: idx 0,1,3 -> 3 of 6
-    assert rep["accuracy"] == {"correct": 3, "assessable": 6, "value": 0.5}
+    assert rep["accuracy"] == {"correct": 3, "assessable": 6, "value": 0.5, "basis": "verdict+class"}
 
 
 def test_confusion_matrix():
@@ -150,6 +150,76 @@ def test_case_id_passthrough():
     # No case id present -> None, and exports still work (idx remains the fallback).
     plain = R.compute_report([_item(0, "Normal", "Correct")], CLASSES)
     assert plain["cases"][0]["case_id"] is None
+
+
+def _prose(idx, verdict, status="done"):
+    """A free-text evaluation item: the model's answer is prose, and a failure carries
+    no corrected class because the schema has none to give."""
+    return {"idx": idx, "status": status,
+            "content": {"case_id": f"C{idx}", "prediction": f"Agent answer {idx} [1]"},
+            "label": {"verdict": verdict}}
+
+
+def test_free_text_headline_counts_every_failure():
+    # The live bug: 4 passes + 12 failures reported as 100%, because each failure lacked
+    # a corrected label and was excluded, leaving only the passes to score.
+    items = [_prose(i, "Correct" if i < 4 else "Incorrect") for i in range(16)]
+    rep = R.compute_report(items, free_text=True)
+    assert rep["accuracy"]["value"] == 0.25
+    assert rep["accuracy"]["assessable"] == 16 and rep["accuracy"]["basis"] == "verdict"
+    assert rep["incomplete_cases"] == [] and rep["totals"]["excluded_total"] == 0
+    assert len(rep["failure_cases"]) == 12
+
+
+def test_free_text_has_no_classes_or_matrix():
+    # Prose answers are not classes; listing each one as a class fills the matrix with noise.
+    rep = R.compute_report([_prose(0, "Correct"), _prose(1, "Partial")], free_text=True)
+    assert rep["classes"] == [] and rep["confusion_matrix"]["matrix"] == []
+    md = R.render_markdown(rep)
+    assert "Pass rate: 50.0%" in md and "Confusion matrix" not in md
+
+
+def test_free_text_still_holds_unresolved_and_unreviewed_items_out():
+    items = [_prose(0, "Correct"), _prose(1, "Incorrect", status="needs_adjudication"),
+             _prose(2, "Incorrect", status="pending")]
+    rep = R.compute_report(items, free_text=True)
+    assert rep["accuracy"]["value"] == 1.0 and rep["accuracy"]["assessable"] == 1
+    assert rep["totals"]["excluded"]["needs_adjudication"] == 1
+
+
+def test_build_report_scores_free_text_only_when_the_schema_has_no_class_field():
+    class _DB:
+        def __init__(self, ec, items):
+            self.ec, self.items = ec, items
+
+        def table(self, name):
+            db, rows = self, None
+
+            class Q:
+                def select(self, *_a, **_k): return self
+                def eq(self, *_a): return self
+                def order(self, *_a, **_k): return self
+                def limit(self, _n): return self
+                def range(self, s, e):
+                    self.window = (s, e); return self
+
+                def execute(self):
+                    if name == "project_submissions":
+                        return type("R", (), {"data": [{"eval_config": db.ec}]})()
+                    s, e = getattr(self, "window", (0, 10**6))
+                    return type("R", (), {"data": db.items[s:e + 1]})()
+            return Q()
+
+    from app.services import templates as T
+    items = [_prose(0, "Correct"), _prose(1, "Incorrect")]
+    grounding = R.build_report(_DB(T.config_from_template("grounding_eval"), items), "p")
+    assert grounding["accuracy"]["basis"] == "verdict" and grounding["accuracy"]["value"] == 0.5
+    # clinical_safety_eval has a corrected-label field, so it keeps the class-based report
+    safety = R.build_report(_DB(T.config_from_template("clinical_safety_eval"), items), "p")
+    assert safety["accuracy"]["basis"] == "verdict+class"
+    # a legacy config with no declared fields keeps the class-based report too
+    legacy = R.build_report(_DB({"purpose": "evaluate", "schema": {"classes": ["A"]}}, items), "p")
+    assert legacy["accuracy"]["basis"] == "verdict+class"
 
 
 if __name__ == "__main__":

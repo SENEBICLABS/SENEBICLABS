@@ -253,7 +253,9 @@ expire mid-review) and send a new manifest per cycle.
 
 Clinician review is done by people, so results are not instant. Poll this endpoint;
 `status` moves through `received → in_review → delivered`, and `total` / `done` show
-progress along the way. Only `delivered` includes `report` and `items`.
+progress along the way. `received` means no clinician has started yet; it becomes
+`in_review` as soon as any item is being reviewed. Only `delivered` includes `report` and
+`items`.
 
 ```bash
 curl "$BASE/results?project_id=YOUR_PROJECT_ID" \
@@ -276,7 +278,7 @@ When delivered:
   "total": 200,
   "done": 200,
   "report": {
-    "accuracy": { "value": 0.8, "correct": 160, "assessable": 200 },
+    "accuracy": { "value": 0.8, "correct": 160, "assessable": 200, "basis": "verdict+class" },
     "critical_misses": [ ... ],
     "per_class": { ... },
     "qa": { "mean_agreement": 0.86, "reviewers": 3, "disagreements": 12 }
@@ -297,6 +299,13 @@ your fields must use these exact names: `verdict` (`Correct` / `Incorrect` / `Pa
 `structured` field that populates the report's critical misses). A wrong verdict with no
 `correct_label` is excluded, never guessed. `label` and `create` projects skip scoring and
 return every reviewed item in `items` as a content-and-label pair.
+
+**Free-text evaluations.** When the model's output is prose (an agent's answer, a RAG
+response) and the task has no `correct_label` field, as in `grounding_eval`,
+`reasoning_eval` and `triage_eval`, there is no class to correct to. `accuracy.value` is then
+the pass rate, the share of cases clinicians judged `Correct`, and every failure counts.
+`accuracy.basis` says which applies: `verdict` for free text, `verdict+class` when a
+corrected class is required. Free-text reports have no confusion matrix.
 
 ### Clinical analytics (optional)
 
@@ -349,6 +358,7 @@ Authorization: Bearer <api key>
   "still_failing": { "count": 0, "cases": [] },
   "clinical_deltas": { "missed_emergency": { "baseline": 1, "candidate": 0, "delta": -1 } },
   "verdict": { "recommendation": "block", "serious_regressions": 1,
+               "still_failing_serious": 0,
                "reason": "1 case(s) that passed before now fail at Critical/High severity" }
 }}
 ```
@@ -357,6 +367,10 @@ Authorization: Bearer <api key>
 every headline metric improved and the verdict is still `block`, because one case that
 used to pass now fails critically — which is the entire reason to keep a regression suite.
 `recommendation` is `block` (a serious regression), `review` (a regression), or `pass`.
+It judges what the release **changed**. Known failures that are still failing do not move it,
+but they are never hidden: `still_failing_serious` counts those still failing at Critical/High
+severity, and `reason` names them. A `pass` with `still_failing_serious > 0` means "nothing new
+broke", not "safe to ship".
 
 Cases present in only one run are listed in `only_in_baseline` / `only_in_candidate` and
 excluded from the comparison, so a benchmark that quietly drops a case cannot manufacture

@@ -291,8 +291,9 @@ KEY="your_api_key"`}</Code>
           <p>
             Clinician review is done by people, so results are not instant. Poll this endpoint.
             <C>status</C> moves through{' '}
-            <C>received, in_review, delivered</C>, and <C>total</C> / <C>done</C> show progress. Only{' '}
-            <C>delivered</C> includes the report and items.
+            <C>received, in_review, delivered</C>, and <C>total</C> / <C>done</C> show progress.{' '}
+            <C>received</C> means no clinician has started yet; it becomes <C>in_review</C> as soon
+            as any item is being reviewed. Only <C>delivered</C> includes the report and items.
           </p>
           <Code>{`curl "$BASE/results?project_id=YOUR_PROJECT_ID" \\
   -H "Authorization: Bearer $API_KEY"`}</Code>
@@ -306,7 +307,7 @@ KEY="your_api_key"`}</Code>
   "total": 200,
   "done": 200,
   "report": {
-    "accuracy": { "value": 0.8, "correct": 160, "assessable": 200 },
+    "accuracy": { "value": 0.8, "correct": 160, "assessable": 200, "basis": "verdict+class" },
     "critical_misses": [ ... ],
     "per_class": { ... },
     "qa": { "mean_agreement": 0.86, "reviewers": 3, "disagreements": 12 }
@@ -329,6 +330,15 @@ KEY="your_api_key"`}</Code>
               critical misses). A wrong verdict with no <C>correct_label</C> is excluded, never guessed.{' '}
               <C>label</C> and <C>create</C> projects skip scoring and return every reviewed item in{' '}
               <C>items</C> as a content-and-label pair.
+            </p>
+            <p>
+              <b>Free-text evaluations:</b> when the model&rsquo;s output is prose (an agent&rsquo;s
+              answer, a RAG response) and the task has no <C>correct_label</C> field, as in{' '}
+              <C>grounding_eval</C>, <C>reasoning_eval</C> and <C>triage_eval</C>, there is no class
+              to correct to. <C>accuracy.value</C> is then the pass rate, the share of cases
+              clinicians judged <C>Correct</C>, and every failure counts. <C>accuracy.basis</C> says
+              which applies: <C>verdict</C> for free text, <C>verdict+class</C> when a corrected class
+              is required. Free-text reports have no confusion matrix.
             </p>
           </div>
         </section>
@@ -355,6 +365,7 @@ KEY="your_api_key"`}</Code>
   "regressed": { "count": 1, "cases": [{ "case_id": "PMX-2", "severity": "Critical" }] },
   "clinical_deltas": { "missed_emergency": { "baseline": 1, "candidate": 0, "delta": -1 } },
   "verdict": { "recommendation": "block", "serious_regressions": 1,
+               "still_failing_serious": 0,
                "reason": "1 case(s) that passed before now fail at Critical/High severity" }
 }}`}</Code>
           <p>
@@ -362,7 +373,11 @@ KEY="your_api_key"`}</Code>
             example above every headline metric improved and the verdict is still <C>block</C>,
             because one case that used to pass now fails critically — which is the entire reason
             to keep a regression suite. <C>recommendation</C> is <C>block</C> (a serious
-            regression), <C>review</C> (a regression), or <C>pass</C>.
+            regression), <C>review</C> (a regression), or <C>pass</C>. It judges what the release{' '}
+            <b>changed</b>. Known failures that are still failing do not move it, but they are never
+            hidden: <C>still_failing_serious</C> counts those still failing at Critical/High severity,
+            and <C>reason</C> names them. A <C>pass</C> with <C>still_failing_serious</C> above zero
+            means &ldquo;nothing new broke&rdquo;, not &ldquo;safe to ship&rdquo;.
           </p>
           <p>
             Cases present in only one run are listed in <C>only_in_baseline</C> /{' '}

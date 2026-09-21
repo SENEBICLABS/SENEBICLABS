@@ -209,6 +209,25 @@ def test_non_serious_regression_asks_for_review_and_clean_run_passes():
     assert compare_runs(a, clean, "case_id", {"severity": SEV_CFG})["verdict"]["recommendation"] == "pass"
 
 
+def test_a_pass_still_states_serious_failures_that_remain():
+    # A regression suite holds only known failures, so the release can fix most of them and
+    # introduce nothing new: "pass". But a Critical case still failing must be in the verdict
+    # itself, or "pass" reads as "safe to ship".
+    a = _run({"C1": ("Incorrect", "Critical"), "C2": ("Incorrect", "High"), "C3": ("Incorrect", "Minor")})
+    b = _run({"C1": ("Incorrect", "Critical"), "C2": ("Correct", None), "C3": ("Incorrect", "Minor")})
+    v = compare_runs(a, b, "case_id", {"severity": SEV_CFG})["verdict"]
+    assert v["recommendation"] == "pass"
+    assert v["still_failing_serious"] == 1                 # C1; C3 is Minor, not serious
+    assert "1 known case(s) still fail" in v["reason"]
+
+
+def test_a_clean_pass_says_nothing_about_open_failures():
+    a = _run({"C1": ("Incorrect", "High")})
+    b = _run({"C1": ("Correct", None)})
+    v = compare_runs(a, b, "case_id", {"severity": SEV_CFG})["verdict"]
+    assert v["still_failing_serious"] == 0 and "still fail" not in v["reason"]
+
+
 def test_partial_counts_as_a_failure_for_regression_purposes():
     # A clinician found something clinically meaningful wrong. A benchmark must not pass it.
     a = _run({"C1": ("Correct", None)})

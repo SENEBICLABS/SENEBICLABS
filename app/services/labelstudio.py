@@ -519,12 +519,20 @@ def _control_xml(name: str, fdef: dict, classes: list) -> str:
         return f'<Choices name="{_esc(name)}" toName="image" choice="{mode}" showInline="true"{req}>{choices}</Choices>'
 
     if ftype == "structured":  # e.g. critical_miss: yes/no + which finding (from classes)
-        finding = "".join(f'<Choice value="{_esc(c)}"/>' for c in classes)
+        prompt = _esc(fdef.get("finding_label") or "Which finding was missed")
+        if classes:
+            finding = "".join(f'<Choice value="{_esc(c)}"/>' for c in classes)
+            picker = f'<Choices name="{_esc(name)}_finding" toName="image" choice="single" showInline="true">{finding}</Choices>'
+        else:
+            # No class list to pick from (a free-text task such as grounding), so the finding
+            # is written, not picked. An empty <Choices> is rejected by Label Studio and takes
+            # the whole project config down with it.
+            picker = f'<TextArea name="{_esc(name)}_finding" toName="image" rows="2"/>'
         return (
             f'<Choices name="{_esc(name)}" toName="image" choice="single" showInline="true"{req}>'
             f'<Choice value="Yes"/><Choice value="No"/></Choices>'
-            f'<Header value="Which finding was missed" style="{_HINT}"/>'
-            f'<Choices name="{_esc(name)}_finding" toName="image" choice="single" showInline="true">{finding}</Choices>'
+            f'<Header value="{prompt}" style="{_HINT}"/>'
+            f'{picker}'
         )
 
     if ftype == "scale":

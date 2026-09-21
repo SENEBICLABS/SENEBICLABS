@@ -88,10 +88,17 @@ def _prf(tp: int, fp: int, fn: int):
     return p, r, f
 
 
-def compute_report(items: list[dict], classes=None, case_id_field: str | None = None) -> dict:
+def compute_report(items: list[dict], classes=None, case_id_field: str | None = None,
+                   free_text: bool = False) -> dict:
     """Pure function: list of items ({idx, content, label, status}) -> structured report.
     `classes` is the canonical class list (e.g. from eval_config); observed classes are
-    unioned in so nothing is missed."""
+    unioned in so nothing is missed.
+
+    `free_text` is for evaluations whose model output is prose (an agent's answer, a RAG
+    response) and whose schema has no corrected-label field. There is no class to confuse
+    it with, so no confusion matrix, and a wrong verdict is a scored failure on its own —
+    requiring a corrected label there would exclude every failure and report only the
+    passes, i.e. 100%."""
     excluded = {"unlabeled": 0, "cannot_assess": 0,
                 "incomplete_missing_correct_label": 0, "missing_prediction": 0,
                 "needs_adjudication": 0}
@@ -152,7 +159,9 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
             continue
 
         if kind == CORRECT:
-            corrected, truth = None, pred
+            corrected, truth = None, (None if free_text else pred)
+        elif free_text:
+            corrected, truth = None, None
         else:
             corrected = (label or {}).get("correct_label")
             if not corrected or not isinstance(corrected, str):
@@ -167,9 +176,10 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
                 continue
             truth = corrected
 
-        observed.add(pred)
-        observed.add(truth)
-        cm = (label or {}).get("critical_miss")
+        if not free_text:
+            observed.add(pred)
+            observed.add(truth)
+        cm =(label or {}).get("critical_miss")
         cm_present = isinstance(cm, dict) and cm.get("present") is True
         finding = cm.get("finding") if isinstance(cm, dict) else None
 
@@ -189,12 +199,15 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
                                     "correct_label": corrected if kind != CORRECT else pred,
                                     "finding": finding, "rationale": base["rationale"]})
 
-    cls_list = sorted(set(classes or []) | observed)
+    # Free text has no classes: prose predictions are not labels, and listing each answer
+    # as a "class" would fill the matrix with one-off rows.
+    cls_list = [] if free_text else sorted(set(classes or []) | observed)
 
     # Confusion matrix: conf[pred][true]
     conf = {p: {t: 0 for t in cls_list} for p in cls_list}
     for a in assessable:
-        conf[a["model_prediction"]][a["ground_truth"]] += 1
+        if not free_text:
+            conf[a["model_prediction"]][a["ground_truth"]] += 1
 
     per_class = {}
     for c in cls_list:
@@ -217,6 +230,10 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
         "numbers are indicative of this sample, not the model's true population performance. "
         "Read them alongside the support (n) per class.",
     ]
+    if free_text:
+        caveats.append("Free-text evaluation: the headline is the share of cases clinicians judged "
+                       "Correct. There is no confusion matrix, because the model's answers are prose, "
+                       "not classes. See the clinical section for severity and failure modes.")
     thin = [c for c in cls_list if 0 < per_class[c]["support"] < THIN_SUPPORT]
     if thin:
         caveats.append(f"Thin support (under {THIN_SUPPORT} ground-truth cases): {thin}. "
@@ -272,7 +289,8 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
             "excluded_total": sum(excluded.values()),
         },
         "qa": qa,
-        "accuracy": {"correct": n_correct, "assessable": n_assess, "value": accuracy},
+        "accuracy": {"correct": n_correct, "assessable": n_assess, "value": accuracy,
+                     "basis": "verdict" if free_text else "verdict+class"},
         "classes": cls_list,
         "per_class": per_class,
         "confusion_matrix": {
@@ -517,7 +535,15 @@ def build_report(db, project_id: str) -> dict:
                       .eq("project_id", project_id).order("idx"))
 
     if purpose == "evaluate":
-        report = compute_report(items, schema.get("classes") or None, case_id_field=case_id_field)
+        # No corrected-label field in the schema means a failure cannot carry a class, so the
+        # evaluation is scored on the clinicians' verdict alone.
+        # A config with no declared fields predates task schemas (the original image
+        # evaluations, which always carry a corrected label) and keeps the class-based report.
+        fields = schema.get("fields") or {}
+        free_text = bool(fields) and not any((f or {}).get("type") == "from_classes"
+                                             for f in fields.values())
+        report = compute_report(items, schema.get("classes") or None, case_id_field=case_id_field,
+                                free_text=free_text)
         report["kind"] = "evaluation"
         report["purpose"] = "evaluate"
     else:
@@ -592,8 +618,10 @@ def render_markdown(rep: dict) -> str:
     if rep.get("project_id"):
         out.append(f"Project `{rep['project_id']}` · generated {rep.get('generated_at', '')}")
     out.append("")
-    out.append(f"**Headline accuracy: {_pct(acc['value'])}** "
-               f"({acc['correct']} of {acc['assessable']} assessable cases the model got right).")
+    free_text = acc.get("basis") == "verdict"
+    out.append(f"**{'Pass rate' if free_text else 'Headline accuracy'}: {_pct(acc['value'])}** "
+               f"({acc['correct']} of {acc['assessable']} assessable cases "
+               f"{'clinicians judged Correct' if free_text else 'the model got right'}).")
     out.append("")
     out.append(f"- Items in project: **{t['items']}**")
     out.append(f"- Assessable (in metrics): **{t['assessable']}**")
@@ -603,21 +631,22 @@ def render_markdown(rep: dict) -> str:
                f"awaiting-adjudication {ex.get('needs_adjudication', 0)})")
     out.append("")
 
-    out.append("## Per-class metrics")
-    out.append("| class | n (support) | precision | recall | F1 |")
-    out.append("|---|---|---|---|---|")
-    for c in L:
-        m = rep["per_class"][c]
-        out.append(f"| {c} | {m['support']} | {_pct(m['precision'])} | {_pct(m['recall'])} | {_pct(m['f1'])} |")
-    out.append("")
+    if L:   # free-text evaluations have no classes, so neither table applies
+        out.append("## Per-class metrics")
+        out.append("| class | n (support) | precision | recall | F1 |")
+        out.append("|---|---|---|---|---|")
+        for c in L:
+            m = rep["per_class"][c]
+            out.append(f"| {c} | {m['support']} | {_pct(m['precision'])} | {_pct(m['recall'])} | {_pct(m['f1'])} |")
+        out.append("")
 
-    out.append("## Confusion matrix (rows = model predicted, cols = radiologist truth)")
-    out.append("| pred \\ true | " + " | ".join(L) + " |")
-    out.append("|" + "---|" * (len(L) + 1))
-    for i, p in enumerate(L):
-        row = rep["confusion_matrix"]["matrix"][i]
-        out.append(f"| **{p}** | " + " | ".join(str(x) for x in row) + " |")
-    out.append("")
+        out.append("## Confusion matrix (rows = model predicted, cols = radiologist truth)")
+        out.append("| pred \\ true | " + " | ".join(L) + " |")
+        out.append("|" + "---|" * (len(L) + 1))
+        for i, p in enumerate(L):
+            row = rep["confusion_matrix"]["matrix"][i]
+            out.append(f"| **{p}** | " + " | ".join(str(x) for x in row) + " |")
+        out.append("")
 
     out.append(f"## Critical misses ({len(rep['critical_misses'])})")
     out.append("_Cases the radiologist flagged as a clinically critical miss — the highest-priority failures._")

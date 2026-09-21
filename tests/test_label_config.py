@@ -3,6 +3,7 @@ Slice #1 test: build_label_config generates a valid, per-project Label Studio co
 from an eval_config schema. Run: python tests/test_label_config.py
 (pytest is not installed in this env, so this is self-running.)
 """
+import re
 import xml.dom.minidom as minidom
 
 from app.services.labelstudio import build_label_config, required_data_keys
@@ -94,6 +95,32 @@ def test_required_data_keys_by_input_type():
     assert required_data_keys(SAMPLE) == ["image", "prediction"]
     assert required_data_keys(TEXT_SAMPLE) == ["output", "prompt"]
     assert required_data_keys(None) == []
+
+
+_EMPTY_CHOICES = re.compile(r"<Choices\b[^>]*></Choices>")
+
+
+def test_structured_field_without_classes_is_written_not_picked():
+    # A free-text task (grounding) has no class list, so the finding cannot be a picker.
+    # An empty <Choices> is rejected by Label Studio and takes the whole project down.
+    cfg = {"schema": {"input": "text", "context": [{"key": "scenario", "label": "Q"}],
+                      "fields": {"hallucination": {"type": "structured",
+                                                   "finding_label": "Name the claim"}}}}
+    xml = build_label_config(cfg)
+    minidom.parseString(xml)
+    assert '<TextArea name="hallucination_finding"' in xml
+    assert 'value="Name the claim"' in xml
+    assert not _EMPTY_CHOICES.search(xml)
+
+
+def test_every_template_renders_without_an_empty_choice_list():
+    # Label Studio rejects a <Choices> with no <Choice>. Every template must render
+    # with no client-supplied classes, since that is how a client first creates one.
+    from app.services import templates as T
+    for t in T.list_templates():
+        xml = build_label_config(T.config_from_template(t["name"]))
+        minidom.parseString(xml)
+        assert not _EMPTY_CHOICES.search(xml), f"{t['name']} renders an empty choice list"
 
 
 if __name__ == "__main__":

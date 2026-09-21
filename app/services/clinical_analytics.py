@@ -481,17 +481,26 @@ def compare_runs(baseline, candidate, case_id_field=None, analytics_cfg=None) ->
     # matters, and that is exactly what a regression suite exists to catch.
     serious = set(sev_order[-_LISTED_SEVERITIES:]) if sev_order else set()
     serious_regressions = [r for r in regressed if r.get("severity") in serious]
+    # The recommendation judges what the release CHANGED, so known failures that are still
+    # failing do not move it. They are stated in the verdict anyway: "pass" on a suite that
+    # still holds a Critical failure must not be readable as "safe to ship".
+    serious_open = [r for r in still_failing if r.get("severity") in serious]
+    reason = (f"{len(serious_regressions)} case(s) that passed before now fail at "
+              f"{'/'.join(sorted(serious))} severity"
+              if serious_regressions else
+              f"{len(regressed)} case(s) that passed before now fail"
+              if regressed else
+              "no case that passed before fails now")
+    if serious_open:
+        reason += (f"; {len(serious_open)} known case(s) still fail at "
+                   f"{'/'.join(sorted(serious))} severity (see still_failing)")
     out["verdict"] = {
         "regressions": len(regressed),
         "serious_regressions": len(serious_regressions),
+        "still_failing_serious": len(serious_open),
         "recommendation": ("block" if serious_regressions else
                            "review" if regressed else
                            "pass"),
-        "reason": (f"{len(serious_regressions)} case(s) that passed before now fail at "
-                   f"{'/'.join(sorted(serious))} severity"
-                   if serious_regressions else
-                   f"{len(regressed)} case(s) that passed before now fail"
-                   if regressed else
-                   "no case that passed before fails now"),
+        "reason": reason,
     }
     return out
