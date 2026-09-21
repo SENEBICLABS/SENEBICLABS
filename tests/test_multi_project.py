@@ -165,6 +165,9 @@ def test_a_trace_sent_as_steps_is_shown_as_numbered_text():
     shown = ls.render_value(trace)
     assert shown.startswith("Step 1\n   type: tool_call\n   tool: search\n   args: {\"q\": \"dose\"}")
     assert "Step 2\n   type: observation" in shown and shown.endswith("Step 3: Final: give 500mg")
+    # The database reorders JSON keys; what a step is still leads what it contains.
+    stored = [{"text": "Adult guideline", "type": "observation"}]
+    assert ls.render_value(stored) == "Step 1\n   type: observation\n   text: Adult guideline"
     # The stored content keeps the client's structure; only the task is rendered.
     task = ls._task_for({"id": "i", "content": {"trace": trace, "case_id": "A-1"}}, None)
     assert task["data"]["trace"] == shown and task["data"]["case_id"] == "A-1"

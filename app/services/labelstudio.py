@@ -788,7 +788,7 @@ def render_value(v) -> str | int | float | bool | None:
         out = []
         for i, step in enumerate(v, 1):
             if isinstance(step, dict):
-                body = "\n".join(f"   {k}: {_one_line(x)}" for k, x in step.items())
+                body = "\n".join(f"   {k}: {_one_line(step[k])}" for k in _step_key_order(step))
                 out.append(f"Step {i}\n{body}")
             else:
                 out.append(f"Step {i}: {_one_line(step)}")
@@ -796,6 +796,17 @@ def render_value(v) -> str | int | float | bool | None:
     if isinstance(v, dict):
         return "\n".join(f"{k}: {_one_line(x)}" for k, x in v.items())
     return v
+
+
+# What a step IS comes before what it contains. The database's JSON storage does not keep
+# the client's key order (it reorders keys), so a step would otherwise show its text above
+# the fact that it was a tool call.
+_STEP_LEAD_KEYS = ("step", "type", "kind", "role", "action", "tool", "name")
+
+
+def _step_key_order(step: dict) -> list:
+    lead = [k for k in _STEP_LEAD_KEYS if k in step]
+    return lead + [k for k in step if k not in lead]
 
 
 def _one_line(x) -> str:
