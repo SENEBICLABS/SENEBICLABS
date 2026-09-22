@@ -52,6 +52,33 @@ pipeline depends on three additions:
 
 The gate tests (`tests/test_isolation.py`, `tests/test_audit.py`) refuse to pass until these exist.
 
+## 0b. Operator keys — one admin key per person
+
+Every admin call takes a key in `X-Admin-Key`. Each operator should have their **own**
+key, so every decision (adjudicating, delivering, changing a grading config, issuing client
+keys) is recorded in the audit trail under their name, and one person's access can be cut
+off without rotating anyone else's. Needs `migrations/004_operators.sql` applied once.
+
+The deployment's `ADMIN_API_KEY` is the **root** key. Keep it for the API's own background
+calls and for break-glass. It is the only key that can manage operators, and its use is
+recorded as `root`.
+
+```bash
+# Issue a key (root only). The key is shown once; only its hash is stored.
+curl -X POST "$API/project/admin/operators" -H "X-Admin-Key: $ROOT_KEY" \
+  -H "Content-Type: application/json" -d '{"name": "Dr Amina Okafor", "email": "amina@…"}'
+
+# List (root only) — names, last use, active; never keys.
+curl "$API/project/admin/operators" -H "X-Admin-Key: $ROOT_KEY"
+
+# Revoke (root only) — stops working on its next use.
+curl -X POST "$API/project/admin/operators/revoke" -H "X-Admin-Key: $ROOT_KEY" \
+  -H "Content-Type: application/json" -d '{"operator_id": "…"}'
+```
+
+The `/admin` dashboard works with an operator key exactly as with the root key: paste it
+where the admin key goes.
+
 ---
 
 ## 1. Customer submits the project

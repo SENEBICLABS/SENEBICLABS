@@ -228,3 +228,15 @@ def test_an_adjudicated_item_survives_a_later_pull():
     with patch("app.services.audit.record"):
         assert ls_api._apply_task_annotations(db, split, 3, PID, True) == "done"
     assert _item(db)["label"] == {"verdict": "Correct", "_adjudicated": True}
+
+
+def test_status_is_in_review_while_authors_draft_on_the_platform():
+    # Drafts stay on the platform until approved, so without looking there the client
+    # would be told "received" while clinicians are writing.
+    db = _db(None)
+    with patch.object(proj, "get_client", return_value=db), \
+         patch.object(proj, "_api_client_email", return_value="c@x.com"), \
+         patch.object(proj, "_kick_sync"):
+        assert proj.api_results(PID, authorization="k")["status"] == "received"
+        db.rows["review_items"].append({"pool_id": POOL, "ls_task_id": TASK, "state": "needs_review"})
+        assert proj.api_results(PID, authorization="k")["status"] == "in_review"

@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     # Public site URL — used to build customer portal magic-link emails
     SITE_URL: str = "https://senebiclabs.com"
     # The API's own public URL, used to self-trigger the background /sync-pending run.
-    SELF_URL: str = "https://senebiclabs-api-777437555578.us-central1.run.app"
+    # The custom domain, not the run.app address, which carries the GCP project number.
+    SELF_URL: str = "https://api.senebiclabs.com"
+    # Where Label Studio sends annotation webhooks. Defaults to SELF_URL's /ls/webhook.
+    LS_CALLBACK_URL: str | None = None
     # Clinicians per item is OUR quality decision, not the client's. This default
     # applies to every new project; the operator can tune it per project.
     DEFAULT_REVIEWERS_PER_ITEM: int = 3

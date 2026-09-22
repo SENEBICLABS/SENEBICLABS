@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.services.supabase_client import get_client
 from app.services import email_service
 from app.services import audit
+from app.services import operators
 from app.services import report as report_svc
 from app.services import clinical_analytics
 from app.services import failure_library
@@ -1140,7 +1141,7 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    sub = db.table("project_submissions").select("id,email,company,stage,eval_config").eq("id", project_id).limit(1).execute()
+    sub = db.table("project_submissions").select("id,email,company,stage,eval_config,ls_project_id").eq("id", project_id).limit(1).execute()
     if not sub.data or sub.data[0].get("email") != email:
         raise HTTPException(status_code=403, detail="That project is not on this API key.")
     s = sub.data[0]
@@ -1181,6 +1182,11 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
     # not the operator's stage: once any clinician has reviewed an item it is in review,
     # even if nobody has moved the stage on by hand.
     reviewing = any(x in _REVIEW_STARTED for x in statuses)
+    if not reviewing and stage == "submitted" and (s.get("eval_config") or {}).get("second_reading"):
+        # Authors draft on the clinician platform and nothing reaches us until a reader
+        # approves, so look there for work under way.
+        from app.services import second_reading
+        reviewing = second_reading.drafting_started(db, s.get("ls_project_id"))
     client_status = ("delivered" if stage == "delivered"
                      else "in_review" if (stage != "submitted" or reviewing)
                      else "received")
@@ -1739,9 +1745,66 @@ def api_webhook_redeliver(body: RedeliverIn, authorization: str | None = Header(
 
 # ── Admin ──────────────────────────────────────────────────────────────────────
 
-def _require_admin(x_admin_key: str | None) -> None:
-    if not settings.ADMIN_API_KEY or x_admin_key != settings.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Not authorised.")
+def _require_admin(x_admin_key: str | None, root_only: bool = False) -> dict:
+    """The acting operator (their own key, or the root key), or 403. See services/operators."""
+    return operators.require(x_admin_key, root_only=root_only)
+
+
+def _admin_audit(db, op: dict, project_id: str | None, action: str, value: dict) -> None:
+    """Record an admin decision against the operator who made it."""
+    audit.record(db, item_id=None, project_id=project_id, action=action, source="admin",
+                 value=value, **operators.actor(op))
+
+
+class OperatorIn(BaseModel):
+    name: str
+    email: EmailStr | None = None
+
+
+class OperatorRevokeIn(BaseModel):
+    operator_id: str
+
+
+@router.post("/admin/operators", summary="Issue an operator their own admin key (root key only)")
+def admin_create_operator(body: OperatorIn, x_admin_key: str | None = Header(default=None)):
+    """One key per person, so every admin decision is attributed and one key can be revoked
+    alone. The key is shown once; only its hash is stored."""
+    op = _require_admin(x_admin_key, root_only=True)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the operator a name — it is what the audit trail shows.")
+    try:
+        row, key = operators.create(db, name, body.email)
+    except Exception as exc:
+        logger.error("Create operator failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Could not create the operator — apply migrations/004_operators.sql.")
+    _admin_audit(db, op, None, "operator_created", {"operator_id": row["id"], "name": name})
+    return {"ok": True, "operator": row, "admin_key": key,
+            "note": "Shown once. Send it as X-Admin-Key. Revoke with POST /admin/operators/revoke."}
+
+
+@router.get("/admin/operators", summary="List operators (root key only)")
+def admin_list_operators(x_admin_key: str | None = Header(default=None)):
+    _require_admin(x_admin_key, root_only=True)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    return {"ok": True, "operators": operators.listing(db)}
+
+
+@router.post("/admin/operators/revoke", response_model=SubmissionResponse, summary="Revoke an operator's key (root key only)")
+def admin_revoke_operator(body: OperatorRevokeIn, x_admin_key: str | None = Header(default=None)):
+    op = _require_admin(x_admin_key, root_only=True)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    if not operators.revoke(db, body.operator_id):
+        raise HTTPException(status_code=404, detail="Operator not found.")
+    _admin_audit(db, op, None, "operator_revoked", {"operator_id": body.operator_id})
+    return SubmissionResponse(ok=True, message="Revoked. The key stops working on its next use.")
 
 
 @router.get("/admin/report/{project_id}", summary="Model-performance report for a project (admin)")
@@ -1789,7 +1852,7 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     """A senior reviewer resolves a split: the final_label wins over the provisional consensus,
     the item is marked done, and — if this was the last thing holding the batch — the sign-off
     gate is re-checked. The reviewers' original answers are preserved on the label for audit."""
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -1806,6 +1869,7 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     label = dict(it.get("label") or {})
     label.update(body.final_label)                        # the resolving answer replaces the split verdict
     label["_adjudicated"] = True
+    label["_adjudicated_by"] = op["name"]
     # An answer held because it was never second-read is now approved by the senior reviewer.
     sr = label.get("_second_reading")
     if isinstance(sr, dict) and not sr.get("approved"):
@@ -1819,7 +1883,7 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     ).eq("id", it["id"]).execute()
     try:
         audit.record(db, item_id=it["id"], project_id=body.project_id, action=audit.LABEL,
-                     actor_id="adjudicator", actor_name="adjudicator", source="adjudication", value=label)
+                     source="adjudication", value=label, **operators.actor(op))
     except Exception:
         pass
     try:
@@ -1932,7 +1996,7 @@ def admin_submissions(x_admin_key: str | None = Header(default=None)):
 
 @router.post("/admin/advance", response_model=SubmissionResponse, summary="Advance a project's stage (admin)")
 def admin_advance(body: AdminAdvance, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     if body.stage not in STAGES:
         raise HTTPException(status_code=422, detail=f"stage must be one of: {', '.join(STAGES)}")
 
@@ -1966,7 +2030,8 @@ def admin_advance(body: AdminAdvance, x_admin_key: str | None = Header(default=N
         logger.error("Admin advance failed: %s", exc)
         raise HTTPException(status_code=500, detail="Update failed.")
 
-    logger.info("Project %s advanced to %s", body.submission_id, body.stage)
+    logger.info("Project %s advanced to %s by %s", body.submission_id, body.stage, op["name"])
+    _admin_audit(db, op, body.submission_id, "stage", {"stage": body.stage, "note": body.note})
     if body.stage == "delivered":
         _fire_webhook(db, body.submission_id)   # notify the API client, if one is registered
     return SubmissionResponse(ok=True, message=f"Project advanced to {body.stage}.")
@@ -1974,7 +2039,7 @@ def admin_advance(body: AdminAdvance, x_admin_key: str | None = Header(default=N
 
 @router.post("/admin/project-meta", response_model=SubmissionResponse, summary="Set a project's pay rate + difficulty (admin)")
 def admin_set_meta(body: ProjectMetaIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -1990,6 +2055,8 @@ def admin_set_meta(body: ProjectMetaIn, x_admin_key: str | None = Header(default
                 detail="Pay/difficulty columns are missing. Run the migration (add rate_per_item + difficulty to project_submissions) and try again.",
             )
         raise HTTPException(status_code=500, detail="Could not save.")
+    _admin_audit(db, op, body.project_id, "project_meta",
+                 {"rate_per_item": body.rate_per_item, "difficulty": body.difficulty})
     return SubmissionResponse(ok=True, message="Saved.")
 
 
@@ -1997,7 +2064,7 @@ def admin_set_meta(body: ProjectMetaIn, x_admin_key: str | None = Header(default
 def admin_set_reviewers(body: ReviewersIn, x_admin_key: str | None = Header(default=None)):
     """We assign the reviewer count for quality; this lets the operator tune it per
     project (e.g. 2 for a cost-sensitive pilot, 5 for a high-stakes safety eval)."""
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2016,12 +2083,13 @@ def admin_set_reviewers(body: ReviewersIn, x_admin_key: str | None = Header(defa
             ls.update_project_config(ls_pid, ls.build_label_config(ec), reviewers=n)
         except Exception as exc:
             logger.warning("Reviewers set to %d for %s but LS update deferred: %s", n, body.project_id, exc)
+    _admin_audit(db, op, body.project_id, "reviewers", {"reviewers_per_item": n})
     return SubmissionResponse(ok=True, message=f"Set to {n} reviewer(s) per item.")
 
 
 @router.post("/admin/eval-config", response_model=SubmissionResponse, summary="Set a project's eval config / task schema (admin)")
 def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2064,13 +2132,15 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
     except Exception as exc:
         logger.error("Set eval_config failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not save the config.")
+    _admin_audit(db, op, body.project_id, "eval_config",
+                 {"grading_changed": grading_changed, "forced": bool(grading_changed and body.force)})
     msg = "Config saved." + (" Guideline-lock overridden." if (grading_changed and body.force) else "")
     return SubmissionResponse(ok=True, message=msg)
 
 
 @router.post("/admin/api-key", summary="Generate a long-lived API key for a client (admin)")
 def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2087,6 +2157,7 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
     key = make_api_key(email)
     from app.services import api_keys
     api_keys.record(db, email, key, label="Issued by operator")   # make it revocable + listed
+    _admin_audit(db, op, body.project_id, "api_key_issued", {"email": email})
     return {"ok": True, "api_key": key, "email": email, "project_id": body.project_id}
 
 
@@ -2134,7 +2205,7 @@ def _guard_item_keys(db, project_id: str, items: list[dict]) -> None:
 
 @router.post("/admin/items", response_model=SubmissionResponse, summary="Add work items to a project (admin)")
 def admin_add_items(body: ItemsIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2153,6 +2224,7 @@ def admin_add_items(body: ItemsIn, x_admin_key: str | None = Header(default=None
     except Exception as exc:
         logger.error("Add items failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not add items.")
+    _admin_audit(db, op, body.project_id, "items_added", {"count": len(body.items)})
     return SubmissionResponse(ok=True, message=f"Added {len(body.items)} items.")
 
 
@@ -2503,7 +2575,7 @@ def work_brief(project_id: str, x_work_code: str | None = Header(default=None)):
 
 @router.post("/admin/clinicians", summary="Create a clinician + access code (admin)")
 def admin_create_clinician(body: ClinicianIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2516,6 +2588,7 @@ def admin_create_clinician(body: ClinicianIn, x_admin_key: str | None = Header(d
         logger.error("Create clinician failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not create the clinician.")
     c = row.data[0]
+    _admin_audit(db, op, None, "clinician_created", {"name": body.name, "email": body.email})
     return {
         "ok": True,
         "clinician": {"id": c["id"], "name": c["name"], "email": c.get("email"), "access_code": code},
@@ -2524,7 +2597,7 @@ def admin_create_clinician(body: ClinicianIn, x_admin_key: str | None = Header(d
 
 @router.post("/admin/assign-clinician", response_model=SubmissionResponse, summary="Assign a clinician to a project (admin)")
 def admin_assign_clinician(body: AssignClinicianIn, x_admin_key: str | None = Header(default=None)):
-    _require_admin(x_admin_key)
+    op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
@@ -2540,6 +2613,7 @@ def admin_assign_clinician(body: AssignClinicianIn, x_admin_key: str | None = He
     except Exception as exc:
         logger.error("Assign clinician failed: %s", exc)
         raise HTTPException(status_code=500, detail="Could not assign the clinician.")
+    _admin_audit(db, op, body.project_id, "clinician_assigned", {"clinician_id": body.clinician_id})
     return SubmissionResponse(ok=True, message="Clinician assigned.")
 
 

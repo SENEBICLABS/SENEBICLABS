@@ -26,9 +26,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ls", tags=["Label Studio"])
 
 
-def _require_admin(x_admin_key: str | None) -> None:
-    if not settings.ADMIN_API_KEY or x_admin_key != settings.ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Not authorised.")
+def _require_admin(x_admin_key: str | None) -> dict:
+    """The acting operator (their own key, or the root key), or 403. See services/operators."""
+    from app.services import operators
+    return operators.require(x_admin_key)
 
 
 class SyncIn(BaseModel):

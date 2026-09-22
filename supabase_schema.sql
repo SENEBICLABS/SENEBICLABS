@@ -292,3 +292,22 @@ create index if not exists clinical_failures_benchmark
 -- only the service role (which bypasses RLS) can reach this table — the anon key cannot,
 -- which matters because a client's failure library is their competitive information.
 alter table clinical_failures enable row level security;
+
+
+-- ── Operators (one admin key per person) ───────────────────────────────────────
+-- Each operator authenticates with their own key (X-Admin-Key), so every admin decision
+-- is attributed to a person and one key can be revoked without rotating everyone's.
+-- Only the SHA-256 of the key is stored. The deployment's ADMIN_API_KEY remains the root
+-- key and is not stored here.
+create table if not exists operators (
+  id            uuid primary key default gen_random_uuid(),
+  name          text not null,
+  email         text,
+  key_hash      text not null unique,
+  active        boolean not null default true,
+  created_at    timestamptz not null default now(),
+  last_used_at  timestamptz
+);
+
+-- RLS: service key only. A key hash must never be readable with the anon key.
+alter table operators enable row level security;

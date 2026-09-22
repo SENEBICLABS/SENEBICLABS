@@ -1,7 +1,7 @@
 # Minimal deps to run the hermetic unit tests in CI — data-quality + scoring +
 # consensus. Deliberately excludes the genomics/ML stack (scanpy, anndata, scipy,
 # torch-adjacent) and browser tooling; those tests import only the API/db layer.
-pytest
+pytest==9.1.1
 numpy==2.2.6
 great-expectations==1.21.0
 fastapi==0.141.1

@@ -748,8 +748,7 @@ def _register_webhook(ls_project_id: int) -> None:
     """Point Label Studio at our /ls/webhook for this project, so annotations flow back
     automatically as clinicians create them (auto-pull). Best-effort; manual pull is the
     fallback if this fails."""
-    url = getattr(settings, "LS_CALLBACK_URL", None) or \
-        "https://senebiclabs-api-777437555578.us-central1.run.app/api/v1/ls/webhook"
+    url = settings.LS_CALLBACK_URL or f"{settings.SELF_URL.rstrip('/')}/api/v1/ls/webhook"
     hdrs = {"X-Ls-Secret": settings.LS_WEBHOOK_SECRET} if settings.LS_WEBHOOK_SECRET else {}
     try:
         httpx.post(

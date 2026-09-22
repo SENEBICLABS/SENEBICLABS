@@ -55,6 +55,23 @@ def review_row(db, ls_project_id: int | None, ls_task_id: int | None) -> dict | 
     return rows[0] if rows else None
 
 
+def drafting_started(db, ls_project_id: int | None) -> bool:
+    """Whether any clinician has started on this project on the platform. Drafts stay there
+    until approved, so nothing reaches us while authors write; the platform's review rows
+    are the only sign that work is under way."""
+    if not ls_project_id:
+        return False
+    try:
+        pools = (db.table("pools").select("id").eq("ls_project_id", ls_project_id)
+                 .execute()).data or []
+        if not pools:
+            return False
+        return bool((db.table("review_items").select("id")
+                     .in_("pool_id", [p["id"] for p in pools]).limit(1).execute()).data)
+    except Exception:
+        return False
+
+
 def approved_annotations(anns: list[dict], row: dict | None) -> list[dict]:
     """Only the annotation the platform approved. Two reviewers racing can briefly leave
     the loser's annotation on the task before it is withdrawn; it must not be counted."""
