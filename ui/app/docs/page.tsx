@@ -168,11 +168,12 @@ KEY="your_api_key"`}</Code>
           <p>
             <b>Second reading.</b> Authoring templates (<C>gold_answers</C>, <C>benchmark_creation</C>,{' '}
             <C>contradiction_creation</C>, <C>adversarial_prompts</C>, <C>dialogue_creation</C>) are
-            written by one clinician, so a second clinician reads every item before it counts. The
-            reader approves it or sends it back with the fix; the author revises their own draft;
-            after three rounds without agreement a senior reviewer decides. Only approved items are
-            delivered, and each carries <C>{`"second_reading": {"approved": true, "rounds": 1}`}</C> in
-            your results. It is on by default for authoring projects; pass{' '}
+            written by one clinician, so a second, <b>different</b> clinician reads every item before
+            it counts. The reader approves it, edits and approves it, or sends it back with a reason,
+            and it is then written again. Only approved items are delivered. Each one carries{' '}
+            <C>{`"second_reading": {"approved": true, "rounds": 1, "edited_by_reader": false, "by_senior_reviewer": false}`}</C>{' '}
+            in your results, where <C>rounds</C> counts the drafts it took, and the report&rsquo;s{' '}
+            <C>second_reading</C> block totals these. It is on by default for authoring projects; pass{' '}
             <C>{`"second_reading": false`}</C> to <C>POST /projects</C> to turn it off. Judgment
             templates don&rsquo;t use it: several clinicians review each item instead.
           </p>

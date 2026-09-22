@@ -12,6 +12,7 @@ from collections import Counter
 import httpx
 
 from fastapi import APIRouter, HTTPException, Header, Request
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -172,7 +173,8 @@ def _consensus(labels: list[dict], text_fields: set | None = None,
 
 def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: str | None,
                             adjudicate: bool = False, text_fields: set | None = None,
-                            primary: str = "verdict", ec: dict | None = None) -> str | None:
+                            primary: str = "verdict", ec: dict | None = None,
+                            sr_wait: float = 0.0) -> str | None:
     """Write an LS task's annotations to its item: for one reviewer the label is stored
     as-is; for many, a majority consensus + agreement is stored. The item is `done` only
     once `reviewers_target` reviewers are in. When `adjudicate` is set and the reviewers
@@ -192,6 +194,14 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
     # annotations and put a settled item back in the adjudication queue.
     if (current.get("label") or {}).get("_adjudicated"):
         return current.get("status")
+    # Authored work under second reading counts only once the clinician platform records
+    # that a different clinician approved it, and only the approved annotation is the
+    # answer (services/second_reading.py).
+    sr = project_id and second_reading.enabled(ec)
+    if sr:
+        sr_status, sr_record, sr_row = second_reading.decide(
+            db, task.get("project") or _ls_project_of(db, project_id), task.get("id"), sr_wait)
+        anns = second_reading.approved_annotations(anns, sr_row)
     parsed = []
     for a in anns:
         cb = a.get("completed_by")
@@ -226,22 +236,24 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
         status = "in_progress"
     update = {"label": label, "status": status,
               "labeled_by": parsed[-1]["by"], "labeled_at": parsed[-1]["at"]}
-    # Authored work under second reading is not done when its author finishes: it goes to a
-    # second clinician first (services/second_reading.py). Re-applying text already sent or
-    # approved changes nothing there, so a pull or a repeated event is safe.
-    if status == "done" and project_id and second_reading.enabled(ec):
-        sr_state = ((current.get("content") or {}).get("_sr") or {}).get("state")
-        if sr_state == "escalated":
-            return current.get("status")             # with a senior reviewer; leave it there
-        status, content = second_reading.on_authored(db, current, label, ec, project_id)
-        prior = (current.get("label") or {}).get("_second_reading")
-        if status == "done" and prior:
-            label["_second_reading"] = prior         # keep the approval on a re-applied label
-        update.update({"status": status, "content": content})
+    if sr and status == "done":
+        status = sr_status
+        if sr_record:
+            label["_second_reading"] = sr_record
+        update["status"] = status
     db.table("project_items").update(update).eq("id", item_id).execute()
     audit.record(db, item_id=item_id, project_id=project_id, action=audit.LABEL,
                  actor_id=parsed[-1]["by"], actor_name=parsed[-1]["by"], source="label_studio", value=label)
     return status
+
+
+def _ls_project_of(db, project_id: str) -> int | None:
+    try:
+        r = (db.table("project_submissions").select("ls_project_id").eq("id", project_id)
+             .limit(1).execute()).data
+        return r[0].get("ls_project_id") if r else None
+    except Exception:
+        return None
 
 
 def _text_field_names(ec: dict | None) -> set:
@@ -345,7 +357,7 @@ def push_new_items(db, project_id: str, items: list[dict], task_type: str = "eva
         db.table("project_submissions").update({"ls_project_id": ls_pid}).eq("id", project_id).execute()
     else:
         ls.update_project_config(ls_pid, label_config, reviewers=reviewers)
-    pushed = ls.push_tasks(ls_pid, items, note_key=ls.revision_note_key(eval_config))
+    pushed = ls.push_tasks(ls_pid, items)
     logger.info("Auto-sync pushed %d new items to LS project %s", pushed, ls_pid)
     return {"ls_project_id": ls_pid, "pushed": pushed}
 
@@ -411,7 +423,7 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
             # Keep the live LS project in step with the current config, so edits made
             # in "Set config" after the first sync are actually applied.
             ls.update_project_config(ls_pid, label_config, reviewers=reviewers)
-        pushed = ls.push_tasks(ls_pid, rows, note_key=ls.revision_note_key(eval_config))
+        pushed = ls.push_tasks(ls_pid, rows)
     except httpx.HTTPStatusError as exc:
         logger.error("LS sync failed: %s", exc)
         raise HTTPException(status_code=502, detail=ls.explain_ls_error(exc))
@@ -464,24 +476,8 @@ def ls_pull(body: PullIn, x_admin_key: str | None = Header(default=None)):
         except Exception as exc:
             logger.error("LS pull item update failed: %s", exc)
 
-    # Second readers' decisions, from the companion review project. Pulled after the
-    # authors' work so an item sent for reading in this same pull is there to decide on.
-    review_pid = ec0.get("_ls_review_project_id")
-    if review_pid:
-        try:
-            review_tasks = ls.export_tasks(review_pid)
-        except Exception as exc:
-            logger.error("LS pull of second readings failed: %s", exc)
-            raise HTTPException(status_code=502, detail="Could not reach Label Studio for the second readings.")
-        # Oldest round first, so a later round's decision is the one that stands.
-        for t in sorted(review_tasks, key=lambda t: (t.get("data") or {}).get("_sr_round") or 0):
-            try:
-                if second_reading.on_review(db, t, body.project_id) is not None:
-                    written += 1
-            except Exception as exc:
-                logger.error("LS pull second-reading update failed: %s", exc)
-        from app.api.v1.project import _kick_sync   # lazy: avoid circular import
-        _kick_sync(body.project_id)                 # push any sent-back items to their authors
+    # Anything still waiting on a second reading whose approval has since landed.
+    second_reading.reconcile(db, body.project_id, ec0)
 
     # A manual pull can complete the batch too — respect the sign-off gate (marks ready, or
     # ships only if auto_deliver is on). Held-for-adjudication items keep it from delivering.
@@ -512,7 +508,13 @@ async def ls_webhook(req: Request, x_ls_secret: str | None = Header(default=None
     task_id = task_ref if isinstance(task_ref, int) else (task_ref or {}).get("id")
     if not task_id:
         return {"ok": True}
+    # Everything below is blocking I/O (Label Studio, the database, and a short wait for a
+    # second-reading approval). Run it on a worker thread: done inline in this async
+    # handler it would stall every other request on the instance while it waited.
+    return await run_in_threadpool(_handle_annotated_task, task_id)
 
+
+def _handle_annotated_task(task_id: int) -> dict:
     db = get_client()
     if db is None:
         return {"ok": False}
@@ -532,25 +534,13 @@ async def ls_webhook(req: Request, x_ls_secret: str | None = Header(default=None
     except Exception:
         project_id = None
 
-    # A second reader's decision (a task in a project's review companion).
-    if (task.get("data") or {}).get("_sr_round") is not None:
-        try:
-            status = second_reading.on_review(db, task, project_id)
-        except Exception as exc:
-            logger.error("LS webhook second-reading apply failed: %s", exc)
-            return {"ok": False}
-        if status and project_id:
-            from app.api.v1.project import _kick_sync   # lazy: avoid circular import
-            _kick_sync(project_id)                       # a sent-back item goes to its author
-            if status == "done":
-                _maybe_auto_deliver(db, project_id)
-        return {"ok": True}
-
     ec = _project_ec(db, project_id)
     target, adjudicate, text_fields, primary = _qa_from_ec(ec)
     try:
+        # The clinician platform publishes an approved answer a moment before it records
+        # the approval, so wait briefly for it rather than park the item.
         status = _apply_task_annotations(db, task, target, project_id, adjudicate, text_fields,
-                                         primary, ec)
+                                         primary, ec, sr_wait=6.0)
     except Exception as exc:
         logger.error("LS webhook apply failed: %s", exc)
         return {"ok": False}

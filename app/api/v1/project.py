@@ -563,7 +563,9 @@ def _client_item(row: dict) -> dict:
     # Who read it stays private, like every reviewer identity.
     sr = (row.get("label") or {}).get("_second_reading")
     if isinstance(sr, dict):
-        out["second_reading"] = {"approved": bool(sr.get("approved")), "rounds": sr.get("rounds")}
+        out["second_reading"] = {"approved": bool(sr.get("approved")), "rounds": sr.get("rounds"),
+                                 "edited_by_reader": bool(sr.get("edited")),
+                                 "by_senior_reviewer": bool(sr.get("by_senior_reviewer"))}
     if "labeled_at" in row:
         out["labeled_at"] = row.get("labeled_at")
     return out
@@ -733,6 +735,9 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
         ec["second_reading"] = bool(body.second_reading)
     else:
         ec.setdefault("second_reading", ec["reviewers_per_item"] == 1 and ec["purpose"] == "create")
+    # The reading runs on the clinician platform, which switches its author-then-reviewer
+    # flow on from this key in the pool's config (the pool is created from this config).
+    ec["review_required"] = bool(ec["second_reading"])
     if body.model_version:
         ec["model_version"] = body.model_version
     if body.webhook_url:
@@ -977,7 +982,7 @@ def sync_pending(project_id: str, x_admin_key: str | None = Header(default=None)
         return SubmissionResponse(ok=True, message="Chunk already claimed by a concurrent sync.")
 
     try:
-        ls.push_tasks(ls_pid, items, note_key=ls.revision_note_key(ec))
+        ls.push_tasks(ls_pid, items)
     except Exception as exc:
         # Push failed — return the claimed items to 'pending' so they get re-synced.
         for i in range(0, len(claimed_ids), 100):
@@ -1163,6 +1168,11 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
     except Exception:
         pass
     statuses = _item_statuses(db, project_id)
+    if "second_reading" in statuses:
+        # Approvals that landed on the clinician platform since the last event.
+        from app.services import second_reading
+        if second_reading.reconcile(db, project_id, s.get("eval_config") or {}):
+            statuses = _item_statuses(db, project_id)
     total, done = len(statuses), sum(1 for x in statuses if x == "done")
     stage = s.get("stage") or "submitted"
     # Client-facing status only. The internal delivery funnel (scoping/agreement/pilot/…) is
@@ -1796,6 +1806,11 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     label = dict(it.get("label") or {})
     label.update(body.final_label)                        # the resolving answer replaces the split verdict
     label["_adjudicated"] = True
+    # An answer held because it was never second-read is now approved by the senior reviewer.
+    sr = label.get("_second_reading")
+    if isinstance(sr, dict) and not sr.get("approved"):
+        label["_second_reading"] = {"approved": True, "rounds": sr.get("rounds") or 1,
+                                    "by_senior_reviewer": True, "at": _now_iso()}
     label["_adjudicated_at"] = _now_iso()
     if body.note:
         label["_adjudication_note"] = body.note
@@ -1927,6 +1942,12 @@ def admin_advance(body: AdminAdvance, x_admin_key: str | None = Header(default=N
 
     # Reality-check the stages the system can verify, so status can't be set to a lie.
     if body.stage in ("pilot", "production", "delivered"):
+        if body.stage == "delivered":
+            # Settle any second readings approved since the last event, so delivery sees them.
+            from app.services import second_reading
+            cur = (db.table("project_submissions").select("eval_config")
+                   .eq("id", body.submission_id).limit(1).execute()).data
+            second_reading.reconcile(db, body.submission_id, (cur[0].get("eval_config") if cur else None) or {})
         total, done = _progress(db, body.submission_id)
         if total == 0:
             raise HTTPException(status_code=422, detail=f"Add items to this project before moving it to “{body.stage}”.")

@@ -84,12 +84,14 @@ curl -X POST "$BASE/projects" \
 
 **Second reading.** Authoring templates (`gold_answers`, `benchmark_creation`,
 `contradiction_creation`, `adversarial_prompts`, `dialogue_creation`) are written by one
-clinician, so a second clinician reads every item before it counts. The reader approves it
-or sends it back with the fix; the author revises their own draft; after three rounds
-without agreement a senior reviewer decides. Only approved items are delivered, and each
-carries `"second_reading": {"approved": true, "rounds": 1}` in your results. It is on by
-default for authoring projects; pass `"second_reading": false` to `POST /projects` to turn
-it off. Judgment templates don't use it: several clinicians review each item instead.
+clinician, so a second, **different** clinician reads every item before it counts. The
+reader approves it, edits and approves it, or sends it back with a reason, and it is then
+written again. Only approved items are delivered. Each one carries
+`"second_reading": {"approved": true, "rounds": 1, "edited_by_reader": false, "by_senior_reviewer": false}`
+in your results, where `rounds` counts the drafts it took. The report's `second_reading`
+block totals these. It is on by default for authoring projects; pass
+`"second_reading": false` to `POST /projects` to turn it off. Judgment templates don't use
+it: several clinicians review each item instead.
 
 **Agent traces.** For `agent_trace_eval`, send `trace` as a list of steps (objects or
 strings) or as text. Clinicians see it as numbered steps; your results keep it exactly as

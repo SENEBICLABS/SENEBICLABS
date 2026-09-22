@@ -816,32 +816,11 @@ def _one_line(x) -> str:
     return str(x)
 
 
-def revision_note_key(eval_config: dict | None) -> str | None:
-    """Where a second reader's revision note is shown to the author: the first context
-    block of a text task, which the author reads first. None for media tasks, whose context
-    is the image or recording itself."""
-    schema = (eval_config or {}).get("schema") or {}
-    if str(schema.get("input") or "image").lower() != "text":
-        return None
-    ctx = schema.get("context") or [{"key": "prompt"}]
-    return (ctx[0] or {}).get("key")
-
-
-def _task_for(it: dict, note_key: str | None) -> dict:
+def _task_for(it: dict) -> dict:
     content = it.get("content") or {}
     data = {k: render_value(v) for k, v in content.items() if not k.startswith("_")}
     data["_item_id"] = it["id"]
-    task: dict = {"data": data}
-    # Sent back by a second reader: show the reader's note above the task, and pre-fill the
-    # author's previous draft so they revise it rather than start again.
-    rev = content.get("_revision")
-    if isinstance(rev, dict):
-        if note_key and note_key in data:
-            data[note_key] = (f"REVISION REQUESTED BY THE SECOND READER:\n{rev.get('note') or '(no note given)'}"
-                              f"\n\n———\n\n{data[note_key]}")
-        if rev.get("previous_result"):
-            task["predictions"] = [{"result": rev["previous_result"], "model_version": "previous draft"}]
-    return task
+    return {"data": data}
 
 
 def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 500) -> int:
@@ -858,25 +837,16 @@ def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 500) -> int
     return len(tasks)
 
 
-def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500,
-               note_key: str | None = None) -> int:
+def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500) -> int:
     """Import items as tasks. Each item is {id, content}; we carry id as _item_id.
 
     Internal content keys (any starting with `_`, e.g. a gold item's `_gold_expected`
     answer) are stripped before the task reaches Label Studio, so a known-answer key can
-    never leak to a clinician. Only `_item_id` — needed to map the annotation back — is added.
-    `note_key` is where a revision note is shown (see revision_note_key)."""
-    tasks = [_task_for(it, note_key) for it in items]
+    never leak to a clinician. Only `_item_id` — needed to map the annotation back — is added."""
+    tasks = [_task_for(it) for it in items]
     if not tasks:
         return 0
     return import_tasks(ls_project_id, tasks, chunk)
-
-
-def delete_task(task_id: int) -> None:
-    """Remove one task. A missing task is already the desired state, so 404 is not an error."""
-    r = httpx.delete(f"{_base()}/api/tasks/{task_id}/", headers=_headers(), timeout=30)
-    if r.status_code != 404:
-        r.raise_for_status()
 
 
 def get_task(task_id: int) -> dict:
