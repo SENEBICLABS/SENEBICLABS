@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server'
 
 const COOKIE = 'analyse_access'
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const token = request.cookies.get(COOKIE)?.value
   const valid = process.env.ANALYSE_ACCESS_TOKEN
 

@@ -36,7 +36,10 @@ def test_root_identifies_the_service(client):
 def test_the_client_api_surface_is_registered(client):
     """The endpoints a client integrates against. A route silently lost in a refactor
     would otherwise only show up when a client's integration broke."""
-    paths = {r.path for r in app.routes}
+    # Read from the published OpenAPI schema — the contract a client integrates against —
+    # rather than app.routes, whose shape is a framework internal that changes between
+    # FastAPI versions.
+    paths = set(client.get("/openapi.json").json()["paths"])
     for p in ("/api/v1/project/projects", "/api/v1/project/ingest",
               "/api/v1/project/results", "/api/v1/project/templates",
               "/api/v1/project/compare", "/api/v1/project/failures",

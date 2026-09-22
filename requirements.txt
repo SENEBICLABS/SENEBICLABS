@@ -3,12 +3,12 @@
 # Versions pinned to match tested local environment
 
 # API
-fastapi==0.128.0
+fastapi==0.141.1
 uvicorn[standard]==0.40.0
 pydantic[email]==2.10.6
-pydantic-settings==2.12.0
-python-multipart==0.0.27
-starlette==0.50.0
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+starlette==1.6.0
 
 # Single-cell genomics
 
@@ -30,4 +30,4 @@ supabase==2.15.2
 resend==2.30.1
 
 # Environment
-python-dotenv==1.1.0
+python-dotenv==1.2.3
