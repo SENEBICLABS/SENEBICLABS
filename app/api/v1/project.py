@@ -2135,6 +2135,26 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
     _admin_audit(db, op, body.project_id, "eval_config",
                  {"grading_changed": grading_changed, "forced": bool(grading_changed and body.force)})
     msg = "Config saved." + (" Guideline-lock overridden." if (grading_changed and body.force) else "")
+    # Push the new form to the live Label Studio project. Without this the operator is told
+    # the config is saved while clinicians keep answering the OLD form, and their answers
+    # are then read against the new schema — a divergence nothing would surface.
+    ls_pid = None
+    try:
+        row = (db.table("project_submissions").select("ls_project_id")
+               .eq("id", body.project_id).limit(1).execute()).data
+        ls_pid = row[0].get("ls_project_id") if row else None
+    except Exception:
+        ls_pid = None
+    if ls_pid:
+        try:
+            ls.update_project_config(ls_pid, ls.build_label_config(new_ec),
+                                     reviewers=int(new_ec.get("reviewers_per_item") or 1))
+            msg += " The clinicians' form was updated."
+        except Exception as exc:
+            logger.error("eval_config saved for %s but Label Studio update failed: %s",
+                         body.project_id, exc)
+            msg += (" WARNING: saved here, but Label Studio still shows the previous form — "
+                    "clinicians would answer the old questions. Retry before any more work is done.")
     return SubmissionResponse(ok=True, message=msg)
 
 

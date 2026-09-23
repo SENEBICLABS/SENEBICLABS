@@ -274,3 +274,50 @@ def test_a_long_project_name_still_reaches_label_studio():
     with patch("httpx.post", side_effect=_post), patch.object(ls, "_register_webhook"):
         ls.create_project("Radiology QA — Pilot — eval", "<View></View>")
     assert sent["title"] == "Radiology QA — Pilot — eval"
+
+
+def _config_db(ls_project_id=191):
+    return FakeDB({"project_submissions": [{"id": "p1", "ls_project_id": ls_project_id,
+                                            "eval_config": {"schema": {"fields": {}}}}],
+                   "project_items": [], "audit_events": []})
+
+
+def _set_config(db, **patch):
+    cfg = {"purpose": "evaluate", "schema": {"input": "text",
+           "context": [{"key": "q", "label": "Q"}],
+           "fields": {"verdict": {"type": "single", "options": ["Correct", "Incorrect"], "required": True}}}}
+    with patch_ctx(db):
+        return proj.admin_set_eval_config(proj.EvalConfigIn(project_id="p1", eval_config=cfg),
+                                          x_admin_key="k")
+
+
+def patch_ctx(db):
+    from contextlib import ExitStack
+    st = ExitStack()
+    st.enter_context(patch.object(proj, "get_client", return_value=db))
+    st.enter_context(patch.object(proj.settings, "ADMIN_API_KEY", "k"))
+    return st
+
+
+def test_saving_a_config_updates_the_form_clinicians_answer():
+    # Saved here but not pushed, the operator is told it is saved while clinicians keep
+    # answering the old questions — and those answers are read against the new schema.
+    db = _config_db()
+    with patch.object(ls, "update_project_config") as push:
+        out = _set_config(db)
+    assert push.called and push.call_args[0][0] == 191
+    assert "clinicians' form was updated" in out.message
+
+
+def test_a_failed_push_says_so_instead_of_reporting_success():
+    db = _config_db()
+    with patch.object(ls, "update_project_config", side_effect=RuntimeError("LS down")):
+        out = _set_config(db)
+    assert "WARNING" in out.message and "previous form" in out.message
+
+
+def test_a_project_not_yet_in_label_studio_just_saves():
+    db = _config_db(ls_project_id=None)
+    with patch.object(ls, "update_project_config") as push:
+        out = _set_config(db)
+    assert not push.called and out.message == "Config saved."
