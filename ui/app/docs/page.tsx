@@ -561,6 +561,18 @@ async def hook(request: Request):
             <li><C>context</C>: for text tasks, which data keys to show the clinician, in order.</li>
             <li><C>classes</C>: the label set used by <C>from_classes</C> and <C>structured</C> fields.</li>
             <li><C>case_id_field</C>: which item field ties a result back to your own record.</li>
+            <li>
+              <C>field_order</C>: the order clinicians are asked the fields, as a list of field
+              names. Worth setting — configs are stored as JSON, whose key order is not preserved,
+              so without it the form is ordered arbitrarily and a clinician can be asked for a
+              rationale before the verdict it explains. Templates set it for you; names you leave
+              out are asked last.
+            </li>
+            <li>
+              Each field takes a <C>label</C> (the question a clinician reads — without one the
+              field name is prettified, so <C>correct_label</C> reads as &ldquo;Correct label&rdquo;)
+              and an optional <C>hint</C>.
+            </li>
             <li><C>primary_field</C>: which answer decides reviewer agreement, and so which items are held for adjudication. Defaults to the first required <C>single</C> / <C>from_classes</C> field.</li>
           </ul>
           <p><C>fields</C> is a map of what the clinician fills. Each has a <C>type</C>:</p>

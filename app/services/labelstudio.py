@@ -576,6 +576,15 @@ def _field_block(name: str, fdef: dict, classes: list, fields: dict) -> str:
     )
 
 
+def _ordered(schema: dict, fields: dict) -> list:
+    """Field names in the order to ask them. `schema.field_order` wins, because a config
+    stored as jsonb comes back with its keys sorted alphabetically — so without it a
+    clinician is asked for a rationale before the verdict it explains. Names not listed
+    keep their current order, after the listed ones."""
+    declared = [n for n in (schema.get("field_order") or []) if n in fields]
+    return declared + [n for n in fields if n not in declared]
+
+
 def build_label_config(eval_config: dict) -> str:
     """Generate a Label Studio labeling config from a project's eval_config.
 
@@ -673,7 +682,7 @@ def build_label_config(eval_config: dict) -> str:
         gbody = "".join(f'<Header value="{_esc(l)}" style="{_BODY}"/>' for l in lines)
         guide = f'<View style="{_GUIDE}"><Header value="Guidelines" style="{_CAPS}"/>{gbody}</View>'
 
-    body = "".join(_field_block(n, d, classes, fields) for n, d in fields.items())
+    body = "".join(_field_block(n, fields[n], classes, fields) for n in _ordered(schema, fields))
     return f'<View style="{_WRAP}">{header}{guide}{media}{body}</View>'
 
 

@@ -180,6 +180,18 @@ pairs with a coverage/agreement summary instead of a scorecard.
 - `context` — text mode only: which data keys to show the clinician, in order.
 - `classes` — the label set used by `from_classes` and `structured` fields.
 - `case_id_field` — which item field ties a result back to your own record.
+- `field_order` — the order clinicians are asked the fields, as a list of field names.
+  Worth setting: configs are stored as JSON, whose key order is not preserved, so without
+  it the form is ordered arbitrarily and a clinician can be asked for a rationale before
+  the verdict it explains. Templates set it for you. Names you leave out are asked last.
+- Each field takes a `label` (the question a clinician reads — without one the field name
+  is prettified, so `correct_label` reads as "Correct label") and an optional `hint`.
+- `field_order` — the order clinicians are asked the fields, as a list of field names.
+  Worth setting: configs are stored as JSON, whose key order is not preserved, so without
+  it the form is ordered arbitrarily and a clinician can be asked for a rationale before
+  the verdict it explains. Templates set it for you. Names you leave out are asked last.
+- Each field takes a `label` (the question a clinician reads — without one the field name
+  is prettified, so `correct_label` reads as "Correct label") and an optional `hint`.
 - `primary_field` — which answer decides reviewer agreement, and so which items are held
   for adjudication. Defaults to the first required `single` / `from_classes` field, so you
   only need to set it when a schema has several and the deciding one is not the first.

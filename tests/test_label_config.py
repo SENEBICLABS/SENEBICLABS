@@ -129,3 +129,39 @@ if __name__ == "__main__":
     test_text_mode_binds_controls_to_an_anchor()
     test_required_data_keys_by_input_type()
     print("PASS: tests/test_label_config.py (schema -> valid config, conditionals, loud failures)")
+
+
+def test_fields_are_asked_in_the_order_they_were_authored():
+    # eval_config is stored as jsonb and Postgres returns its keys sorted, so without an
+    # explicit order a clinician was asked for the rationale before the verdict it explains.
+    from app.services import templates as T
+    ec = T.config_from_template("clinical_safety_eval")
+    authored = ec["schema"]["field_order"]
+    assert authored[:3] == ["verdict", "severity", "correct_triage"]
+    scrambled = {**ec, "schema": {**ec["schema"], "fields": dict(sorted(ec["schema"]["fields"].items()))}}
+    order = re.findall(r'<(?:Choices|Rating|TextArea|Number|Labels) name="(\w+)"',
+                       build_label_config(scrambled))
+    order = [n for n in order if not n.endswith("_finding")]
+    assert order == authored
+
+
+def test_a_field_missing_from_the_order_is_still_asked():
+    cfg = {"schema": {"input": "text", "context": [{"key": "q", "label": "Q"}],
+                      "field_order": ["b"],
+                      "fields": {"a": {"type": "text"}, "b": {"type": "text"}}}}
+    order = re.findall(r'<TextArea name="(\w+)"', build_label_config(cfg))
+    assert order == ["b", "a"]
+
+
+def test_every_template_names_its_fields_clearly():
+    """A field with no label is rendered from its name, which leaves a clinician reading
+    'Correct label'. Anything whose prettified name is not a clear question needs one."""
+    from app.services import templates as T
+    unclear = {"correct_label", "critical_miss", "red_flag_missed", "clinical_correctness",
+               "citations_support_claims", "recognised_missing_info", "conclusion_justified",
+               "symptom_identification", "follow_up_questions", "task_completed",
+               "first_failed_step", "contradiction_handling", "harm_if_missed"}
+    for t in T.list_templates():
+        for name, f in (t["eval_config"]["schema"].get("fields") or {}).items():
+            if name in unclear:
+                assert (f or {}).get("label"), f"{t['name']}.{name} needs a label"
