@@ -244,3 +244,33 @@ def test_the_pull_reads_label_studio_page_by_page():
 
     with patch("httpx.get", side_effect=_get_full):
         assert len(ls.export_tasks(7)) == 1500 and calls == [1, 2, 3]   # stops at total
+
+
+def test_a_long_project_name_still_reaches_label_studio():
+    # Label Studio rejects a title over 50 characters with a 400. Titles are built from the
+    # client's own project name, so a long name failed the sync invisibly: the worker
+    # retried while the client saw a project with no items and no error.
+    sent = {}
+
+    class _R:
+        status_code = 201
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"id": 7}
+
+    def _post(url, headers=None, json=None, **_k):
+        sent.update(json or {})
+        return _R()
+
+    long_name = "REHEARSAL — lab report interpretation (internal) — eval"
+    assert len(long_name) > ls.TITLE_MAX
+    with patch("httpx.post", side_effect=_post), patch.object(ls, "_register_webhook"):
+        assert ls.create_project(long_name, "<View></View>") == 7
+    assert len(sent["title"]) <= ls.TITLE_MAX and sent["title"].endswith("…")
+    # A short title is untouched.
+    with patch("httpx.post", side_effect=_post), patch.object(ls, "_register_webhook"):
+        ls.create_project("Radiology QA — Pilot — eval", "<View></View>")
+    assert sent["title"] == "Radiology QA — Pilot — eval"

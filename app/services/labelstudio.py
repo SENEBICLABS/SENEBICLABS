@@ -762,8 +762,20 @@ def _register_webhook(ls_project_id: int) -> None:
         pass
 
 
+TITLE_MAX = 50          # Label Studio rejects a longer title with a 400
+
+
+def _fit_title(title: str) -> str:
+    """Label Studio caps a project title at TITLE_MAX characters and rejects anything
+    longer. Callers build titles from the client's own project name, so a long name used
+    to fail the whole sync — invisibly, because the background worker just retried while
+    the client saw a project with no items."""
+    t = (title or "Senebiclabs project").strip()
+    return t if len(t) <= TITLE_MAX else t[: TITLE_MAX - 1].rstrip() + "…"
+
+
 def create_project(title: str, label_config: str = DEFAULT_LABEL_CONFIG, reviewers: int = 1) -> int:
-    body: dict = {"title": title, "label_config": label_config}
+    body: dict = {"title": _fit_title(title), "label_config": label_config}
     if reviewers and reviewers > 1:
         body["maximum_annotations"] = int(reviewers)   # overlap: N clinicians per task
     r = httpx.post(
