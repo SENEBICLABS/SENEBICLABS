@@ -52,6 +52,11 @@ pipeline depends on three additions:
 
 The gate tests (`tests/test_isolation.py`, `tests/test_audit.py`) refuse to pass until these exist.
 
+> **Running a paid pilot?** `docs/pilot-runbook.md` is the step-by-step version of the
+> whole delivery: gates before you start, project and pool setup, the calibration round,
+> the daily and weekly rhythm, delivery, the regression gate, and what to do when
+> something goes wrong.
+
 ## 0b. Operator keys — one admin key per person
 
 Every admin call takes a key in `X-Admin-Key`. Each operator should have their **own**
