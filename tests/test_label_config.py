@@ -165,3 +165,26 @@ def test_every_template_names_its_fields_clearly():
         for name, f in (t["eval_config"]["schema"].get("fields") or {}).items():
             if name in unclear:
                 assert (f or {}).get("label"), f"{t['name']}.{name} needs a label"
+
+
+def test_an_open_ended_finding_is_typed_not_picked():
+    """A structured field's follow-up is a picker only when a list answers the question it
+    asks. A project's classes answer a different question: offering "Normal / Borderline /
+    Critical" as the answer to "which red flag" leaves a clinician with no valid choice."""
+    cfg = {"schema": {"input": "text", "context": [{"key": "q", "label": "Q"}],
+                      "classes": ["Normal", "Borderline", "Critical"],
+                      "fields": {"red_flag_missed": {"type": "structured",
+                                                     "finding_label": "Name the red flag"}}}}
+    xml = build_label_config(cfg)
+    assert '<TextArea name="red_flag_missed_finding"' in xml
+    assert '<Choice value="Borderline"/>' not in xml.split("red_flag_missed_finding")[1]
+
+    # Where the classes ARE the findings, the field says so and keeps the picker.
+    cfg["schema"]["fields"]["red_flag_missed"]["finding_from_classes"] = True
+    assert '<Choices name="red_flag_missed_finding"' in build_label_config(cfg)
+
+    # A field can also carry its own list.
+    cfg["schema"]["fields"]["red_flag_missed"] = {
+        "type": "structured", "finding_options": ["Airway", "Vascular"]}
+    xml = build_label_config(cfg)
+    assert '<Choice value="Airway"/>' in xml and '<Choice value="Normal"/>' not in xml

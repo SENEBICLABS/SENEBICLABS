@@ -518,9 +518,16 @@ def _control_xml(name: str, fdef: dict, classes: list) -> str:
         choices = "".join(f'<Choice value="{_esc(c)}"/>' for c in classes)
         return f'<Choices name="{_esc(name)}" toName="image" choice="{mode}" showInline="true"{req}>{choices}</Choices>'
 
-    if ftype == "structured":  # e.g. critical_miss: yes/no + which finding (from classes)
+    if ftype == "structured":  # e.g. critical_miss: yes/no + which finding
         prompt = _esc(fdef.get("finding_label") or "Which finding was missed")
-        if classes:
+        # The follow-up is a picker only when there is a list that answers the question it
+        # asks. A field's own `finding_options` wins; `classes` are used only when the field
+        # says so, because a project's classes answer a DIFFERENT question — offering
+        # "Normal / Borderline / Critical" as the answer to "which red flag" is unanswerable.
+        picker_options = fdef.get("finding_options") or (classes if fdef.get("finding_from_classes") else None)
+        if picker_options:
+            classes = picker_options
+        if picker_options:
             finding = "".join(f'<Choice value="{_esc(c)}"/>' for c in classes)
             picker = f'<Choices name="{_esc(name)}_finding" toName="image" choice="single" showInline="true">{finding}</Choices>'
         else:
