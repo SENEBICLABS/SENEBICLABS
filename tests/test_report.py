@@ -234,3 +234,41 @@ if __name__ == "__main__":
     rep = R.compute_report(ITEMS, CLASSES)
     rep["project_id"] = "SAMPLE"
     print(R.render_markdown(rep))
+
+
+def test_the_report_says_who_stands_behind_it_without_naming_anyone():
+    """A client receives the judgement, never the people. The assurance block states what
+    was actually done — from the work itself — and names nobody."""
+    items = [
+        {"idx": 0, "status": "done", "content": {"case_id": "A"},
+         "label": {"verdict": "Correct", "_reviewers": 3, "_agreement": 1.0}},
+        {"idx": 1, "status": "done", "content": {"case_id": "B"},
+         "label": {"verdict": "Incorrect", "_reviewers": 3, "_adjudicated": True,
+                   "_adjudicated_by": "Dr A Okafor, MMed Pathology", "_recorded_by": "Godwin Yampoi"}},
+        {"idx": 2, "status": "done", "content": {"case_id": "C"},
+         "label": {"verdict": "Correct", "_reviewers": 3,
+                   "_second_reading": {"approved": True, "rounds": 1}}},
+    ]
+    a = R.assurance(items, {})
+    assert a["reviewed_by"] == "Senebiclabs clinical panel"
+    assert a["clinicians_per_case"] == 3
+    assert a["cases_resolved_by_a_senior_reviewer"] == 1
+    assert a["items_approved_by_a_second_clinician"] == 1
+    assert "senior reviewer" in a["statement"] and "Senebiclabs stands behind" in a["statement"]
+    # No person is named, anywhere in it.
+    assert "Okafor" not in str(a) and "Godwin" not in str(a)
+
+
+def test_assurance_does_not_claim_a_senior_reviewer_who_was_never_needed():
+    items = [{"idx": 0, "status": "done", "content": {},
+              "label": {"verdict": "Correct", "_reviewers": 2}}]
+    a = R.assurance(items, {})
+    assert a["cases_resolved_by_a_senior_reviewer"] == 0
+    assert "No case required a senior reviewer" in a["statement"]
+
+
+def test_assurance_on_single_reviewed_work_does_not_imply_several():
+    a = R.assurance([{"idx": 0, "status": "done", "content": {}, "label": {"verdict": "Correct"}}], {})
+    assert a["clinicians_per_case"] == 1
+    assert "judged by a licensed clinician" in a["statement"]
+    assert "up to" not in a["statement"]

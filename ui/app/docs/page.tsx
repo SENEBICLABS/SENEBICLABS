@@ -341,6 +341,13 @@ KEY="your_api_key"`}</Code>
             Each item is reviewed by multiple licensed clinicians, and the <C>qa</C> block reports
             their mean agreement and how many items needed adjudication — so you can trust the numbers.
           </p>
+          <p>
+            The <C>assurance</C> block states who stands behind the result and what was done to
+            produce it: how many clinicians saw each case, how many disagreements a senior reviewer
+            settled, and how much authored work a second clinician approved. Senebiclabs is the
+            accountable party — clinicians are independent of you and of the system under
+            evaluation, and their identities are never disclosed.
+          </p>
           <div className="docs-callout">
             <p>
               <b>Scoring contract:</b> to get the accuracy <C>report</C>, items must carry a

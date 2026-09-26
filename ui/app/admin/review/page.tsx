@@ -384,6 +384,12 @@ export default function RunProjectPage() {
                   {report.qa.disagreements} needed a decision
                 </p>
               )}
+              {report.assurance && (
+                <div className="run-context" style={{ marginTop: 14 }}>
+                  <p><b>{report.assurance.reviewed_by}</b></p>
+                  <p>{report.assurance.statement}</p>
+                </div>
+              )}
               {Array.isArray(report.caveats) && report.caveats.length > 0 && (
                 <ul className="run-caveats">
                   {report.caveats.map((c: string, i: number) => <li key={i}>{c}</li>)}

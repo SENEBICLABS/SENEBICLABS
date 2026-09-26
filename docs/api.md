@@ -323,6 +323,12 @@ When delivered:
 Each item is reviewed by multiple licensed clinicians, and the `qa` block reports their
 mean agreement and how many items needed adjudication — so you can trust the numbers.
 
+The `assurance` block states who stands behind the result and what was done to produce it:
+how many clinicians saw each case, how many disagreements a senior reviewer settled, and
+how much authored work a second clinician approved. Senebiclabs is the accountable party —
+clinicians are independent of you and of the system under evaluation, and their identities
+are never disclosed.
+
 **Scoring contract:** to get the accuracy `report`, items must carry a `prediction` and
 your fields must use these exact names: `verdict` (`Correct` / `Incorrect` / `Partial`),
 `correct_label` (the corrected class for a wrong verdict), and `critical_miss` (a
