@@ -505,6 +505,7 @@ export default function AdminPage() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <h1 style={{ fontFamily: 'Geist, sans-serif', fontWeight: 500, fontSize: 30 }}>Projects</h1>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <a href="/admin/review" style={{ ...label, textDecoration: 'none', color: '#0f766e' }}>Run a project →</a>
           <button onClick={() => load(key)} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Refresh</button>
           <button onClick={logout} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer' }}>Sign out</button>
         </div>

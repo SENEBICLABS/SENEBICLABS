@@ -2564,3 +2564,63 @@ footer .grid { grid-template-columns: 1.6fr 1fr 1fr 1fr !important; }
   .cx-ws-body { grid-template-columns: 1fr; }
   .cx-ws-left, .cx-ws-right { border: none; border-top: 1px solid var(--cx-border); }
 }
+
+/* ── /admin/review — running a project ─────────────────────────────────────────
+   A tool, not a page: quiet surface, one centred column, ordered the way a pilot
+   runs — progress, the cases needing a decision, delivery, then the report. */
+.run-shell {
+  min-height: 100vh;
+  background: #f7f8fa;
+  color: #0f172a;
+  padding: 44px 20px 80px;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+.run-shell > * { max-width: 860px; margin-left: auto; margin-right: auto; }
+.run-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.run-h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.run-link { font-size: 13.5px; color: #0f766e; text-decoration: none; }
+.run-link:hover { text-decoration: underline; }
+.run-lead { font-size: 14.5px; color: #475569; margin: 6px 0 18px; line-height: 1.6; }
+.run-gate { max-width: 420px; margin: 12vh auto 0; background: #fff; border: 1px solid #e6e8eb; border-radius: 14px; padding: 28px; }
+.run-input, .run-select, .run-note {
+  width: 100%; background: #fff; border: 1px solid #d6dae0; border-radius: 9px;
+  padding: 11px 13px; font: inherit; font-size: 14px; color: #0f172a; outline: none;
+}
+.run-select { margin-bottom: 20px; }
+.run-input:focus, .run-select:focus, .run-note:focus { border-color: #0f766e; }
+.run-btn {
+  margin-top: 12px; margin-right: 10px; background: #0f766e; color: #fff; border: none;
+  border-radius: 9px; padding: 11px 18px; font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+}
+.run-btn:disabled { opacity: 0.45; cursor: default; }
+.run-ghost { background: #fff; color: #0f172a; border: 1px solid #d6dae0; }
+.run-card { background: #fff; border: 1px solid #e6e8eb; border-radius: 14px; padding: 24px 26px; margin-bottom: 18px; }
+.run-eyebrow { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #64748b; font-weight: 700; margin: 0 0 10px; }
+.run-big { font-size: 19px; font-weight: 600; margin: 0 0 12px; }
+.run-meta, .run-quiet { font-size: 13.5px; color: #64748b; margin: 8px 0 0; line-height: 1.6; }
+.run-line { font-size: 14.5px; margin: 8px 0 0; line-height: 1.65; }
+.run-msg { font-size: 13.5px; color: #0f172a; margin: 12px 0 0; }
+.run-error { font-size: 13.5px; color: #b42318; margin: 12px 0 0; }
+.run-bar { height: 7px; background: #eef1f4; border-radius: 99px; overflow: hidden; }
+.run-bar span { display: block; height: 100%; background: #0f766e; }
+.run-held { border-top: 1px solid #eef1f4; padding-top: 18px; margin-top: 18px; }
+.run-held:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.run-case { font-size: 16px; font-weight: 600; margin: 0 0 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.run-tag { font-size: 11.5px; font-weight: 500; color: #64748b; }
+.run-context { background: #f8fafc; border: 1px solid #eef1f4; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+.run-context p { font-size: 13.5px; line-height: 1.6; margin: 0 0 6px; color: #334155; white-space: pre-wrap; }
+.run-context p:last-child { margin-bottom: 0; }
+.run-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.run-field { border: 1px solid #eef1f4; border-radius: 10px; padding: 12px 14px; }
+.run-differ { border-color: #f5c66b; background: #fffbf2; }
+.run-fname { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #64748b; font-weight: 700; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
+.run-split { background: #f5c66b; color: #0f172a; border-radius: 99px; padding: 1px 7px; font-size: 9.5px; letter-spacing: 0.06em; }
+.run-choice { display: flex; gap: 8px; align-items: flex-start; font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; cursor: pointer; }
+.run-choice em { font-style: normal; color: #64748b; margin-right: 6px; }
+.run-note { margin-top: 14px; }
+.run-caveats { font-size: 13px; color: #64748b; line-height: 1.6; margin: 14px 0 0; padding-left: 18px; }
+@media (max-width: 640px) {
+  .run-shell { padding: 28px 14px 60px; }
+  .run-head { flex-direction: column; gap: 6px; }
+  .run-grid { grid-template-columns: 1fr; }
+}
