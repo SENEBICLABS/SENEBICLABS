@@ -217,6 +217,9 @@ class AdjudicateIn(BaseModel):
     idx: int                         # the item's stable idx (as shown in the adjudication queue)
     final_label: dict                # the senior reviewer's resolving answer, e.g. {"verdict": "Accurate"}
     note: str | None = None
+    # The clinician whose judgement this is, with their credentials — the operator key only
+    # says who typed it. Internal: like every reviewer identity, it never reaches the client.
+    decided_by: str | None = None
 
 
 class ClinicianIn(BaseModel):
@@ -1869,7 +1872,10 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     label = dict(it.get("label") or {})
     label.update(body.final_label)                        # the resolving answer replaces the split verdict
     label["_adjudicated"] = True
-    label["_adjudicated_by"] = op["name"]
+    # Who judged it, and who recorded it. A client sees neither: internal keys are stripped
+    # from every delivered item, which is how reviewer identities stay private.
+    label["_adjudicated_by"] = (body.decided_by or "").strip() or op["name"]
+    label["_recorded_by"] = op["name"]
     # An answer held because it was never second-read is now approved by the senior reviewer.
     sr = label.get("_second_reading")
     if isinstance(sr, dict) and not sr.get("approved"):

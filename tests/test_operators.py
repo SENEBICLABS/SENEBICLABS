@@ -98,3 +98,34 @@ def test_root_key_use_is_visible_in_the_audit_trail(db):
     with patch.object(proj, "_fire_webhook"):
         proj.admin_advance(proj.AdminAdvance(submission_id="p1", stage="delivered"), x_admin_key=ROOT_KEY)
     assert db.rows["audit_events"][-1]["actor_name"] == "root"
+
+
+def test_the_deciding_clinician_is_recorded_and_never_reaches_the_client(db):
+    """The operator key says who typed the decision. The clinical judgement belongs to a
+    named clinician — recorded internally, and stripped from everything a client sees."""
+    _, key = operators.create(db, "Godwin Yampoi", None)
+    db.rows["project_items"].append({"id": "i1", "project_id": "p1", "idx": 0,
+                                     "status": "needs_adjudication",
+                                     "content": {"case_id": "LAB-07"},
+                                     "label": {"verdict": "Partial"}})
+    with patch("app.api.v1.ls._maybe_auto_deliver"):
+        proj.admin_adjudicate(proj.AdjudicateIn(
+            project_id="p1", idx=0, final_label={"verdict": "Partial"},
+            decided_by="Dr A Okafor, MMed Pathology, KMPDC 12345",
+            note="Panel: incomplete workup before deferral."), x_admin_key=key)
+    label = db.rows["project_items"][0]["label"]
+    assert label["_adjudicated_by"] == "Dr A Okafor, MMed Pathology, KMPDC 12345"
+    assert label["_recorded_by"] == "Godwin Yampoi"
+    client_view = proj._client_item(db.rows["project_items"][0])
+    assert "Okafor" not in str(client_view) and "Godwin" not in str(client_view)
+    assert client_view["label"]["verdict"] == "Partial"
+
+
+def test_without_a_named_clinician_it_falls_back_to_the_operator(db):
+    _, key = operators.create(db, "Godwin Yampoi", None)
+    db.rows["project_items"].append({"id": "i2", "project_id": "p1", "idx": 1,
+                                     "status": "needs_adjudication", "content": {}, "label": {}})
+    with patch("app.api.v1.ls._maybe_auto_deliver"):
+        proj.admin_adjudicate(proj.AdjudicateIn(project_id="p1", idx=1, final_label={"verdict": "Correct"}),
+                              x_admin_key=key)
+    assert db.rows["project_items"][0]["label"]["_adjudicated_by"] == "Godwin Yampoi"

@@ -68,6 +68,7 @@ export default function RunProjectPage() {
   const [report, setReport] = useState<Report | null>(null)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<Record<number, string>>({})
+  const [decidedBy, setDecidedBy] = useState('')
   const [picked, setPicked] = useState<Record<string, string>>({})   // `${idx}:${field}` -> value
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
@@ -132,7 +133,8 @@ export default function RunProjectPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
         body: JSON.stringify({
-          project_id: selected, idx: item.idx, final_label: final, note: note[item.idx] || null,
+          project_id: selected, idx: item.idx, final_label: final,
+          note: note[item.idx] || null, decided_by: decidedBy.trim() || null,
         }),
       })
       const data = await res.json()
@@ -307,6 +309,16 @@ export default function RunProjectPage() {
                       value={note[item.idx] ?? ''}
                       onChange={e => setNote(n => ({ ...n, [item.idx]: e.target.value }))}
                     />
+                    <input
+                      className="run-input run-note"
+                      placeholder="Clinical decision by — name and credentials"
+                      value={decidedBy}
+                      onChange={e => setDecidedBy(e.target.value)}
+                    />
+                    <p className="run-quiet">
+                      The judgement is theirs; your key records who entered it. Neither name
+                      reaches the client.
+                    </p>
                     <button className="run-btn" disabled={busy} onClick={() => resolve(item)}>
                       Record the decision
                     </button>
