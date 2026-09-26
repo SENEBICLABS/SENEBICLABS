@@ -1823,6 +1823,51 @@ def admin_report(project_id: str, x_admin_key: str | None = Header(default=None)
         raise HTTPException(status_code=500, detail="Could not build the report.")
 
 
+@router.get("/admin/held/{ls_project_id}", summary="Held cases for a Label Studio project, for the clinician platform (admin)")
+def admin_held_for_pool(ls_project_id: int, x_admin_key: str | None = Header(default=None)):
+    """Cases waiting on a senior reviewer, addressed the way the clinician platform sees the
+    world: by Label Studio task id.
+
+    A disagreement is a clinical question, so it belongs with a clinician rather than an
+    operator. The platform offers these to a senior reviewer, and records their decision
+    through POST /admin/adjudicate.
+
+    Every earlier answer is returned WITHOUT its author. A senior must see what was decided
+    and why, never by whom — knowing which colleague wrote which answer is exactly the
+    pressure independent review exists to remove.
+    """
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    sub = (db.table("project_submissions").select("id,eval_config")
+           .eq("ls_project_id", ls_project_id).limit(1).execute()).data
+    if not sub:
+        raise HTTPException(status_code=404, detail="No project uses that Label Studio project.")
+    project_id = sub[0]["id"]
+    case_id_field = _case_id_field(sub[0].get("eval_config") or {})
+    rows = fetch_all(lambda: db.table("project_items").select("idx,content,label")
+                     .eq("project_id", project_id).eq("status", "needs_adjudication").order("idx"))
+    held = []
+    for r in rows:
+        label = r.get("label") or {}
+        content = {k: v for k, v in (r.get("content") or {}).items() if not str(k).startswith("_")}
+        answers = [{k: v for k, v in (a.get("label") or {}).items() if not str(k).startswith("_")}
+                   for a in (label.get("_annotations") or [])]
+        held.append({
+            "project_id": project_id,
+            "idx": r.get("idx"),
+            "ls_task_id": label.get("_ls_task_id"),
+            "case_id": (content.get(case_id_field) if case_id_field else None) or content.get("case_id"),
+            "agreement": label.get("_agreement"),
+            "content": content,
+            # Anonymous, and deliberately unordered relative to who wrote them.
+            "earlier_answers": answers,
+        })
+    return {"ok": True, "ls_project_id": ls_project_id, "project_id": project_id,
+            "count": len(held), "held": held}
+
+
 @router.get("/admin/adjudication/{project_id}", summary="Items awaiting adjudication — reviewers disagreed (admin)")
 def admin_adjudication_queue(project_id: str, x_admin_key: str | None = Header(default=None)):
     """The QA queue: items where reviewers split, held out of the deliverable until resolved.

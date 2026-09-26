@@ -84,6 +84,19 @@ curl -X POST "$API/project/admin/operators/revoke" -H "X-Admin-Key: $ROOT_KEY" \
 The `/admin` dashboard works with an operator key exactly as with the root key: paste it
 where the admin key goes.
 
+### Disagreements go to a clinician, not to you
+
+When clinicians split on a case it is held out of the results. The clinical question
+belongs with a clinician, so the clinician platform offers held cases to a senior reviewer
+and records their decision:
+
+- `GET /project/admin/held/{ls_project_id}` — held cases for that pool, with every earlier
+  answer **and no authors**. A senior sees what was decided and why, never by whom.
+- `POST /project/admin/adjudicate` — the senior's answer, with `decided_by` naming the
+  clinician and their credentials. Internal: no name reaches the client.
+
+`/admin/review` remains for what a senior cannot settle, or when none is available.
+
 ---
 
 ## 1. Customer submits the project

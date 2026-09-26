@@ -129,3 +129,40 @@ def test_without_a_named_clinician_it_falls_back_to_the_operator(db):
         proj.admin_adjudicate(proj.AdjudicateIn(project_id="p1", idx=1, final_label={"verdict": "Correct"}),
                               x_admin_key=key)
     assert db.rows["project_items"][0]["label"]["_adjudicated_by"] == "Godwin Yampoi"
+
+
+def test_held_cases_are_offered_to_the_platform_without_saying_who_judged(db):
+    """A senior reviewer must see the earlier answers and the reasoning, never the authors:
+    knowing which colleague wrote which answer is the pressure independent review removes."""
+    _, key = operators.create(db, "Godwin Yampoi", None)
+    db.rows["project_submissions"].append({"id": "p1", "ls_project_id": 191, "eval_config": {}})
+    db.rows["project_items"].append({
+        "id": "i1", "project_id": "p1", "idx": 6, "status": "needs_adjudication",
+        "content": {"case_id": "LAB-07", "scenario": "ALT 62", "_gold_expected": "secret"},
+        "label": {"verdict": "Partial", "_ls_task_id": 4242, "_agreement": 0.5,
+                  "_annotations": [
+                      {"by": "a@example.com", "at": "x", "label": {"verdict": "Partial", "severity": "Minor"}},
+                      {"by": "b@example.com", "at": "y", "label": {"verdict": "Correct"}}]}})
+    out = proj.admin_held_for_pool(191, x_admin_key=key)
+    assert out["count"] == 1
+    item = out["held"][0]
+    assert item["ls_task_id"] == 4242 and item["case_id"] == "LAB-07" and item["idx"] == 6
+    assert item["earlier_answers"] == [{"verdict": "Partial", "severity": "Minor"}, {"verdict": "Correct"}]
+    body = str(out)
+    assert "example.com" not in body          # no authors
+    assert "_gold_expected" not in body and "secret" not in body   # no internal content
+
+
+def test_a_pool_with_nothing_held_returns_an_empty_list(db):
+    _, key = operators.create(db, "Godwin Yampoi", None)
+    db.rows["project_submissions"].append({"id": "p1", "ls_project_id": 191, "eval_config": {}})
+    db.rows["project_items"].append({"id": "i1", "project_id": "p1", "idx": 0, "status": "done",
+                                     "content": {}, "label": {}})
+    assert proj.admin_held_for_pool(191, x_admin_key=key)["held"] == []
+
+
+def test_an_unknown_label_studio_project_is_a_404(db):
+    _, key = operators.create(db, "Godwin Yampoi", None)
+    with pytest.raises(HTTPException) as e:
+        proj.admin_held_for_pool(999, x_admin_key=key)
+    assert e.value.status_code == 404
