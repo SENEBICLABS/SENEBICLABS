@@ -214,12 +214,29 @@ def test_build_report_scores_free_text_only_when_the_schema_has_no_class_field()
     items = [_prose(0, "Correct"), _prose(1, "Incorrect")]
     grounding = R.build_report(_DB(T.config_from_template("grounding_eval"), items), "p")
     assert grounding["accuracy"]["basis"] == "verdict" and grounding["accuracy"]["value"] == 0.5
-    # clinical_safety_eval has a corrected-label field, so it keeps the class-based report
+
+    # A task can declare categories for "what the answer should have been" while the model's
+    # own output is prose — a lab interpretation. Both sides must be categories for a
+    # confusion matrix to mean anything; treating prose as a category listed whole sentences
+    # as class names in the caveats.
     safety = R.build_report(_DB(T.config_from_template("clinical_safety_eval"), items), "p")
-    assert safety["accuracy"]["basis"] == "verdict+class"
-    # a legacy config with no declared fields keeps the class-based report too
-    legacy = R.build_report(_DB({"purpose": "evaluate", "schema": {"classes": ["A"]}}, items), "p")
+    assert safety["accuracy"]["basis"] == "verdict"
+    assert safety["classes"] == [] and safety["confusion_matrix"]["matrix"] == []
+    assert any("written text rather than one of the declared categories" in c
+               for c in safety["caveats"])
+    assert not any("Agent answer" in str(c) for c in safety["caveats"])
+
+    # When the model really does output a category, the class-based report stands.
+    classed = [
+        {"idx": 0, "status": "done", "content": {"case_id": "A", "prediction": "Normal"},
+         "label": {"verdict": "Correct"}},
+        {"idx": 1, "status": "done", "content": {"case_id": "B", "prediction": "TB"},
+         "label": {"verdict": "Incorrect", "correct_label": "Normal"}},
+    ]
+    legacy = R.build_report(_DB({"purpose": "evaluate", "schema": {"classes": ["Normal", "TB"]}}, classed), "p")
     assert legacy["accuracy"]["basis"] == "verdict+class"
+    assert legacy["classes"] == ["Normal", "TB"]
+    assert legacy["corrected_labels"] == {"Normal": 1}
 
 
 if __name__ == "__main__":

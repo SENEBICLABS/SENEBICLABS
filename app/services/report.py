@@ -199,14 +199,20 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
                                     "correct_label": corrected if kind != CORRECT else pred,
                                     "finding": finding, "rationale": base["rationale"]})
 
-    # Free text has no classes: prose predictions are not labels, and listing each answer
-    # as a "class" would fill the matrix with one-off rows.
-    cls_list = [] if free_text else sorted(set(classes or []) | observed)
+    # A confusion matrix needs BOTH sides to be classes. A task can declare a class list for
+    # "what the answer should have been" while the model's own output is prose — a lab
+    # interpretation, an agent's answer. Treating that prose as a class filled the matrix
+    # with one-off rows and made the caveats list whole sentences as class names.
+    declared = set(classes or [])
+    prose_output = [a for a in assessable
+                    if declared and str(a["model_prediction"]) not in declared]
+    class_based = bool(declared) and not free_text and not prose_output
+    cls_list = sorted(declared | observed) if class_based else []
 
     # Confusion matrix: conf[pred][true]
     conf = {p: {t: 0 for t in cls_list} for p in cls_list}
     for a in assessable:
-        if not free_text:
+        if class_based:
             conf[a["model_prediction"]][a["ground_truth"]] += 1
 
     per_class = {}
@@ -219,21 +225,33 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
         per_class[c] = {"support": support, "tp": tp, "fp": fp, "fn": fn,
                         "precision": p, "recall": r, "f1": f}
 
+    cases_with_correction = [c for c in cases if c.get("correct_label")]
     n_assess = len(assessable)
     n_correct = sum(1 for a in assessable if a["kind"] == CORRECT)
     accuracy = (n_correct / n_assess) if n_assess else None
     partial_on_diagonal = sum(1 for a in assessable
                               if a["kind"] == PARTIAL and a["model_prediction"] == a["ground_truth"])
 
-    caveats = [
-        f"Metrics are computed on {n_assess} assessable case(s). At this sample size, per-class "
-        "numbers are indicative of this sample, not the model's true population performance. "
-        "Read them alongside the support (n) per class.",
-    ]
+    caveats = []
+    if cls_list:
+        caveats.append(
+            f"Metrics are computed on {n_assess} assessable case(s). At this sample size, per-class "
+            "numbers are indicative of this sample, not the model's true population performance. "
+            "Read them alongside the support (n) per class.")
+    else:
+        caveats.append(
+            f"Findings are based on {n_assess} assessable case(s). At this sample size they "
+            "describe this sample rather than the model's performance across all cases.")
+    if prose_output and not free_text:
+        caveats.append(
+            f"The model's output is written text rather than one of the declared categories in "
+            f"{len(prose_output)} of {n_assess} case(s), so there is no confusion matrix or "
+            "per-class precision. The headline is the share of cases clinicians judged correct, "
+            "and the category a correct answer should have given is summarised separately.")
     if free_text:
-        caveats.append("Free-text evaluation: the headline is the share of cases clinicians judged "
-                       "Correct. There is no confusion matrix, because the model's answers are prose, "
-                       "not classes. See the clinical section for severity and failure modes.")
+        caveats.append("The headline is the share of cases clinicians judged correct. There is no "
+                       "confusion matrix, because the model's answers are written text rather than "
+                       "categories. See the clinical section for severity and failure modes.")
     thin = [c for c in cls_list if 0 < per_class[c]["support"] < THIN_SUPPORT]
     if thin:
         caveats.append(f"Thin support (under {THIN_SUPPORT} ground-truth cases): {thin}. "
@@ -279,7 +297,10 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
             "disagreement_cases": disagreement_cases,
         }
 
+    corrected = Counter(str(a["correct_label"]) for a in cases_with_correction) or None
+
     return {
+        "corrected_labels": (dict(corrected) if corrected else None),
         "totals": {
             "items": len(items),
             "assessable": n_assess,
@@ -288,7 +309,7 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
         },
         "qa": qa,
         "accuracy": {"correct": n_correct, "assessable": n_assess, "value": accuracy,
-                     "basis": "verdict" if free_text else "verdict+class"},
+                     "basis": "verdict+class" if class_based else "verdict"},
         "classes": cls_list,
         "per_class": per_class,
         "confusion_matrix": {
