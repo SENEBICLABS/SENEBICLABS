@@ -251,20 +251,22 @@ def test_the_report_says_who_stands_behind_it_without_naming_anyone():
     ]
     a = R.assurance(items, {})
     assert a["reviewed_by"] == "Senebiclabs clinical panel"
-    assert "clinicians_per_case" not in a          # the count is ours, not the client's
-    assert a["cases_resolved_by_a_senior_reviewer"] == 1
-    assert a["items_approved_by_a_second_clinician"] == 1
-    assert "senior reviewer" in a["statement"] and "Senebiclabs stands behind" in a["statement"]
-    # No person is named, anywhere in it.
-    assert "Okafor" not in str(a) and "Godwin" not in str(a)
+    # Guarantees, not staffing: no counts, no internal roles, no names.
+    assert set(a) == {"reviewed_by", "statement"}
+    assert "settled by further clinical review" in a["statement"]
+    assert "approved by a second clinician" in a["statement"]
+    assert "Senebiclabs stands behind" in a["statement"]
+    for leak in ("senior", "Okafor", "Godwin", "3", "2", "1"):
+        assert leak not in a["statement"], leak
 
 
 def test_assurance_does_not_claim_a_senior_reviewer_who_was_never_needed():
     items = [{"idx": 0, "status": "done", "content": {},
               "label": {"verdict": "Correct", "_reviewers": 2}}]
     a = R.assurance(items, {})
-    assert a["cases_resolved_by_a_senior_reviewer"] == 0
-    assert "No case required a senior reviewer" in a["statement"]
+    # Nothing is claimed about disagreements when there were none.
+    assert "clinical review" not in a["statement"]
+    assert "more than one licensed clinician" in a["statement"]
 
 
 def test_assurance_on_single_reviewed_work_does_not_imply_several():

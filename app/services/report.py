@@ -511,40 +511,30 @@ def compute_dataset_report(items: list[dict], fields: dict, purpose: str,
 
 
 def assurance(items: list[dict], ec: dict) -> dict:
-    """Who stands behind the result, and what was actually done to produce it.
+    """Who stands behind the result, and the guarantees behind it.
 
     Senebiclabs is the accountable party — a client receives the judgement, never the
-    people. So this states the process in facts drawn from the work itself (how many
-    clinicians saw each case, how many disagreements a senior reviewer settled, how much
-    authored work a second clinician approved) and names nobody. Reviewer identities are
-    internal, as they are on every item."""
+    people, and never the staffing behind it. So this states what is guaranteed about the
+    work, not how the work was organised: no clinician counts, no internal roles. Each
+    sentence appears only when it is true of this project.
+    """
     reviewed = [it for it in items if (it.get("label") or {})]
     per_case = [int((it.get("label") or {}).get("_reviewers") or 1) for it in reviewed] or [1]
-    adjudicated = sum(1 for it in reviewed if (it.get("label") or {}).get("_adjudicated"))
-    read = sum(1 for it in reviewed if (it.get("label") or {}).get("_second_reading"))
+    adjudicated = any((it.get("label") or {}).get("_adjudicated") for it in reviewed)
+    read = any((it.get("label") or {}).get("_second_reading") for it in reviewed)
     lines = []
     if max(per_case) > 1:
         lines.append("Each case was judged independently by more than one licensed clinician.")
     else:
         lines.append("Each case was judged by a licensed clinician.")
     if adjudicated:
-        lines.append(f"{adjudicated} case(s) where clinicians disagreed were resolved by a senior reviewer, "
-                     "not by averaging the answers.")
-    elif max(per_case) > 1:
-        lines.append("No case required a senior reviewer: clinicians agreed on every one.")
+        lines.append("Where clinicians disagreed, the case was settled by further clinical "
+                     "review rather than by averaging the answers.")
     if read:
-        lines.append(f"{read} authored item(s) were approved by a second clinician before release.")
+        lines.append("Written work was approved by a second clinician before release.")
     lines.append("Clinicians are independent of the client and of the system under evaluation. "
                  "Their identities are not disclosed: Senebiclabs stands behind these findings.")
-    # How many clinicians saw a case is ours, not the client's: a bare number invites a
-    # negotiation about inputs instead of findings, and says nothing they can act on. The
-    # guarantee — more than one, independently — is what makes the result credible.
-    return {
-        "reviewed_by": "Senebiclabs clinical panel",
-        "cases_resolved_by_a_senior_reviewer": adjudicated,
-        "items_approved_by_a_second_clinician": read,
-        "statement": " ".join(lines),
-    }
+    return {"reviewed_by": "Senebiclabs clinical panel", "statement": " ".join(lines)}
 
 
 def build_report(db, project_id: str) -> dict:
