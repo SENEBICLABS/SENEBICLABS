@@ -251,7 +251,7 @@ def test_the_report_says_who_stands_behind_it_without_naming_anyone():
     ]
     a = R.assurance(items, {})
     assert a["reviewed_by"] == "Senebiclabs clinical panel"
-    assert a["clinicians_per_case"] == 3
+    assert "clinicians_per_case" not in a          # the count is ours, not the client's
     assert a["cases_resolved_by_a_senior_reviewer"] == 1
     assert a["items_approved_by_a_second_clinician"] == 1
     assert "senior reviewer" in a["statement"] and "Senebiclabs stands behind" in a["statement"]
@@ -269,6 +269,30 @@ def test_assurance_does_not_claim_a_senior_reviewer_who_was_never_needed():
 
 def test_assurance_on_single_reviewed_work_does_not_imply_several():
     a = R.assurance([{"idx": 0, "status": "done", "content": {}, "label": {"verdict": "Correct"}}], {})
-    assert a["clinicians_per_case"] == 1
     assert "judged by a licensed clinician" in a["statement"]
-    assert "up to" not in a["statement"]
+    assert "more than one" not in a["statement"]   # singly reviewed work must not imply several
+
+
+def test_the_client_is_never_told_how_many_clinicians_saw_a_case():
+    """How many clinicians reviewed a case is ours. A bare number invites a negotiation
+    about inputs rather than findings, and the guarantee — more than one, independently —
+    is what makes the result credible."""
+    items = [
+        {"idx": 0, "status": "done", "content": {"prediction": "x", "case_id": "A"},
+         "label": {"verdict": "Correct", "_reviewers": 3, "_agreement": 1.0}},
+        {"idx": 1, "status": "done", "content": {"prediction": "x", "case_id": "B"},
+         "label": {"verdict": "Incorrect", "correct_label": "y", "_reviewers": 3,
+                   "_agreement": 0.5, "_disagreed": True}},
+    ]
+    rep = R.compute_report(items, ["x", "y"])
+    assert "reviewers" not in rep["qa"]
+    assert all("reviewers" not in c for c in rep["qa"]["disagreement_cases"])
+    assert rep["qa"]["mean_agreement"] and rep["qa"]["disagreements"] == 1
+
+    a = R.assurance(items, {})
+    assert "clinicians_per_case" not in a
+    assert "more than one licensed clinician" in a["statement"]
+    assert "3" not in a["statement"] and "2" not in a["statement"]
+
+    ds = R.compute_dataset_report(items, {"verdict": {"type": "single"}}, "label")
+    assert ds["qa"] is None or "reviewers" not in ds["qa"]

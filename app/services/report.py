@@ -270,11 +270,9 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
                 "case_id": _case_id(content, case_id_field),
                 "agreement": lbl["_agreement"],
                 "verdict": lbl.get("verdict"),
-                "reviewers": lbl.get("_reviewers"),
             })
     if agrees:
         qa = {
-            "reviewers": max(reviewer_counts) if reviewer_counts else None,
             "mean_agreement": round(sum(agrees) / len(agrees), 3),
             "reviewed_items": len(agrees),
             "disagreements": len(disagreement_cases),
@@ -321,12 +319,10 @@ def _agreement_qa(items: list[dict], case_id_field: str | None) -> dict | None:
                 "idx": it.get("idx"),
                 "case_id": _case_id(it.get("content") or {}, case_id_field),
                 "agreement": lbl["_agreement"],
-                "reviewers": lbl.get("_reviewers"),
             })
     if not agrees:
         return None
     return {
-        "reviewers": max(reviewer_counts) if reviewer_counts else None,
         "mean_agreement": round(sum(agrees) / len(agrees), 3),
         "reviewed_items": len(agrees),
         "disagreements": len(disagreement_cases),
@@ -528,7 +524,7 @@ def assurance(items: list[dict], ec: dict) -> dict:
     read = sum(1 for it in reviewed if (it.get("label") or {}).get("_second_reading"))
     lines = []
     if max(per_case) > 1:
-        lines.append(f"Each case was judged independently by up to {max(per_case)} licensed clinicians.")
+        lines.append("Each case was judged independently by more than one licensed clinician.")
     else:
         lines.append("Each case was judged by a licensed clinician.")
     if adjudicated:
@@ -540,9 +536,11 @@ def assurance(items: list[dict], ec: dict) -> dict:
         lines.append(f"{read} authored item(s) were approved by a second clinician before release.")
     lines.append("Clinicians are independent of the client and of the system under evaluation. "
                  "Their identities are not disclosed: Senebiclabs stands behind these findings.")
+    # How many clinicians saw a case is ours, not the client's: a bare number invites a
+    # negotiation about inputs instead of findings, and says nothing they can act on. The
+    # guarantee — more than one, independently — is what makes the result credible.
     return {
         "reviewed_by": "Senebiclabs clinical panel",
-        "clinicians_per_case": max(per_case),
         "cases_resolved_by_a_senior_reviewer": adjudicated,
         "items_approved_by_a_second_clinician": read,
         "statement": " ".join(lines),
