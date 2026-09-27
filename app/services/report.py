@@ -511,30 +511,20 @@ def compute_dataset_report(items: list[dict], fields: dict, purpose: str,
 
 
 def assurance(items: list[dict], ec: dict) -> dict:
-    """Who stands behind the result, and the guarantees behind it.
+    """Who stands behind the result.
 
-    Senebiclabs is the accountable party — a client receives the judgement, never the
-    people, and never the staffing behind it. So this states what is guaranteed about the
-    work, not how the work was organised: no clinician counts, no internal roles. Each
-    sentence appears only when it is true of this project.
+    A client came for findings, not for a description of how we work. So this says only
+    what they need to weigh the result: that clinicians judged it, that they were
+    independent of the client and of the system under evaluation, and that Senebiclabs is
+    accountable for it. How the work was staffed, how disagreements were settled and how
+    written work was approved stay internal — they are recorded on every item, and belong
+    in a conversation or a contract, not in the deliverable.
     """
-    reviewed = [it for it in items if (it.get("label") or {})]
-    per_case = [int((it.get("label") or {}).get("_reviewers") or 1) for it in reviewed] or [1]
-    adjudicated = any((it.get("label") or {}).get("_adjudicated") for it in reviewed)
-    read = any((it.get("label") or {}).get("_second_reading") for it in reviewed)
-    lines = []
-    if max(per_case) > 1:
-        lines.append("Each case was judged independently by more than one licensed clinician.")
-    else:
-        lines.append("Each case was judged by a licensed clinician.")
-    if adjudicated:
-        lines.append("Where clinicians disagreed, the case was settled by further clinical "
-                     "review rather than by averaging the answers.")
-    if read:
-        lines.append("Written work was approved by a second clinician before release.")
-    lines.append("Clinicians are independent of the client and of the system under evaluation. "
-                 "Their identities are not disclosed: Senebiclabs stands behind these findings.")
-    return {"reviewed_by": "Senebiclabs clinical panel", "statement": " ".join(lines)}
+    return {
+        "reviewed_by": "Senebiclabs clinical panel",
+        "statement": ("Reviewed by licensed clinicians independent of the client and of the "
+                      "system under evaluation. Senebiclabs stands behind these findings."),
+    }
 
 
 def build_report(db, project_id: str) -> dict:

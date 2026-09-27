@@ -342,12 +342,9 @@ KEY="your_api_key"`}</Code>
             their mean agreement and how many items needed adjudication — so you can trust the numbers.
           </p>
           <p>
-            The <C>assurance</C> block states who stands behind the result and what is guaranteed
-            about it: that each case was judged independently by more than one licensed clinician,
-            that a disagreement was settled by further clinical review rather than averaged away,
-            and that written work was approved by a second clinician. Senebiclabs is the accountable
-            party — clinicians are independent of you and of the system under evaluation, and their
-            identities are never disclosed.
+            The <C>assurance</C> block states who stands behind the result: licensed clinicians,
+            independent of you and of the system under evaluation, with Senebiclabs accountable for
+            the findings. Their identities are never disclosed.
           </p>
           <div className="docs-callout">
             <p>

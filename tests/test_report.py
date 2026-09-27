@@ -236,9 +236,10 @@ if __name__ == "__main__":
     print(R.render_markdown(rep))
 
 
-def test_the_report_says_who_stands_behind_it_without_naming_anyone():
-    """A client receives the judgement, never the people. The assurance block states what
-    was actually done — from the work itself — and names nobody."""
+def test_the_report_says_who_stands_behind_it_and_nothing_about_how_we_work():
+    """A client came for findings. The deliverable says who is accountable and that the
+    clinicians were independent — not how many there were, who settled a disagreement, or
+    how written work was approved. That is ours, recorded on the items themselves."""
     items = [
         {"idx": 0, "status": "done", "content": {"case_id": "A"},
          "label": {"verdict": "Correct", "_reviewers": 3, "_agreement": 1.0}},
@@ -246,33 +247,16 @@ def test_the_report_says_who_stands_behind_it_without_naming_anyone():
          "label": {"verdict": "Incorrect", "_reviewers": 3, "_adjudicated": True,
                    "_adjudicated_by": "Dr A Okafor, MMed Pathology", "_recorded_by": "Godwin Yampoi"}},
         {"idx": 2, "status": "done", "content": {"case_id": "C"},
-         "label": {"verdict": "Correct", "_reviewers": 3,
-                   "_second_reading": {"approved": True, "rounds": 1}}},
+         "label": {"verdict": "Correct", "_second_reading": {"approved": True, "rounds": 2}}},
     ]
     a = R.assurance(items, {})
-    assert a["reviewed_by"] == "Senebiclabs clinical panel"
-    # Guarantees, not staffing: no counts, no internal roles, no names.
     assert set(a) == {"reviewed_by", "statement"}
-    assert "settled by further clinical review" in a["statement"]
-    assert "approved by a second clinician" in a["statement"]
+    assert a["reviewed_by"] == "Senebiclabs clinical panel"
+    assert "independent of the client" in a["statement"]
     assert "Senebiclabs stands behind" in a["statement"]
-    for leak in ("senior", "Okafor", "Godwin", "3", "2", "1"):
+    for leak in ("senior", "second clinician", "disagree", "averag", "Okafor", "Godwin",
+                 "1", "2", "3"):
         assert leak not in a["statement"], leak
-
-
-def test_assurance_does_not_claim_a_senior_reviewer_who_was_never_needed():
-    items = [{"idx": 0, "status": "done", "content": {},
-              "label": {"verdict": "Correct", "_reviewers": 2}}]
-    a = R.assurance(items, {})
-    # Nothing is claimed about disagreements when there were none.
-    assert "clinical review" not in a["statement"]
-    assert "more than one licensed clinician" in a["statement"]
-
-
-def test_assurance_on_single_reviewed_work_does_not_imply_several():
-    a = R.assurance([{"idx": 0, "status": "done", "content": {}, "label": {"verdict": "Correct"}}], {})
-    assert "judged by a licensed clinician" in a["statement"]
-    assert "more than one" not in a["statement"]   # singly reviewed work must not imply several
 
 
 def test_the_client_is_never_told_how_many_clinicians_saw_a_case():
@@ -293,7 +277,6 @@ def test_the_client_is_never_told_how_many_clinicians_saw_a_case():
 
     a = R.assurance(items, {})
     assert "clinicians_per_case" not in a
-    assert "more than one licensed clinician" in a["statement"]
     assert "3" not in a["statement"] and "2" not in a["statement"]
 
     ds = R.compute_dataset_report(items, {"verdict": {"type": "single"}}, "label")
