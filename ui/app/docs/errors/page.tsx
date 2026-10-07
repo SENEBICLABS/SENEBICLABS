@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Errors and notes · Senebiclabs API',
+  title: 'Errors and notes',
   description: 'Status codes, idempotency, and the shape of an item.',
   alternates: { canonical: 'https://senebiclabs.com/docs/errors' },
 }

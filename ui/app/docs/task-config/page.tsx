@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Task config · Senebiclabs API',
+  title: 'Task config',
   description: 'The eval_config that decides what clinicians see and fill in.',
   alternates: { canonical: 'https://senebiclabs.com/docs/task-config' },
 }

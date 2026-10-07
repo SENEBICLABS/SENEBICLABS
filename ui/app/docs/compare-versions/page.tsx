@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Compare versions · Senebiclabs API',
+  title: 'Compare versions',
   description: 'GET /compare: regression between two runs of your system.',
   alternates: { canonical: 'https://senebiclabs.com/docs/compare-versions' },
 }

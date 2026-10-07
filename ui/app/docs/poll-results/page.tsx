@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Poll status and results · Senebiclabs API',
+  title: 'Poll status and results',
   description: 'GET /results: status while in review, and the report and reviewed items on delivery.',
   alternates: { canonical: 'https://senebiclabs.com/docs/poll-results' },
 }

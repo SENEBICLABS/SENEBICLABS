@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Authentication · Senebiclabs API',
+  title: 'Authentication',
   description: 'Bearer API keys: how to get one, how to use it, how to revoke it.',
   alternates: { canonical: 'https://senebiclabs.com/docs/authentication' },
 }

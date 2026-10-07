@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { BASE, C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Quickstart · Senebiclabs API',
+  title: 'Quickstart',
   description: 'From an API key to a delivered report in three calls.',
   alternates: { canonical: 'https://senebiclabs.com/docs/quickstart' },
 }

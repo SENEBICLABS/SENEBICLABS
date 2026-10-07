@@ -1,8 +1,18 @@
+import type { Metadata } from 'next'
 import { Instrument_Sans } from 'next/font/google'
 import './docs.css'
 import DocsSidebar from './DocsSidebar'
 import DocsPrevNext from './DocsPrevNext'
 import DocsEnhance from './DocsEnhance'
+
+// Pages name only themselves; this adds the suffix once, instead of every page
+// carrying it and the root layout adding a second one on top.
+export const metadata: Metadata = {
+  title: {
+    default: 'Senebiclabs API reference',
+    template: '%s · Senebiclabs API',
+  },
+}
 
 // The reference reads as a reference, not as the marketing site. Instrument Sans
 // is the face Mintlify-style API docs use, scoped to this route so the rest of

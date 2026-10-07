@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { BASE, C, Code } from './_ui'
 
 export const metadata: Metadata = {
-  title: 'API · Senebiclabs API',
+  title: { absolute: 'Senebiclabs API reference' },
   description: 'Senebiclabs API overview: the three project purposes, the base URL, and where to start.',
   alternates: { canonical: 'https://senebiclabs.com/docs' },
 }

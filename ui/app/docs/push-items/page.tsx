@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Push items · Senebiclabs API',
+  title: 'Push items',
   description: 'POST /ingest: send a batch inline, or stream a manifest from your own storage.',
   alternates: { canonical: 'https://senebiclabs.com/docs/push-items' },
 }

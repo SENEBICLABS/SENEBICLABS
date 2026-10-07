@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { C, Code } from '../_ui'
 
 export const metadata: Metadata = {
-  title: 'Webhooks · Senebiclabs API',
+  title: 'Webhooks',
   description: 'Signed delivery to your endpoint, and how to verify the signature.',
   alternates: { canonical: 'https://senebiclabs.com/docs/webhooks' },
 }
