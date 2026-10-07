@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect } from 'react'
+import { PAGES, href } from './_nav'
 
-// Progressive enhancement for the (server-rendered) docs page: code blocks with
-// a language label and a copy button, linkable headings, search, and
-// active-section highlighting in the sidebar. Renders nothing.
+// Progressive enhancement for the (server-rendered) reference: code blocks with
+// a language label and a copy button, linkable headings, and search. Renders
+// nothing. The sidebar's active state is a route now, so it is handled in React
+// rather than here.
 
 const slug = (t: string) =>
   t.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 60)
@@ -74,42 +76,33 @@ export default function DocsEnhance() {
       }
     })
 
-    // ── Active highlighting: the sidebar follows the section in view ─────────
-    const sideLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.docs-nav a[href^="#"]'))
-    const sideById = new Map(sideLinks.map(a => [a.getAttribute('href')!.slice(1), a]))
-
-    const sectionObserver = new IntersectionObserver(
-      entries => entries.forEach(e => {
-        if (!e.isIntersecting) return
-        sideLinks.forEach(l => l.classList.remove('active'))
-        sideById.get(e.target.id)?.classList.add('active')
-      }),
-      { rootMargin: '-12% 0px -78% 0px', threshold: 0 }
-    )
-    document.querySelectorAll<HTMLElement>('section[id]').forEach(s => sectionObserver.observe(s))
-
     // ── Search ───────────────────────────────────────────────────────────────
     // Built from the page itself, so it indexes whatever is published rather than
     // a list someone has to remember to update. Each heading carries the prose
     // that follows it, because people search for a sentence, not a title.
-    type Entry = { id: string; title: string; crumb: string; body: string }
-    const index: Entry[] = heads.map(h => {
-      const title = (h.textContent ?? '').replace(/^#/, '').trim()
-      const section = h.closest('section')?.querySelector('h2')
-      const crumb = (section?.textContent ?? '').replace(/^#/, '').trim()
-      let body = ''
-      let n = h.nextElementSibling
-      while (n && !/^H[23]$/.test(n.tagName)) {
-        body += ' ' + (n.textContent ?? '')
-        n = n.nextElementSibling
-      }
-      return {
-        id: h.id,
-        title,
-        crumb: crumb === title ? '' : crumb,
-        body: body.replace(/\s+/g, ' ').slice(0, 600),
-      }
-    })
+    type Entry = { url: string; title: string; crumb: string; body: string }
+
+    // Every page by name, so search can take you somewhere you are not, plus the
+    // headings of the page you are on with the prose under each, because people
+    // search for a sentence rather than a title. Full text for other pages would
+    // need a build-time index; this is the useful 90% without one.
+    const index: Entry[] = [
+      ...PAGES.map(p => ({ url: href(p.slug), title: p.label, crumb: p.group ?? 'Page', body: '' })),
+      ...heads.map(h => {
+        let body = ''
+        let n = h.nextElementSibling
+        while (n && !/^H[23]$/.test(n.tagName)) {
+          body += ' ' + (n.textContent ?? '')
+          n = n.nextElementSibling
+        }
+        return {
+          url: `#${h.id}`,
+          title: (h.textContent ?? '').replace(/^#/, '').trim(),
+          crumb: 'On this page',
+          body: body.replace(/\s+/g, ' ').slice(0, 600),
+        }
+      }),
+    ]
 
     const overlay = document.getElementById('docs-search')
     const input = document.getElementById('docs-search-input') as HTMLInputElement | null
@@ -138,7 +131,7 @@ export default function DocsEnhance() {
         ? hits
             .map(
               (e, i) =>
-                `<a href="#${e.id}" class="sr${i === 0 ? ' active' : ''}">` +
+                `<a href="${e.url}" class="sr${i === 0 ? ' active' : ''}">` +
                 `<span class="sr-t">${e.title.replace(/</g, '&lt;')}</span>` +
                 (e.crumb ? `<span class="sr-c">${e.crumb.replace(/</g, '&lt;')}</span>` : '') +
                 `</a>`
@@ -196,7 +189,6 @@ export default function DocsEnhance() {
     triggers.forEach(b => b.addEventListener('click', open))
 
     return () => {
-      sectionObserver.disconnect()
       document.removeEventListener('keydown', onKey)
       input?.removeEventListener('input', onInput)
       overlay?.removeEventListener('click', onOverlayClick)

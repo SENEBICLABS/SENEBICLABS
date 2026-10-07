@@ -70,11 +70,17 @@
   max-width: 900px;
 }
 .docs-main h1 {
-  font-size: clamp(30px, 5vw, 44px);
+  font-size: clamp(27px, 3.6vw, 36px);
   font-weight: 620;
   letter-spacing: -0.02em;
-  margin: 0 0 16px;
+  margin: 6px 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
+/* The overview is the front door and carries the bigger title. */
+.docs-main h1.docs-title { font-size: clamp(30px, 5vw, 44px); display: block; }
 .docs-lead {
   font-size: 17px;
   line-height: 1.7;
@@ -466,3 +472,35 @@
   .docs-topbar .docs-cta { margin-left: auto; }
   .docs-side { top: 0; }
 }
+
+/* ── Previous / next ──────────────────────────────────────────────────────────
+   A split reference needs somewhere to go at the bottom of a page. */
+.docs-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: clamp(48px, 7vw, 76px);
+  padding-top: 26px;
+  border-top: 1px solid var(--hairline);
+}
+.pg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 48%;
+  padding: 13px 17px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pg:hover { border-color: var(--hairline-strong); background: rgba(255, 255, 255, 0.04); }
+.pg-next { text-align: right; margin-left: auto; }
+.pg-k {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+.pg-t { font-size: 14.5px; font-weight: 500; color: var(--ink); }

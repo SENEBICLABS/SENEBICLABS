@@ -1,8 +1,12 @@
 import { Instrument_Sans } from 'next/font/google'
+import './docs.css'
+import DocsSidebar from './DocsSidebar'
+import DocsPrevNext from './DocsPrevNext'
+import DocsEnhance from './DocsEnhance'
 
 // The reference reads as a reference, not as the marketing site. Instrument Sans
-// is the face Mintlify-style API docs use, and it is scoped to this route so the
-// rest of senebiclabs.com keeps Geist and DM Sans.
+// is the face Mintlify-style API docs use, scoped to this route so the rest of
+// senebiclabs.com keeps Geist and DM Sans.
 const instrument = Instrument_Sans({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
@@ -11,5 +15,55 @@ const instrument = Instrument_Sans({
 })
 
 export default function DocsLayout({ children }: { children: React.ReactNode }) {
-  return <div className={instrument.variable}>{children}</div>
+  return (
+    <div className={instrument.variable}>
+      <header className="docs-topbar">
+        <div className="docs-topbar-in">
+          <a href="/" className="docs-brand">
+            Senebiclabs
+            <span className="docs-brand-sub">API reference</span>
+          </a>
+          <button type="button" className="docs-searchbtn" data-open-search>
+            <span>Search the reference</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <a href="/developers" className="docs-cta">Get an API key →</a>
+        </div>
+      </header>
+
+      <div className="docs-shell">
+        <aside className="docs-side">
+          <DocsSidebar />
+        </aside>
+
+        <main className="docs-main">
+          {children}
+          <DocsPrevNext />
+          <div className="docs-foot">
+            <span className="docs-eyebrow">Questions? senebiclabs@gmail.com</span>
+          </div>
+        </main>
+      </div>
+
+      <div id="docs-search" role="dialog" aria-modal="true" aria-label="Search the reference">
+        <div className="docs-search-panel">
+          <input
+            id="docs-search-input"
+            type="text"
+            placeholder="Search the reference…"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div id="docs-search-results" />
+          <div className="docs-search-foot">
+            <span>↑↓ navigate</span>
+            <span>↵ open</span>
+            <span>esc close</span>
+          </div>
+        </div>
+      </div>
+
+      <DocsEnhance />
+    </div>
+  )
 }
