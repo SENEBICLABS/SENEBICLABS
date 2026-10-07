@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Delivery</span>
+          <span className="docs-kicker">Delivery</span>
           <h1>Webhooks <span className="tag">optional, signed</span></h1>
           <p>
             If you registered a <C>webhook_url</C>, we POST it once when the batch is delivered,

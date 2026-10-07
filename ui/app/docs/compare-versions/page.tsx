@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Endpoint</span>
+          <span className="docs-kicker">Endpoints</span>
           <h1>
             <span className="m m-get">GET</span>
             <span className="ep">/compare</span>

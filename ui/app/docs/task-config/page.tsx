@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Reference</span>
+          <span className="docs-kicker">Reference</span>
           <h1>Task config</h1>
           <p>
             The <C>eval_config</C> defines what clinicians see and fill in. Key fields:

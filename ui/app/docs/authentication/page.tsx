@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Authentication</span>
+          <span className="docs-kicker">Get started</span>
           <h1>Bearer API key</h1>
           <p>Every request carries your API key as a bearer token:</p>
           <Code>{`Authorization: Bearer <YOUR_API_KEY>`}</Code>

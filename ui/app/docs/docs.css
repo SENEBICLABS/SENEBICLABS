@@ -504,3 +504,22 @@
   color: rgba(255, 255, 255, 0.4);
 }
 .pg-t { font-size: 14.5px; font-weight: 500; color: var(--ink); }
+
+
+/* ── Page heading block ───────────────────────────────────────────────────────
+   Kicker, then the page title, then a line saying what you do with it. Plain
+   sentence case rather than the tiny mono caps used elsewhere, because a human
+   sentence sits above the title here, not a label. */
+.docs-kicker {
+  display: block;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.46);
+  margin: 0 0 6px;
+}
+.docs-tagline {
+  font-size: 16px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.56);
+  max-width: 62ch;
+  margin: -6px 0 26px;
+}

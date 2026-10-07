@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Endpoints</span>
+          <span className="docs-kicker">Endpoints</span>
           <h1>
             <span className="ep">Failure library</span>
             <span className="tag">Memory across versions</span>

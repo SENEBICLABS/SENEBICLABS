@@ -11,7 +11,11 @@ export default function Page() {
   return (
     <>
         <section>
-          <h1 className="docs-title">API</h1>
+          <span className="docs-kicker">Get started</span>
+          <h1 className="docs-title">Clinician-grade data for medical AI</h1>
+          <p className="docs-tagline">
+            Evaluate, benchmark and label your medical models through the Senebiclabs API.
+          </p>
           <p className="docs-lead">
             Programmatic access for clients who integrate by code instead of the dashboard.
             Create a project, push a batch of items, poll for status and results, and

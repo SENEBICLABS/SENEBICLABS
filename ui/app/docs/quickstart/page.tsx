@@ -11,7 +11,7 @@ export default function Page() {
   return (
     <>
         <section>
-          <span className="docs-eyebrow">Quickstart</span>
+          <span className="docs-kicker">Get started</span>
           <h1>From zero to results</h1>
           <p>
             The whole flow in three calls, and each one below runs as written. First,{' '}
