@@ -71,3 +71,7 @@ Demo/
 
 # Next.js build output (never commit)
 .next/
+
+# Local working notes, not part of the platform
+respiratory-platform.local.md
+senebiclabs-company-overview.*

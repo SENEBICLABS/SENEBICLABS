@@ -98,9 +98,14 @@ tests/          unit + numeric (numpy oracle) + browser (Playwright)
 ## Running locally
 
 ```bash
+python3.10 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-# API docs: http://localhost:8000/docs
+cp .env.example .env
+
+# The suite is hermetic: no database, no Label Studio, no network, no credentials.
+PYTHONPATH=. pytest -q tests --ignore=tests/e2e
+
+uvicorn app.main:app --reload --port 8000     # http://localhost:8000/docs
 ```
 
 Frontend:
@@ -109,6 +114,9 @@ Frontend:
 cd ui && npm install && npm run dev
 # http://localhost:3000
 ```
+
+**New here?** [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, where everything lives, the
+conventions, how to deploy, and the handful of things that will catch you out.
 
 ---
 
