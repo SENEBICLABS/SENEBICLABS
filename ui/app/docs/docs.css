@@ -461,8 +461,18 @@
   padding: 10px clamp(18px, 3vw, 26px);
 }
 /* The nav links below carry 10px of their own padding, so the brand matches it
-   and the two line up down the left edge. */
-.docs-topbar .docs-brand { padding-left: 10px; }
+   and the two line up down the left edge. The brand is not a link: leaving the
+   reference is what "Visit website" is for. */
+.docs-topbar .docs-brand { padding-left: 10px; cursor: default; }
+
+.docs-toplink {
+  font-size: 13.5px;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.docs-toplink:hover { opacity: 0.72; }
 .docs-topbar .docs-searchbtn { margin-left: auto; }
 .docs-topbar .docs-cta { margin-left: 0; }
 

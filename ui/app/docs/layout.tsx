@@ -29,14 +29,15 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
     <div className={instrument.variable}>
       <header className="docs-topbar">
         <div className="docs-topbar-in">
-          <a href="/" className="docs-brand">
+          <span className="docs-brand">
             Senebiclabs
             <span className="docs-brand-sub">API reference</span>
-          </a>
+          </span>
           <button type="button" className="docs-searchbtn" data-open-search>
             <span>Search the reference</span>
             <kbd>⌘K</kbd>
           </button>
+          <a href="/" className="docs-toplink">Website</a>
           <a href="/developers" className="docs-cta">Get an API key →</a>
         </div>
       </header>
