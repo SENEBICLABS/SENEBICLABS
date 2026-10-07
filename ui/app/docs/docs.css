@@ -2,10 +2,15 @@
 
 .docs-shell {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
-  max-width: 1180px;
+  grid-template-columns: 248px minmax(0, 1fr) 232px;
+  max-width: 1420px;
   margin: 0 auto;
+  font-family: var(--docs-sans), 'Inter', system-ui, -apple-system, sans-serif;
 }
+.docs-shell h1,
+.docs-shell h2,
+.docs-shell h3,
+.docs-brand { font-family: var(--docs-sans), 'Inter', system-ui, sans-serif; }
 
 /* Sidebar */
 .docs-side {
@@ -238,6 +243,11 @@
 .copy-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
 .copy-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.6); opacity: 1; }
 
+@media (max-width: 1180px) {
+  .docs-shell { grid-template-columns: 248px minmax(0, 1fr); max-width: 1180px; }
+  .docs-toc { display: none; }
+}
+
 @media (max-width: 880px) {
   .docs-shell { grid-template-columns: 1fr; }
   .docs-side {
@@ -250,3 +260,112 @@
   .docs-nav { flex-flow: row wrap; gap: 4px 6px; }
   .docs-nav .grp { display: none; }
 }
+
+
+/* ── On this page ─────────────────────────────────────────────────────────── */
+.docs-toc {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 56px 24px 60px 8px;
+}
+.docs-toc-title {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+  margin-bottom: 12px;
+}
+.docs-toc nav { display: flex; flex-direction: column; gap: 1px; }
+.docs-toc a {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+  text-decoration: none;
+  padding: 4px 0 4px 11px;
+  border-left: 2px solid var(--hairline);
+  transition: color 0.15s, border-color 0.15s;
+}
+.docs-toc a:hover { color: var(--ink); }
+.docs-toc a.lvl3 { padding-left: 22px; font-size: 12px; color: rgba(255, 255, 255, 0.4); }
+.docs-toc a.active { color: var(--ink); border-left-color: rgba(255, 255, 255, 0.7); }
+
+/* ── Start-here cards ─────────────────────────────────────────────────────── */
+.docs-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 26px 0 8px;
+  max-width: 640px;
+}
+.docs-card {
+  display: block;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  padding: 17px 18px;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.015);
+  transition: border-color 0.16s, background 0.16s, transform 0.16s;
+}
+.docs-card:hover {
+  border-color: var(--hairline-strong);
+  background: rgba(255, 255, 255, 0.045);
+  transform: translateY(-1px);
+}
+.docs-card .t {
+  display: block;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-bottom: 5px;
+}
+.docs-card .d {
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.56);
+}
+@media (max-width: 620px) { .docs-cards { grid-template-columns: 1fr; } }
+
+/* ── Code block header ────────────────────────────────────────────────────── */
+.docs-pre { padding-top: 0; }
+.pre-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 -18px 12px;
+  padding: 9px 12px 9px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+.pre-lang {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+.docs-pre .copy-btn { position: static; opacity: 0.6; }
+.docs-pre:hover .copy-btn { opacity: 1; }
+
+/* ── Heading anchors ──────────────────────────────────────────────────────── */
+.docs-main h2, .docs-main h3 { position: relative; scroll-margin-top: 20px; }
+.h-anchor {
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.28);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.14s, color 0.14s;
+}
+.docs-main h2:hover .h-anchor,
+.docs-main h3:hover .h-anchor { opacity: 1; }
+.h-anchor:hover { color: var(--ink); }
+@media (max-width: 880px) { .h-anchor { display: none; } }

@@ -40,6 +40,57 @@ items to. One key can create and drive many projects.
 
 ---
 
+## Quickstart
+
+The whole flow in three calls, and each one below runs as written.
+
+```bash
+BASE="https://api.senebiclabs.com/api/v1/project"
+KEY="your_api_key"
+```
+
+**1. Create a project.** Start from a template and there is no config to author:
+
+```bash
+curl -s -X POST "$BASE/projects" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{
+    "name": "Triage model eval",
+    "template": "model_evaluation",
+    "classes": ["Routine", "Urgent", "Emergency"]
+  }'
+```
+
+Returns a `project_id`. Every template is listed in §1, along with the advanced path
+if you would rather author the config yourself.
+
+**2. Push items.**
+
+```bash
+curl -s -X POST "$BASE/ingest" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: batch-1" \
+  -d '{
+    "project_id": "YOUR_PROJECT_ID",
+    "items": [
+      { "case_id": "case_001", "scenario": "patient message...", "prediction": "Routine" },
+      { "case_id": "case_002", "scenario": "patient message...", "prediction": "Urgent" }
+    ]
+  }'
+```
+
+**3. Poll for results.**
+
+```bash
+curl -s "$BASE/results?project_id=YOUR_PROJECT_ID" -H "Authorization: Bearer $KEY"
+```
+
+`status` becomes `delivered` when the report and the reviewed items are ready.
+Clinicians work in hours and days rather than seconds, so poll on a timer of minutes.
+Better, register a webhook (§6) and we call you, signed, the moment it lands.
+
+---
+
 ## 1. Create a project — `POST /projects`
 
 Create a project and get back a `project_id` to push items to.

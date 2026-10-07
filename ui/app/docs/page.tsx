@@ -66,6 +66,25 @@ export default function DocsPage() {
             <li><b><C>create</C>:</b> you get new data produced for you — gold answers, preference pairs, or ratings, plus a coverage/agreement summary.</li>
           </ul>
 
+          <div className="docs-cards">
+            <a className="docs-card" href="#quickstart">
+              <span className="t">Quickstart</span>
+              <span className="d">Three calls, from a key to a delivered report.</span>
+            </a>
+            <a className="docs-card" href="#auth">
+              <span className="t">Authentication</span>
+              <span className="d">Bearer keys, how to get one and how to revoke it.</span>
+            </a>
+            <a className="docs-card" href="#create">
+              <span className="t">Templates</span>
+              <span className="d">Pick an outcome and we build the project for you.</span>
+            </a>
+            <a className="docs-card" href="#webhooks">
+              <span className="t">Webhooks</span>
+              <span className="d">Signed delivery, so you do not have to poll.</span>
+            </a>
+          </div>
+
           <h3>Base URL</h3>
           <Code>{BASE}</Code>
         </section>
@@ -625,6 +644,13 @@ async def hook(request: Request):
           </div>
         </section>
       </main>
+
+      {/* On this page, filled in by DocsEnhance from the headings */}
+      <aside className="docs-toc">
+        <div className="docs-toc-title">On this page</div>
+        <nav id="docs-toc-nav" aria-label="On this page" />
+      </aside>
+
       <DocsEnhance />
     </div>
   )
