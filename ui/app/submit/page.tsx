@@ -9,6 +9,7 @@ const TASK_TYPES = [
   'Clinical Text Labeling and Extraction',
   'Data Generation and RLHF for Medical LLMs',
   'Model Test and Evaluation for Healthcare AI',
+  'Benchmark and Regression Suite Construction',
   'Genomics and Omics Annotation',
   'De-identification and PHI Redaction',
   'Expert Clinical Review and Second Opinion',
@@ -21,8 +22,8 @@ const POINTS = [
     body: 'We reply within one business day to set up a quick walkthrough of the platform on your use case.',
   },
   {
-    heading: 'See it on your data',
-    body: 'We show how credentialed medical specialists label and evaluate your data, with gold-standard checks and agreement built into every task.',
+    heading: 'See it on a case like yours',
+    body: 'We walk through a worked example close to your use case, so you can judge the standard before any data changes hands.',
   },
   {
     heading: 'Scope a first pilot',

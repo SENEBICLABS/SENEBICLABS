@@ -5,11 +5,11 @@ import EvalFooter from './components/EvalFooter'
 export const metadata: Metadata = {
   title: 'Clinician-grade data for medical AI · Senebiclabs',
   description:
-    'Senebiclabs is the data infrastructure under medical AI. Licensed clinicians label, evaluate, and create the data models are trained, aligned, and tested on, delivered by API, isolated per client, and traceable to a name.',
+    'Senebiclabs is the data infrastructure under medical AI. Licensed clinicians label, evaluate, benchmark, and create the data models are trained, aligned, and tested on, delivered by API, isolated per client, and traceable to a name.',
   alternates: { canonical: '/' },
   openGraph: {
     title: 'Clinician-grade data for medical AI · Senebiclabs',
-    description: 'The clinician layer underneath medical AI: label, evaluate, and create the data your models depend on.',
+    description: 'The clinician layer underneath medical AI: label, evaluate, benchmark, and create the data your models depend on.',
     url: 'https://senebiclabs.com',
   },
 }
@@ -78,7 +78,7 @@ export default function HomePage() {
           </h1>
           <p style={{ ...T_LEAD, fontSize: 'clamp(18px, 1.9vw, 23px)', maxWidth: 780, margin: '34px auto 0' }}>
             The layer between raw medicine and a model you can trust. Licensed clinicians
-            label, evaluate, and create the data your models are trained, aligned, and tested on.
+            label, evaluate, benchmark, and create the data your models are trained, aligned, and tested on.
           </p>
           <div style={{ marginTop: 46 }}>
             <Ctas />
@@ -115,6 +115,50 @@ export default function HomePage() {
             ].map((c, i) => (
               <div key={c.n} style={{ ...CELL, marginLeft: i % 3 === 0 ? 0 : -1 }}>
                 <Cell tag={c.n} title={c.t} body={c.d} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* WHAT WE EVALUATE  */}
+      <section id="evaluate" style={{ ...SECTION, scrollMarginTop: 90 }}>
+        <div style={WIDE}>
+          <Head tag="What we evaluate" title="Every way a medical model fails."
+                sub="A clinician judges the output on each axis that decides whether it is safe to put in front of a patient." />
+          <div className="blocks-3col" style={{ marginTop: GAP_GRID }}>
+            {[
+              { t: 'Clinical accuracy', d: 'Whether the output is correct, partly correct, or wrong.' },
+              { t: 'Safety', d: 'Unsafe advice, missed red flags, and failure to escalate or refer.' },
+              { t: 'Triage', d: 'Whether the urgency assigned is clinically defensible.' },
+              { t: 'Reasoning', d: 'Whether the stated reasoning actually supports the conclusion.' },
+              { t: 'Grounding', d: 'Whether every claim is supported by the source material.' },
+              { t: 'Agent traces', d: 'Multi-step tool use, and where in the chain it goes wrong.' },
+            ].map((m, i) => (
+              <div key={m.t} style={{ ...CELL, marginLeft: i % 3 === 0 ? 0 : -1, marginTop: i >= 3 ? -1 : 0 }}>
+                <Cell title={m.t} body={m.d} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* BENCHMARKS  */}
+      <section id="benchmarks" style={{ ...SECTION, scrollMarginTop: 90 }}>
+        <div style={WIDE}>
+          <Head tag="Benchmarks" title="Test material you keep."
+                sub="Not a one-off score. A suite your team re-runs after every prompt change and every model update." />
+          <div className="blocks-3col" style={{ marginTop: GAP_GRID }}>
+            {[
+              { t: 'Benchmark construction', d: 'Cases built to probe a defined capability, not sampled at random.' },
+              { t: 'Gold answers', d: 'Verified clinical ground truth for every case.' },
+              { t: 'Rubric design', d: 'What counts as correct, agreed in writing before the first case is judged.' },
+              { t: 'Adversarial cases', d: 'Inputs written to break the model, not to flatter it.' },
+              { t: 'Contradiction sets', d: 'Where the source material is incomplete or disagrees with itself.' },
+              { t: 'Regression suites', d: 'The evaluated cases and their answers, yours to re-run forever.' },
+            ].map((m, i) => (
+              <div key={m.t} style={{ ...CELL, marginLeft: i % 3 === 0 ? 0 : -1, marginTop: i >= 3 ? -1 : 0 }}>
+                <Cell title={m.t} body={m.d} />
               </div>
             ))}
           </div>
