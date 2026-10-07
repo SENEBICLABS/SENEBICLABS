@@ -26,12 +26,25 @@ function C({ children }: { children: string }) {
 
 export default function DocsPage() {
   return (
+    <>
+      {/* Top bar: brand, search, call to action */}
+      <header className="docs-topbar">
+        <div className="docs-topbar-in">
+          <a href="/" className="docs-brand">
+            Senebiclabs
+            <span className="docs-brand-sub">API reference</span>
+          </a>
+          <button type="button" className="docs-searchbtn" data-open-search>
+            <span>Search the reference</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <a href="/developers" className="docs-cta">Get an API key →</a>
+        </div>
+      </header>
+
     <div className="docs-shell">
       {/* Sidebar */}
       <aside className="docs-side">
-        <a href="/" className="docs-brand">Senebiclabs</a>
-        <div className="docs-brand-sub">API reference</div>
-        <a href="/developers" className="docs-cta">Get an API key →</a>
         <nav className="docs-nav">
           <a href="#overview">Overview</a>
           <a href="#quickstart">Quickstart</a>
@@ -645,7 +658,27 @@ async def hook(request: Request):
         </section>
       </main>
 
+      {/* Search, filled in and driven by DocsEnhance */}
+      <div id="docs-search" role="dialog" aria-modal="true" aria-label="Search the reference">
+        <div className="docs-search-panel">
+          <input
+            id="docs-search-input"
+            type="text"
+            placeholder="Search the reference…"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div id="docs-search-results" />
+          <div className="docs-search-foot">
+            <span>↑↓ navigate</span>
+            <span>↵ open</span>
+            <span>esc close</span>
+          </div>
+        </div>
+      </div>
+
       <DocsEnhance />
     </div>
+    </>
   )
 }

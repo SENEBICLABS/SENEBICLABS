@@ -15,29 +15,30 @@
 /* Sidebar */
 .docs-side {
   position: sticky;
-  top: 0;
+  top: 57px;
   align-self: start;
-  height: 100vh;
+  height: calc(100vh - 57px);
   overflow-y: auto;
-  padding: 40px 26px 60px;
+  padding: 30px 26px 60px;
   border-right: 1px solid var(--hairline);
 }
 .docs-brand {
-  font-size: 18px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 16.5px;
   font-weight: 640;
   letter-spacing: -0.01em;
   color: var(--ink);
   text-decoration: none;
-  display: inline-block;
-  margin-bottom: 4px;
+  white-space: nowrap;
 }
 .docs-brand-sub {
   font-family: 'Geist Mono', ui-monospace, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.44);
-  margin-bottom: 30px;
+  color: rgba(255, 255, 255, 0.4);
 }
 .docs-nav { display: flex; flex-direction: column; gap: 2px; }
 .docs-nav .grp {
@@ -199,7 +200,7 @@
 /* Sidebar CTA — get an API key */
 .docs-cta {
   display: inline-block;
-  margin: 2px 0 26px;
+  white-space: nowrap;
   font-family: 'Geist Mono', ui-monospace, monospace;
   font-size: 11px;
   letter-spacing: 0.1em;
@@ -333,3 +334,135 @@
 .docs-main h3:hover .h-anchor { opacity: 1; }
 .h-anchor:hover { color: var(--ink); }
 @media (max-width: 880px) { .h-anchor { display: none; } }
+
+/* ── Search ───────────────────────────────────────────────────────────────────
+   The sidebar lists sections; search finds a sentence. On a reference this long
+   that is the difference between reading and looking something up. */
+.docs-searchbtn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(420px, 100%);
+  margin: 0;
+  padding: 7px 9px 7px 13px;
+  font-family: inherit;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.docs-searchbtn:hover {
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+  background: rgba(255, 255, 255, 0.07);
+}
+.docs-searchbtn kbd {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.45);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+#docs-search {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: none;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 20px 20px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(3px);
+}
+#docs-search.open { display: flex; }
+.docs-search-panel {
+  width: 100%;
+  max-width: 580px;
+  background: #0b0e13;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+#docs-search-input {
+  width: 100%;
+  padding: 16px 20px;
+  font-family: inherit;
+  font-size: 15.5px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  outline: none;
+}
+#docs-search-input::placeholder { color: rgba(255, 255, 255, 0.34); }
+#docs-search-results { max-height: 52vh; overflow-y: auto; padding: 6px; }
+.sr {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  text-decoration: none;
+}
+.sr-t { font-size: 14px; color: rgba(255, 255, 255, 0.84); }
+.sr-c {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+.sr.active { background: rgba(255, 255, 255, 0.08); }
+.sr.active .sr-t { color: #fff; }
+.sr-empty { padding: 20px 14px; font-size: 14px; color: rgba(255, 255, 255, 0.45); }
+.docs-search-foot {
+  display: flex;
+  gap: 16px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--hairline);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+
+/* ── Top bar ──────────────────────────────────────────────────────────────────
+   Brand, search and the call to action, the way a hosted docs site arranges it.
+   Sticky, so search is reachable from anywhere on a long reference. */
+.docs-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  border-bottom: 1px solid var(--hairline);
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: saturate(140%) blur(10px);
+}
+.docs-topbar-in {
+  display: flex;
+  align-items: center;
+  gap: clamp(16px, 4vw, 40px);
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 10px clamp(18px, 3vw, 26px);
+}
+/* The nav links below carry 10px of their own padding, so the brand matches it
+   and the two line up down the left edge. */
+.docs-topbar .docs-brand { padding-left: 10px; }
+.docs-topbar .docs-searchbtn { margin-left: auto; }
+.docs-topbar .docs-cta { margin-left: 0; }
+
+@media (max-width: 720px) {
+  .docs-topbar-in { flex-wrap: wrap; gap: 10px; }
+  .docs-topbar .docs-searchbtn { order: 3; width: 100%; margin-left: 0; }
+  .docs-topbar .docs-cta { margin-left: auto; }
+  .docs-side { top: 0; }
+}
