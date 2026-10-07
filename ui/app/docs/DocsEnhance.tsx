@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react'
 
-// Progressive enhancement for the (server-rendered) docs page: a generated
-// "on this page" rail, code blocks with a language label and a copy button,
-// linkable headings, and active-section highlighting. Renders nothing.
+// Progressive enhancement for the (server-rendered) docs page: code blocks with
+// a language label and a copy button, linkable headings, and active-section
+// highlighting in the sidebar. Renders nothing.
 
 const slug = (t: string) =>
   t.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 60)
@@ -50,7 +50,7 @@ export default function DocsEnhance() {
       pre.prepend(head)
     })
 
-    // ── Headings: ids, a hover anchor, and the source for the rail ───────────
+    // ── Headings: ids and a hover anchor, so any subsection is linkable ─────
     const main = document.querySelector('.docs-main')
     const heads = Array.from(main?.querySelectorAll<HTMLElement>('h2, h3') ?? [])
     const used = new Set<string>()
@@ -74,37 +74,9 @@ export default function DocsEnhance() {
       }
     })
 
-    // ── On this page ─────────────────────────────────────────────────────────
-    const toc = document.getElementById('docs-toc-nav')
-    if (toc && !toc.childElementCount) {
-      heads.forEach(h => {
-        // Endpoint headings are built from spans: a method badge, the path, and a
-        // title. `.tag` holds the title on those, but only a qualifier on others
-        // ("Webhooks / optional, signed"), so it cannot be stripped. Drop the
-        // method badge, keep the rest, and join across element boundaries so the
-        // parts do not run together.
-        const clone = h.cloneNode(true) as HTMLElement
-        clone.querySelectorAll('.h-anchor, .m').forEach(n => n.remove())
-        const label = Array.from(clone.childNodes)
-          .map(n => (n.textContent ?? '').trim())
-          .filter(Boolean)
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim()
-        if (!label) return
-        const a = document.createElement('a')
-        a.href = `#${h.id}`
-        a.textContent = label
-        if (h.tagName === 'H3') a.className = 'lvl3'
-        toc.appendChild(a)
-      })
-    }
-
-    // ── Active highlighting: sidebar follows sections, rail follows headings ──
+    // ── Active highlighting: the sidebar follows the section in view ─────────
     const sideLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.docs-nav a[href^="#"]'))
-    const tocLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.docs-toc a[href^="#"]'))
     const sideById = new Map(sideLinks.map(a => [a.getAttribute('href')!.slice(1), a]))
-    const tocById = new Map(tocLinks.map(a => [a.getAttribute('href')!.slice(1), a]))
 
     const sectionObserver = new IntersectionObserver(
       entries => entries.forEach(e => {
@@ -116,17 +88,7 @@ export default function DocsEnhance() {
     )
     document.querySelectorAll<HTMLElement>('section[id]').forEach(s => sectionObserver.observe(s))
 
-    const headingObserver = new IntersectionObserver(
-      entries => entries.forEach(e => {
-        if (!e.isIntersecting) return
-        tocLinks.forEach(l => l.classList.remove('active'))
-        tocById.get(e.target.id)?.classList.add('active')
-      }),
-      { rootMargin: '-10% 0px -82% 0px', threshold: 0 }
-    )
-    heads.forEach(h => headingObserver.observe(h))
-
-    return () => { sectionObserver.disconnect(); headingObserver.disconnect() }
+    return () => sectionObserver.disconnect()
   }, [])
 
   return null

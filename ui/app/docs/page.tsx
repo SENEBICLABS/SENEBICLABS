@@ -645,12 +645,6 @@ async def hook(request: Request):
         </section>
       </main>
 
-      {/* On this page, filled in by DocsEnhance from the headings */}
-      <aside className="docs-toc">
-        <div className="docs-toc-title">On this page</div>
-        <nav id="docs-toc-nav" aria-label="On this page" />
-      </aside>
-
       <DocsEnhance />
     </div>
   )
