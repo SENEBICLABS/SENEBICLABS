@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Quickstart',
   description: 'From an API key to a delivered report in three calls.',
   alternates: { canonical: 'https://senebiclabs.com/docs/quickstart' },
+  openGraph: { url: 'https://senebiclabs.com/docs/quickstart' },
 }
 
 export default function Page() {
@@ -18,12 +19,12 @@ export default function Page() {
             <a href="/developers" style={{ color: '#fff' }}>get a key</a>, then set it in your shell:
           </p>
           <Code>{`BASE="${BASE}"
-KEY="your_api_key"`}</Code>
+API_KEY="your_api_key"`}</Code>
 
           <h3>1 · Create a project</h3>
           <p>Start from a template and there is no config to author:</p>
           <Code>{`curl -s -X POST "$BASE/projects" \\
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -d '{
     "name": "Triage model eval",
     "template": "model_evaluation",
@@ -37,7 +38,7 @@ KEY="your_api_key"`}</Code>
 
           <h3>2 · Push items</h3>
           <Code>{`curl -s -X POST "$BASE/ingest" \\
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -H "Idempotency-Key: batch-1" \\
   -d '{
     "project_id": "YOUR_PROJECT_ID",
@@ -48,7 +49,7 @@ KEY="your_api_key"`}</Code>
   }'`}</Code>
 
           <h3>3 · Poll for results</h3>
-          <Code>{`curl -s "$BASE/results?project_id=YOUR_PROJECT_ID" -H "Authorization: Bearer $KEY"`}</Code>
+          <Code>{`curl -s "$BASE/results?project_id=YOUR_PROJECT_ID" -H "Authorization: Bearer $API_KEY"`}</Code>
           <p>
             <C>status</C> becomes <C>delivered</C> when the report and the reviewed items are ready.
             Clinicians work in hours and days rather than seconds, so poll on a timer of minutes. Better,

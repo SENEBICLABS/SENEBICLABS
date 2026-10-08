@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Create a project',
   description: 'POST /projects: start from an outcome template, or author the task config yourself.',
   alternates: { canonical: 'https://senebiclabs.com/docs/create-a-project' },
+  openGraph: { url: 'https://senebiclabs.com/docs/create-a-project' },
 }
 
 export default function Page() {

@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Failure library',
   description: 'Record failures, query patterns, promote them to a benchmark and re-run the suite.',
   alternates: { canonical: 'https://senebiclabs.com/docs/failure-library' },
+  openGraph: { url: 'https://senebiclabs.com/docs/failure-library' },
 }
 
 export default function Page() {

@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Authentication',
   description: 'Bearer API keys: how to get one, how to use it, how to revoke it.',
   alternates: { canonical: 'https://senebiclabs.com/docs/authentication' },
+  openGraph: { url: 'https://senebiclabs.com/docs/authentication' },
 }
 
 export default function Page() {

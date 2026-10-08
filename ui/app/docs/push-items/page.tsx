@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Push items',
   description: 'POST /ingest: send a batch inline, or stream a manifest from your own storage.',
   alternates: { canonical: 'https://senebiclabs.com/docs/push-items' },
+  openGraph: { url: 'https://senebiclabs.com/docs/push-items' },
 }
 
 export default function Page() {
@@ -52,7 +53,7 @@ export default function Page() {
             JSONL file where each line is one item.
           </p>
           <Code>{`curl -s -X POST "$BASE/ingest" \\
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -d '{
     "project_id": "...",
     "source": { "manifest_url": "https://your-bucket.s3.../manifest.jsonl", "sample": 1000 }

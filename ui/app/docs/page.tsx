@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: { absolute: 'Senebiclabs API reference' },
   description: 'Senebiclabs API overview: the three project purposes, the base URL, and where to start.',
   alternates: { canonical: 'https://senebiclabs.com/docs' },
+  openGraph: { url: 'https://senebiclabs.com/docs' },
 }
 
 export default function Page() {

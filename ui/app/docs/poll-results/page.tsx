@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Poll status and results',
   description: 'GET /results: status while in review, and the report and reviewed items on delivery.',
   alternates: { canonical: 'https://senebiclabs.com/docs/poll-results' },
+  openGraph: { url: 'https://senebiclabs.com/docs/poll-results' },
 }
 
 export default function Page() {

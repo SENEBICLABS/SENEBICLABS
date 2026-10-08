@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Compare versions',
   description: 'GET /compare: regression between two runs of your system.',
   alternates: { canonical: 'https://senebiclabs.com/docs/compare-versions' },
+  openGraph: { url: 'https://senebiclabs.com/docs/compare-versions' },
 }
 
 export default function Page() {

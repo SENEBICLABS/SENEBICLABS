@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Webhooks',
   description: 'Signed delivery to your endpoint, and how to verify the signature.',
   alternates: { canonical: 'https://senebiclabs.com/docs/webhooks' },
+  openGraph: { url: 'https://senebiclabs.com/docs/webhooks' },
 }
 
 export default function Page() {

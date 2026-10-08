@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: 'Task config',
   description: 'The eval_config that decides what clinicians see and fill in.',
   alternates: { canonical: 'https://senebiclabs.com/docs/task-config' },
+  openGraph: { url: 'https://senebiclabs.com/docs/task-config' },
 }
 
 export default function Page() {
