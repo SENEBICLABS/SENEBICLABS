@@ -3,12 +3,12 @@ import EvalNav from '../components/EvalNav'
 import EvalFooter from '../components/EvalFooter'
 
 export const metadata: Metadata = {
-  title: 'About · Senebiclabs',
+  title: 'About',
   description:
     'Senebiclabs is the data layer under medical AI. Licensed clinicians review the data medical models are trained and tested on, with a record of who decided what.',
   alternates: { canonical: '/about' },
   openGraph: {
-    title: 'About · Senebiclabs',
+    title: 'About',
     description: 'Who we are and why we build the clinician layer under medical AI.',
     url: 'https://senebiclabs.com/about',
   },

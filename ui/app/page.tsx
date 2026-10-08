@@ -3,7 +3,7 @@ import EvalNav from './components/EvalNav'
 import EvalFooter from './components/EvalFooter'
 
 export const metadata: Metadata = {
-  title: 'Clinician-grade data for medical AI · Senebiclabs',
+  title: { absolute: 'Senebiclabs: Clinician-grade data for medical AI' },
   description:
     'Senebiclabs is the data infrastructure under medical AI. Licensed clinicians label, evaluate, benchmark, and create the data models are trained, aligned, and tested on, delivered by API, isolated per client, and traceable to a name.',
   alternates: { canonical: '/' },

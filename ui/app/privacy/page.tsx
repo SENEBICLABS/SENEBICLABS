@@ -1,7 +1,7 @@
 import LegalDoc, { Section } from '../components/LegalDoc'
 
 export const metadata = {
-  title: 'Privacy Policy · Senebiclabs',
+  title: 'Privacy Policy',
   description: 'How Senebiclabs collects, uses, and protects your information.',
 }
 

@@ -1,7 +1,7 @@
 import LegalDoc, { Section } from '../components/LegalDoc'
 
 export const metadata = {
-  title: 'Terms of Service · Senebiclabs',
+  title: 'Terms of Service',
   description: 'The terms that govern your use of the Senebiclabs website and tools.',
 }
 

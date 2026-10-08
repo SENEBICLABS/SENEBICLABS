@@ -18,6 +18,18 @@ const nextConfig = {
         destination: '/',
         permanent: true,
       },
+      {
+        // The respiratory work moved to its own repository. Anyone holding an old
+        // link lands on the site rather than a dead end.
+        source: '/research',
+        destination: '/',
+        permanent: true,
+      },
+      {
+        source: '/fahimasima/:path*',
+        destination: '/',
+        permanent: true,
+      },
     ]
   },
   async rewrites() {
