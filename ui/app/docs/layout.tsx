@@ -3,6 +3,7 @@ import { Instrument_Sans } from 'next/font/google'
 import './docs.css'
 import DocsSidebar from './DocsSidebar'
 import DocsPrevNext from './DocsPrevNext'
+import DocsPageActions from './DocsPageActions'
 import DocsEnhance from './DocsEnhance'
 
 // Pages name only themselves; this adds the suffix once, instead of every page
@@ -48,6 +49,7 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
         </aside>
 
         <main className="docs-main">
+          <DocsPageActions />
           {children}
           <DocsPrevNext />
           <div className="docs-foot">
