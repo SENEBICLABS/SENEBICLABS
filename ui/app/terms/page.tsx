@@ -15,10 +15,11 @@ export default function TermsPage() {
     >
       <Section heading="What Senebiclabs is">
         <p>
-          Senebiclabs is building a biological intelligence platform for respiratory health, starting
-          with the lung. This website is currently a pre-launch service: it lets patients, specialists,
-          and researchers register interest, and gives approved research partners access to an early
-          analysis tool. Features and availability may change.
+          Senebiclabs provides clinician-led evaluation and training data for medical AI. Licensed
+          clinicians review what a model produces and judge it against the clinical standard, and
+          the findings are delivered to the client who commissioned them. This website lets
+          companies enquire about that work, and lets clinicians register their interest in joining
+          the panel. Features and availability may change.
         </p>
       </Section>
 

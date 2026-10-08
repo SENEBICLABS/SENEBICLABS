@@ -1,4 +1,4 @@
-# HEALTH — Respiratory Intelligence Platform
+# Senebiclabs — clinician evaluation platform
 # Python 3.10+
 # Versions pinned to match tested local environment
 

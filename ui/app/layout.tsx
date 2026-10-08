@@ -4,30 +4,30 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL("https://senebiclabs.com"),
   title: {
-    default: "Senebiclabs: Biological intelligence, starting with respiratory",
+    default: "Senebiclabs: Clinician-grade data for medical AI",
     template: "%s · Senebiclabs",
   },
   description:
-    "A biological intelligence platform connecting patients, clinicians, and the research community. Currently focused on the respiratory system.",
+    "Licensed clinicians evaluate, correct and create the data medical AI is trained and measured against, with the consensus, adjudication and provenance that make it trustworthy enough to build on.",
   applicationName: "Senebiclabs",
   keywords: [
-    "respiratory health", "biological intelligence", "lung", "specialist matching",
-    "single-cell", "research", "Senebiclabs",
+    "medical AI evaluation", "clinical evaluation", "training data", "benchmarks",
+    "RLHF", "preference data", "clinician review", "Senebiclabs",
   ],
   alternates: { canonical: "/" },
   openGraph: {
     type: "website",
     url: "https://senebiclabs.com",
     siteName: "Senebiclabs",
-    title: "Senebiclabs: Biological intelligence, starting with respiratory",
+    title: "Senebiclabs: Clinician-grade data for medical AI",
     description:
-      "Connecting patients, clinicians, and researchers. Currently focused on the respiratory system.",
+      "Licensed clinicians evaluate, correct and create the data medical AI is trained and measured against.",
   },
   twitter: {
     card: "summary",
-    title: "Senebiclabs: Biological intelligence, starting with respiratory",
+    title: "Senebiclabs: Clinician-grade data for medical AI",
     description:
-      "Connecting patients, clinicians, and researchers. Currently focused on the respiratory system.",
+      "Licensed clinicians evaluate, correct and create the data medical AI is trained and measured against.",
   },
   robots: { index: true, follow: true },
 };

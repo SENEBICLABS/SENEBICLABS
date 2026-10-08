@@ -10,7 +10,7 @@ const NAV = {
   ],
   company: [
     { label: 'About', href: '/about' },
-    { label: 'Research', href: '/research' },
+    { label: 'Docs', href: '/docs' },
     { label: 'Contact', href: 'mailto:senebiclabs@gmail.com' },
   ],
   legal: [

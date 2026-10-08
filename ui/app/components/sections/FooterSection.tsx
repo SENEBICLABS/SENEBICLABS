@@ -1,4 +1,4 @@
-import { FOOTER } from '@/content/home'
+import { FOOTER } from '@/content/footer'
 
 export default function FooterSection() {
   return (
