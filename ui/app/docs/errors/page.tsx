@@ -19,9 +19,6 @@ export default function Page() {
             <li><b>Idempotency:</b> send an <C>Idempotency-Key</C> header per batch so retries are safe. Without one, each <C>/ingest</C> appends its items.</li>
             <li><b>Content shape</b> is up to you as long as it matches the configured task. For an evaluation, the item carries the input the model responded to (<C>scenario</C>) and the model&rsquo;s output as <C>prediction</C>, which the scoring contract requires. Add <C>case_id</C> to tie results back to your own records.</li>
           </ul>
-          <div className="docs-foot">
-            <span className="docs-eyebrow">Questions? support@senebiclabs.com</span>
-          </div>
         </section>
     </>
   )

@@ -22,6 +22,8 @@ export default function Page() {
           <Code>{`POST https://your-app.com/hooks/senebiclabs
 Content-Type: application/json
 X-Senebiclabs-Signature: sha256=<hex>
+X-Senebiclabs-Timestamp: 1760000000
+X-Senebiclabs-Event-Id: 6f1c2a9e-...
 
 {
   "event": "results.delivered",
@@ -33,10 +35,18 @@ X-Senebiclabs-Signature: sha256=<hex>
 
           <h3>Verify the signature</h3>
           <p>
-            Every webhook carries an <C>X-Senebiclabs-Signature</C> header. It is an
-            HMAC-SHA256 of the exact request body, keyed with your <C>webhook_secret</C>.
-            Recompute it and compare in constant time before you trust the payload. This proves
-            the request came from us and was not altered in transit.
+            Every webhook carries three headers. <C>X-Senebiclabs-Signature</C> is an
+            HMAC-SHA256, keyed with your <C>webhook_secret</C>, over the timestamp and the
+            request body joined by a dot: <C>{'<timestamp>.<raw body>'}</C>.
+            <C>X-Senebiclabs-Timestamp</C> is the Unix second we sent it, and{' '}
+            <C>X-Senebiclabs-Event-Id</C> identifies the delivery.
+          </p>
+          <p>
+            Recompute the signature and compare in constant time before you trust the payload,
+            and reject anything whose timestamp is older than a few minutes. The signature proves
+            the request came from us unaltered; the timestamp is what stops a captured payload
+            being replayed against you later. Store the event id and ignore one you have already
+            processed, so a redelivery cannot be counted twice.
           </p>
           <div className="docs-callout">
             <p>
@@ -44,20 +54,31 @@ X-Senebiclabs-Signature: sha256=<hex>
               re-serialising can change the bytes and break the check.
             </p>
           </div>
-          <Code>{`import hmac, hashlib
+          <Code>{`import hmac, hashlib, time
 
-def verify(raw_body: bytes, header: str, secret: str) -> bool:
-    expected = "sha256=" + hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header or "")
+TOLERANCE = 300   # seconds
+
+def verify(raw_body: bytes, sig: str, ts: str, secret: str) -> bool:
+    if not ts.isdigit() or abs(time.time() - int(ts)) > TOLERANCE:
+        return False                      # too old, or from the future: a replay
+    signed = ts.encode() + b"." + raw_body
+    expected = "sha256=" + hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig or "")
 
 # FastAPI example
 @app.post("/hooks/senebiclabs")
 async def hook(request: Request):
     raw = await request.body()
     sig = request.headers.get("X-Senebiclabs-Signature", "")
-    if not verify(raw, sig, WEBHOOK_SECRET):
+    ts  = request.headers.get("X-Senebiclabs-Timestamp", "")
+    if not verify(raw, sig, ts, WEBHOOK_SECRET):
         raise HTTPException(status_code=401)
-    payload = json.loads(raw)   # trusted from here
+
+    event_id = request.headers.get("X-Senebiclabs-Event-Id", "")
+    if already_processed(event_id):       # a redelivery; acknowledge and stop
+        return {"ok": True}
+
+    payload = json.loads(raw)             # trusted from here
     ...`}</Code>
           <p>
             Return <C>2xx</C> to acknowledge. A <C>5xx</C> or a refused connection is retried up

@@ -163,7 +163,18 @@ def test_the_payload_is_signed_over_the_exact_bytes_sent():
          patch("time.sleep"):
         proj._fire_webhook(db, "p1")
 
-    expected = "sha256=" + _hmac.new(b"s3cret", sent["body"], hashlib.sha256).hexdigest()
+    # The timestamp is part of the signed string, so a captured payload cannot be
+    # replayed later: a receiver checks the header is recent before trusting it.
+    ts = sent["headers"]["X-Senebiclabs-Timestamp"]
+    expected = "sha256=" + _hmac.new(
+        b"s3cret", ts.encode() + b"." + sent["body"], hashlib.sha256
+    ).hexdigest()
     assert sent["headers"]["X-Senebiclabs-Signature"] == expected
+    assert ts.isdigit()
+    # Signing the body alone would verify forever, which is the weakness this closes.
+    body_only = "sha256=" + _hmac.new(b"s3cret", sent["body"], hashlib.sha256).hexdigest()
+    assert sent["headers"]["X-Senebiclabs-Signature"] != body_only
+    # An event id lets a receiver recognise a redelivery it has already processed.
+    assert len(sent["headers"]["X-Senebiclabs-Event-Id"]) == 36
     # And the body really is the JSON the client will parse.
     assert json.loads(sent["body"])["event"] == "results.delivered"

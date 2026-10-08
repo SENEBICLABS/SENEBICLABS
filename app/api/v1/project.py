@@ -10,6 +10,7 @@ import hmac
 import hashlib
 import time
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Header, File, Form, UploadFile
@@ -1662,11 +1663,23 @@ def _fire_webhook(db, project_id: str) -> None:
         }
         
         body_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-        
-        headers = {"Content-Type": "application/json"}
+
+        # An event id so a receiver can recognise a redelivery of something it has
+        # already processed, and a timestamp inside the signed string so a captured
+        # payload cannot be replayed against them a week later. Signing the body alone
+        # is valid forever, which is the whole weakness.
+        event_id = str(uuid.uuid4())
+        timestamp = str(int(time.time()))
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Senebiclabs-Event-Id": event_id,
+            "X-Senebiclabs-Timestamp": timestamp,
+        }
         secret = ec.get("_webhook_secret")
         if secret:
-            signature = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+            signed = timestamp.encode() + b"." + body_bytes
+            signature = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
             headers["X-Senebiclabs-Signature"] = "sha256=" + signature
         
         

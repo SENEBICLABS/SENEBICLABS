@@ -567,6 +567,8 @@ body is the same shape as the delivered `GET /results` response:
 POST https://your-app.com/hooks/senebiclabs
 Content-Type: application/json
 X-Senebiclabs-Signature: sha256=<hex>
+X-Senebiclabs-Timestamp: 1760000000
+X-Senebiclabs-Event-Id: 6f1c2a9e-...
 
 {
   "event": "results.delivered",
@@ -579,7 +581,10 @@ X-Senebiclabs-Signature: sha256=<hex>
 
 ### Verify the signature
 
-Every webhook carries an `X-Senebiclabs-Signature` header: an HMAC-SHA256 of the exact
+Every webhook carries `X-Senebiclabs-Signature`, an HMAC-SHA256 over
+`<timestamp>.<raw body>`, plus `X-Senebiclabs-Timestamp` (the Unix second we sent it) and
+`X-Senebiclabs-Event-Id`. Reject a timestamp older than a few minutes, and ignore an event
+id you have already processed. The old form, an HMAC of the exact
 request body, keyed with your `webhook_secret`. Recompute it over the **raw request
 bytes** (before any JSON parsing — re-serialising can change the bytes and break the
 check) and compare in constant time before trusting the payload.
@@ -588,8 +593,9 @@ check) and compare in constant time before trusting the payload.
 import hmac, hashlib
 
 def verify(raw_body: bytes, header: str, secret: str) -> bool:
-    expected = "sha256=" + hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header or "")
+    signed = ts.encode() + b"." + raw_body
+    expected = "sha256=" + hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig or "")
 
 # FastAPI example
 @app.post("/hooks/senebiclabs")
