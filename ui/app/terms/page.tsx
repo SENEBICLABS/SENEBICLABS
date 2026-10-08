@@ -112,8 +112,8 @@ export default function TermsPage() {
       <Section heading="Contact">
         <p>
           Questions about these terms? Email{' '}
-          <a href="mailto:godwinyampoi449@gmail.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
-            godwinyampoi449@gmail.com
+          <a href="mailto:support@senebiclabs.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
+            support@senebiclabs.com
           </a>.
         </p>
       </Section>

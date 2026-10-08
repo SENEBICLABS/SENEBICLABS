@@ -27,6 +27,10 @@ def _send(*, to: str | list[str], subject: str, html: str) -> None:
     try:
         resend.Emails.send({
             "from": settings.FROM_EMAIL,
+            # Everything is sent from noreply@, so a reply has nowhere to go unless
+            # it is pointed somewhere a person reads. A client answering a delivery
+            # notice should reach us, not a black hole.
+            "reply_to": settings.ADMIN_EMAIL,
             "to": to if isinstance(to, list) else [to],
             "subject": subject,
             "html": html,

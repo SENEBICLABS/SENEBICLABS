@@ -18,8 +18,8 @@ export default function PrivacyPage() {
         <p>
           Senebiclabs Inc. (&ldquo;Senebiclabs&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;) operates the website at
           senebiclabs.com. For any privacy questions or requests, contact us at{' '}
-          <a href="mailto:godwinyampoi449@gmail.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
-            godwinyampoi449@gmail.com
+          <a href="mailto:support@senebiclabs.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
+            support@senebiclabs.com
           </a>.
         </p>
       </Section>
@@ -84,8 +84,8 @@ export default function PrivacyPage() {
         <p>
           You can ask us to access, correct, or delete the personal information we hold about you,
           and to stop contacting you. To make any of these requests, email{' '}
-          <a href="mailto:godwinyampoi449@gmail.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
-            godwinyampoi449@gmail.com
+          <a href="mailto:support@senebiclabs.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
+            support@senebiclabs.com
           </a>{' '}and we will respond promptly. Depending on where you live, you may have additional
           rights under laws such as the GDPR or similar regulations.
         </p>
@@ -124,8 +124,8 @@ export default function PrivacyPage() {
       <Section heading="Contact">
         <p>
           Questions about this policy or your data? Email{' '}
-          <a href="mailto:godwinyampoi449@gmail.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
-            godwinyampoi449@gmail.com
+          <a href="mailto:support@senebiclabs.com" style={{ color: 'var(--ink)', textDecoration: 'underline' }}>
+            support@senebiclabs.com
           </a>.
         </p>
       </Section>

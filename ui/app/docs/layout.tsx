@@ -53,7 +53,7 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
           {children}
           <DocsPrevNext />
           <div className="docs-foot">
-            <span className="docs-eyebrow">Questions? senebiclabs@gmail.com</span>
+            <span className="docs-eyebrow">Questions? support@senebiclabs.com</span>
           </div>
         </main>
       </div>

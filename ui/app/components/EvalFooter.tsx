@@ -11,7 +11,7 @@ const NAV = {
   company: [
     { label: 'About', href: '/about' },
     { label: 'Docs', href: '/docs' },
-    { label: 'Contact', href: 'mailto:senebiclabs@gmail.com' },
+    { label: 'Contact', href: 'mailto:support@senebiclabs.com' },
   ],
   legal: [
     { label: 'Privacy', href: '/evaluate/privacy' },

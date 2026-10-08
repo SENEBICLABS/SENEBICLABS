@@ -37,7 +37,7 @@ const SECTIONS: { h: string; body: string[] }[] = [
     'We rely on trusted infrastructure providers for storage and on our network of contracted, credentialed clinicians for the review work. All are bound by confidentiality terms.',
   ]},
   { h: 'Your rights and contact', body: [
-    'You can request access to, correction of, or deletion of your data at any time. For any privacy question, contact us at senebiclabs@gmail.com.',
+    'You can request access to, correction of, or deletion of your data at any time. For any privacy question, contact us at support@senebiclabs.com.',
   ]},
 ]
 

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Email — Resend (https://resend.com)
     RESEND_API_KEY: str | None = None
     FROM_EMAIL: str = "Senebiclabs <noreply@senebiclabs.com>"
-    ADMIN_EMAIL: str = "godwinyampoi449@gmail.com"
+    ADMIN_EMAIL: str = "support@senebiclabs.com"
 
     # CORS — comma-separated list of allowed origins; defaults to all in dev
     CORS_ORIGINS: str = "*"

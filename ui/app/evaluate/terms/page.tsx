@@ -35,7 +35,7 @@ const SECTIONS: { h: string; body: string[] }[] = [
     'The service is provided in good faith and to a professional standard. To the extent permitted by law, our liability is limited to the fees paid for the project in question.',
   ]},
   { h: 'Contact', body: [
-    'Questions about these terms can be sent to senebiclabs@gmail.com.',
+    'Questions about these terms can be sent to support@senebiclabs.com.',
   ]},
 ]
 
