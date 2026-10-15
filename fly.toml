@@ -1,0 +1,34 @@
+# Fly.io deployment for the API. An alternative to render.yaml, not an addition —
+# pick one. Fly keeps a machine closer to warm than a free Render service does,
+# which matters if a client is polling for results.
+#
+#   fly launch --no-deploy      (once, to create the app)
+#   fly secrets set SUPABASE_URL=... SUPABASE_SERVICE_KEY=... ADMIN_API_KEY=... RESEND_API_KEY=...
+#   fly deploy
+
+app = "senebiclabs-api"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  ADMIN_EMAIL = "support@senebiclabs.com"
+  FROM_EMAIL = "Senebiclabs <noreply@senebiclabs.com>"
+  SITE_URL = "https://senebiclabs.com"
+  CORS_ORIGINS = "https://senebiclabs.com,https://www.senebiclabs.com,https://app.senebiclabs.com"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/v1/health"

@@ -1,26 +1,46 @@
+# Render deployment for the API.
+#
+# The service is stateless — Supabase holds the record, Label Studio holds the
+# annotations, and nothing is written to the container's disk. So it can be
+# rebuilt or moved at any time, which is the property that matters: no host can
+# take the platform down for reasons of their own.
+#
+# To deploy: create a Blueprint on Render pointed at this repository, then set the
+# secret values below in the dashboard. Everything marked sync:false is a secret
+# and is never committed.
 services:
   - type: web
     name: senebiclabs-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt          # closest Render region to Nairobi and to India
     healthCheckPath: /api/v1/health
+    autoDeploy: true
     envVars:
-      - key: DEBUG
-        value: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      - key: ADMIN_API_KEY
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: ADMIN_EMAIL
-        sync: false
-      - key: ADMIN_API_KEY
-        sync: false
-      - key: ANALYSE_ACCESS_TOKEN
-        sync: false
+        value: support@senebiclabs.com
+      - key: FROM_EMAIL
+        value: Senebiclabs <noreply@senebiclabs.com>
+      - key: SITE_URL
+        value: https://senebiclabs.com
       - key: CORS_ORIGINS
+        value: https://senebiclabs.com,https://www.senebiclabs.com,https://app.senebiclabs.com
+      # Label Studio. Leave unset until it has a home again; the API starts without
+      # it and only the annotation routes need it.
+      - key: LS_URL
+        sync: false
+      - key: LS_TOKEN
+        sync: false
+      - key: LS_WEBHOOK_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
         sync: false
