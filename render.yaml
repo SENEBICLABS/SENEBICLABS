@@ -1,23 +1,39 @@
 # Render deployment for the API.
 #
-# The service is stateless — Supabase holds the record, Label Studio holds the
-# annotations, and nothing is written to the container's disk. So it can be
-# rebuilt or moved at any time, which is the property that matters: no host can
-# take the platform down for reasons of their own.
+# The service is stateless. Supabase holds the record, Label Studio holds the
+# annotations, and nothing is written to the container's disk, so it can be
+# rebuilt or moved at any time. That property is the point: no host can take the
+# platform down for reasons of their own.
 #
-# To deploy: create a Blueprint on Render pointed at this repository, then set the
-# secret values below in the dashboard. Everything marked sync:false is a secret
-# and is never committed.
+# Why this host. Bulk ingestion self-triggers: the service posts to its own URL,
+# lets the read time out, and relies on the platform to run that request to
+# completion. Cloud Run allowed 3600 seconds for it. Render allows HTTP responses
+# to take up to 100 minutes, which is more headroom than the pattern needs and
+# more than an AWS load balancer's 4000 second maximum.
+#
+# To deploy: create a Blueprint on Render pointed at this repository, then fill in
+# the values marked sync:false in the dashboard. Nothing secret is committed.
 services:
   - type: web
     name: senebiclabs-api
     runtime: docker
     dockerfilePath: ./Dockerfile
+    # free spins the service down after 15 minutes without a request, so the next
+    # caller waits 30 to 60 seconds for a cold start. Fine while nothing is live;
+    # move to starter before a client depends on it.
     plan: free
-    region: frankfurt          # closest Render region to Nairobi and to India
+    region: frankfurt          # Render's closest region to Nairobi. Singapore is
+                               # closer to India if client latency matters more.
     healthCheckPath: /api/v1/health
     autoDeploy: true
     envVars:
+      # ---- secrets, set in the dashboard -------------------------------------
+      # Recover these from the old Cloud Run service while the GCP project still
+      # answers. It is deleted on 7 November, and ADMIN_API_KEY exists nowhere
+      # else: every client and operator key was derived from it.
+      #
+      #   gcloud run services describe senebiclabs-api --region us-central1 \
+      #     --format='yaml(spec.template.spec.containers[0].env)'
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
@@ -26,21 +42,53 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
-      - key: ADMIN_EMAIL
-        value: support@senebiclabs.com
-      - key: FROM_EMAIL
-        value: Senebiclabs <noreply@senebiclabs.com>
-      - key: SITE_URL
-        value: https://senebiclabs.com
-      - key: CORS_ORIGINS
-        value: https://senebiclabs.com,https://www.senebiclabs.com,https://app.senebiclabs.com
-      # Label Studio. Leave unset until it has a home again; the API starts without
-      # it and only the annotation routes need it.
+      - key: ANALYSE_ACCESS_TOKEN
+        sync: false
+      # Carried for parity. Nothing under app/ imports the Anthropic SDK.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Signs the customer portal magic links. On Cloud Run this was unset and
+      # fell back to SUPABASE_SERVICE_KEY, so rotating the database key silently
+      # invalidated every link already sent. Render generates one on first deploy
+      # and then leaves it alone, which decouples the two.
+      - key: PORTAL_SECRET
+        generateValue: true
+
+      # Label Studio. Leave unset until it has a home again; the API starts
+      # without it and only the annotation routes need it.
       - key: LS_URL
         sync: false
       - key: LS_TOKEN
         sync: false
       - key: LS_WEBHOOK_SECRET
         sync: false
-      - key: ANTHROPIC_API_KEY
+
+      # ---- plain configuration ------------------------------------------------
+      - key: ADMIN_EMAIL
+        value: support@senebiclabs.com
+      - key: FROM_EMAIL
+        value: Senebiclabs <noreply@senebiclabs.com>
+      - key: SITE_URL
+        value: https://senebiclabs.com
+      # The marketing site, and the clinician platform, which calls this API.
+      - key: CORS_ORIGINS
+        value: https://senebiclabs.com,https://www.senebiclabs.com,https://app.senebiclabs.com,https://senebiclabs.vercel.app
+      - key: DEBUG
+        value: "false"
+      # What the service calls to trigger its own background work. Set in the
+      # dashboard, not here, because the right value changes during the cutover:
+      # the onrender.com hostname until api.senebiclabs.com points at Render, then
+      # https://api.senebiclabs.com. Point it at a hostname that does not reach this
+      # service and bulk ingest stops triggering with no error anywhere.
+      - key: SELF_URL
         sync: false
+
+      # Where Label Studio sends annotations. Pinned to the custom domain on purpose.
+      # Label Studio already has webhooks registered at this exact URL for projects
+      # 191 and 192, so keeping it stable means Label Studio needs no change at all;
+      # it would otherwise re-register against whatever SELF_URL happens to be and
+      # leave two webhooks behind. Webhooks missed during the DNS cutover are
+      # recovered by POST /ls/pull, which is what that endpoint is for.
+      - key: LS_CALLBACK_URL
+        value: https://api.senebiclabs.com/api/v1/ls/webhook
