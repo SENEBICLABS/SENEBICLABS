@@ -15,6 +15,18 @@ export async function POST(req: NextRequest) {
   if (!email || !email.includes('@')) {
     return NextResponse.json({ ok: false, message: 'Please enter a valid email.' }, { status: 422 })
   }
+
+  // `type` is NOT NULL and constrained to these four. The pages that use this
+  // form always send one; anything else is a caller bug and should say so rather
+  // than be quietly filed under a category nobody chose.
+  const TYPES = ['patient', 'contributor', 'researcher', 'expert']
+  const type = (body.type ?? '').trim()
+  if (!TYPES.includes(type)) {
+    return NextResponse.json(
+      { ok: false, message: 'Please tell us which list to add you to.' },
+      { status: 422 }
+    )
+  }
   if (!configured()) {
     return NextResponse.json(
       { ok: false, message: 'We could not add you just now. Please email support@senebiclabs.com.' },
@@ -25,7 +37,7 @@ export async function POST(req: NextRequest) {
   try {
     await insert('waitlist', {
       email,
-      type: (body.type ?? '').trim() || null,
+      type,
       location_text: (body.location_text ?? '').trim() || null,
     })
   } catch (err) {

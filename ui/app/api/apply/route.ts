@@ -36,11 +36,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // specialty and country are NOT NULL with a length check, so neither null nor
+    // an empty string will do. The marketing form does not ask for them, and a
+    // clinician is worth more than a tidy row, so record them as unstated.
     await insert('access_requests', {
       full_name,
       email,
-      specialty: text(body.specialty) || null,
-      country: text(body.country) || null,
+      specialty: text(body.specialty) || 'Unstated',
+      country: text(body.country) || 'Unstated',
       linkedin_url: text(body.linkedin_url) || null,
     })
   } catch (err) {
