@@ -2,9 +2,11 @@
 # Anthropic over HTTPS and keeps nothing locally. It therefore runs anywhere that
 # runs a container, which is the point — no host can hold the platform hostage.
 #
-# The previous image installed build-essential, gfortran and OpenBLAS for the
-# genomics stack. That stack is gone; numpy and pandas ship wheels. Slim keeps the
-# image small enough for a free tier to build and run comfortably.
+# The previous image installed build-essential, gfortran and OpenBLAS, then
+# numpy, pandas, anthropic and tqdm that nothing under app/ imports.
+# requirements-runtime.txt is what the service actually needs, which keeps the
+# image and its resident memory inside a free tier. requirements.txt stays as
+# the development set; the tests use numpy.
 FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,8 +15,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir -r requirements-runtime.txt
 
 COPY app/ ./app/
 

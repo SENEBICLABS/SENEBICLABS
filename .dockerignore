@@ -13,6 +13,9 @@ ui/
 data/
 *.h5ad
 *.csv
+requirements.txt
+requirements-ci.txt
+requirements-dev.txt
 render.yaml
 railway.json
 Procfile

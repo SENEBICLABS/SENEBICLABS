@@ -1,0 +1,16 @@
+# What the API container actually needs.
+#
+# requirements.txt is the development set and still carries numpy, pandas,
+# anthropic and tqdm. Nothing under app/ imports any of them, and on a free tier
+# they cost build minutes, image size and resident memory for nothing. The tests
+# still use numpy, so that stays in the dev set.
+fastapi==0.141.1
+uvicorn[standard]==0.40.0
+starlette==1.6.0
+pydantic[email]==2.10.6
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+httpx==0.28.1
+supabase==2.15.2
+resend==2.30.1
+python-dotenv==1.2.3
