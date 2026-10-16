@@ -298,3 +298,50 @@ def test_the_client_is_never_told_how_many_clinicians_saw_a_case():
 
     ds = R.compute_dataset_report(items, {"verdict": {"type": "single"}}, "label")
     assert ds["qa"] is None or "reviewers" not in ds["qa"]
+
+
+def test_a_critical_miss_declared_without_a_finding_still_reaches_the_report():
+    """A reviewer may tick the critical-miss flag and leave the finding blank. That
+    answer arrives as the bare string "Yes" rather than the structured form, and it
+    used to be scored as no critical miss, so a declared miss vanished from the one
+    document a client reads it in."""
+    from app.services.report import compute_report
+    items = [{
+        "idx": 0,
+        "content": {"case_id": "C-1", "prediction": "normal", "scenario": "s"},
+        "status": "done",
+        "label": {"verdict": "Incorrect", "correct_label": "effusion",
+                  "critical_miss": "Yes"},
+    }]
+    rep = compute_report(items, classes=["normal", "effusion"])
+    assert len(rep["critical_misses"]) == 1, "a declared critical miss must be reported"
+    assert rep["critical_misses"][0]["case_id"] == "C-1"
+
+
+def test_the_structured_form_of_a_critical_miss_is_still_reported():
+    """The normal path must keep working: flag plus finding, as a dict."""
+    from app.services.report import compute_report
+    items = [{
+        "idx": 0,
+        "content": {"case_id": "C-2", "prediction": "normal", "scenario": "s"},
+        "status": "done",
+        "label": {"verdict": "Incorrect", "correct_label": "effusion",
+                  "critical_miss": {"present": True, "finding": "effusion"}},
+    }]
+    rep = compute_report(items, classes=["normal", "effusion"])
+    assert len(rep["critical_misses"]) == 1
+    assert rep["critical_misses"][0]["finding"] == "effusion"
+
+
+def test_no_critical_miss_is_not_invented():
+    """Accepting the string form must not make absence look like presence."""
+    from app.services.report import compute_report
+    for cm in ("No", {"present": False, "finding": None}, None):
+        items = [{
+            "idx": 0,
+            "content": {"case_id": "C-3", "prediction": "normal", "scenario": "s"},
+            "status": "done",
+            "label": {"verdict": "Correct", "critical_miss": cm},
+        }]
+        rep = compute_report(items, classes=["normal", "effusion"])
+        assert rep["critical_misses"] == [], f"invented a critical miss from {cm!r}"

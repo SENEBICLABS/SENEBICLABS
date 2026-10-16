@@ -77,3 +77,28 @@ def main():
 if __name__ == "__main__":
     main()
     print("PASS: tests/test_ls_render.py (generated config accepted + rendered by the running LS)")
+
+
+def test_one_reviewer_in_three_cannot_set_a_critical_miss():
+    """A structured field only becomes a dict when the reviewer picked a finding, so
+    a reviewer answering "No" leaves a bare string. That mixture used to skip the
+    majority rule and fall through to a string vote, where a one-to-one tie went to
+    whichever answer was read first. One clinician in three could therefore put
+    `critical_miss: present` on a delivered result."""
+    from app.api.v1.ls import _consensus, _collapse_structured
+
+    def ans(**kw):
+        return _collapse_structured(dict(kw))
+
+    yes = ans(verdict="Incorrect", critical_miss="Yes", critical_miss_finding="effusion")
+    no = ans(verdict="Partial", critical_miss="No")
+    silent = ans(verdict="Correct")
+
+    cons, _, _ = _consensus([yes, no, silent], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is False, "one of three is not a majority"
+
+    cons, _, _ = _consensus([yes, yes, no], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is True, "two of three is a majority"
+
+    cons, _, _ = _consensus([yes, no, no], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is False, "one of three is not a majority"

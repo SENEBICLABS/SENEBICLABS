@@ -150,6 +150,21 @@ def _consensus(labels: list[dict], text_fields: set | None = None,
                 merged.extend(v if isinstance(v, list) else [v])
             consensus[k] = merged
             continue
+        # A structured field only becomes a dict when the reviewer picked a finding,
+        # and a reviewer answering "No" never picks one, so their answer stays the
+        # bare string. That mixture skipped the majority rule below and fell through
+        # to a plain string vote, where a one-to-one tie went to whichever answer was
+        # read first. One reviewer in three could therefore set critical_miss present
+        # on a delivered result. Normalise the flag answers to the same shape so the
+        # majority rule actually applies.
+        if any(isinstance(v, dict) and "present" in v for v in vals):
+            vals = [
+                v if isinstance(v, dict)
+                else {"present": True, "finding": None} if v == "Yes"
+                else {"present": False, "finding": None} if v == "No"
+                else v
+                for v in vals
+            ]
         if all(isinstance(v, dict) for v in vals):
             present = sum(1 for v in vals if v.get("present")) * 2 > n
             findings = [v.get("finding") for v in vals if v.get("present") and v.get("finding")]

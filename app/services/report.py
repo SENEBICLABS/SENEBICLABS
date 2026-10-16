@@ -180,7 +180,13 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
             observed.add(pred)
             observed.add(truth)
         cm =(label or {}).get("critical_miss")
-        cm_present = isinstance(cm, dict) and cm.get("present") is True
+        # A reviewer who ticks the flag but leaves the finding blank leaves this as
+        # the bare string "Yes", because the collapse in ls.py keys off the finding
+        # control. Treating only the dict form as present dropped those cases out of
+        # the report silently, which is the opposite of what this report is for.
+        # Accepting the string can only surface a miss a clinician declared; it can
+        # never invent one.
+        cm_present = (isinstance(cm, dict) and cm.get("present") is True) or cm == "Yes"
         finding = cm.get("finding") if isinstance(cm, dict) else None
 
         assessable.append({"idx": idx, "model_prediction": pred, "ground_truth": truth, "kind": kind})
