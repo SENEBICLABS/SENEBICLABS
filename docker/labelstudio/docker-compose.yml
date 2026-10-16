@@ -1,3 +1,13 @@
+# Label Studio for local work and for the end-to-end test.
+#
+# This is the LOCAL stack. docker/labelstudio-vm/ is the public one, with Caddy
+# and a certificate. For testing you want this one: it costs nothing, needs no
+# VM, no DNS and no certificate, and publishes Label Studio on localhost:8080.
+#
+#   make ls          start it
+#   make ls-stop     stop it, keeping the data
+#   make ls-reset    stop it and delete the data
+#
 services:
   ls-db:
     image: postgres:15
@@ -24,6 +34,13 @@ services:
       LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK: "true"     # no open signups
     volumes: [ ls-files:/label-studio/data ]
     ports: [ "8080:8080" ]
+    # Label Studio has to call the API's webhook, which during local work runs on
+    # the host, not in this network. On Linux `host.docker.internal` is not
+    # resolvable inside a container unless it is mapped like this, so without it
+    # the webhook registers and then silently never fires.
+    # Set LS_CALLBACK_URL=http://host.docker.internal:8000/api/v1/ls/webhook
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:
