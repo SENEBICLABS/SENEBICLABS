@@ -57,12 +57,24 @@ class Settings(BaseSettings):
     # (queued or in review). The full backlog lives in our DB; /sync-pending tops LS up to
     # this many and refills as clinicians finish, so LS load stays flat no matter how large
     # the job is. Exhaustive ("all") ingestion relies on this to not overwhelm Label Studio.
-    # NOTE: counted PER PROJECT, so the load on Label Studio is this times the number
-    # of clients running at once. At 5000 three concurrent clients could put 15000
-    # active tasks on one 2-vCPU box; 1500 keeps the realistic ceiling near 4500 with
-    # no effect on throughput, because the backlog waits in our own database and the
-    # window refills as clinicians finish.
-    LS_ACTIVE_WINDOW: int = 1500
+    #
+    # Counted PER PROJECT, so Label Studio's load is this times the number of clients
+    # running at once.
+    #
+    # This number also sets what every clinician pays to open their queue, which is the
+    # part that is easy to miss. The clinician platform's `taskStates()` pages the WHOLE
+    # Label Studio project at 200 tasks per request to work out what is left. So the
+    # window size is the page count each clinician triggers:
+    #
+    #     window 1500  ->  8 sequential API calls per queue view
+    #     window  300  ->  2
+    #
+    # With several clinicians working at once and one Label Studio worker, those calls
+    # queue behind each other and the clinician experiences it as our platform being slow.
+    # 300 costs nothing in throughput, because the backlog waits in our own database and
+    # the window refills the moment a clinician finishes a case. It is the difference
+    # between bulk being comfortable and bulk being the reason a clinician complains.
+    LS_ACTIVE_WINDOW: int = 300
 
     # Portal magic-link signing secret — falls back to the Supabase service key
     PORTAL_SECRET: str | None = None

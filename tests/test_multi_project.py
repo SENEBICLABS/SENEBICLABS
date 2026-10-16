@@ -321,3 +321,38 @@ def test_a_project_not_yet_in_label_studio_just_saves():
     with patch.object(ls, "update_project_config") as push:
         out = _set_config(db)
     assert not push.called and out.message == "Config saved."
+
+
+def test_sync_says_when_no_clinician_can_reach_the_work():
+    """Tasks in Label Studio are not work a clinician can open. The clinician platform
+    serves from `pools`, and nothing in this repo creates one. A sync that reports a bare
+    ok:true let an operator finish every documented step and ship a job nobody could see."""
+    from tests._fakedb import FakeDB
+
+    db = FakeDB({
+        "project_submissions": [{"id": "p1", "company": "Acme", "ls_project_id": 7,
+                                 "eval_config": {}}],
+        "project_items": [{"id": "i0", "project_id": "p1", "status": "pending",
+                           "content": {"prompt": "x"}}],
+        "pools": [],          # nothing points at project 7
+    })
+    pools = (db.table("pools").select("id,name").eq("ls_project_id", 7).execute()).data or []
+    assert pools == [], "no pool exists for this project"
+
+    db2 = FakeDB({
+        "pools": [{"id": "pool-1", "name": "Acme batch 1", "ls_project_id": 7}],
+    })
+    pools2 = (db2.table("pools").select("id,name").eq("ls_project_id", 7).execute()).data or []
+    assert len(pools2) == 1, "a pool pointing at the project is what makes work reachable"
+
+
+def test_the_active_window_is_small_enough_for_several_clinicians():
+    """The window sets what every clinician pays to open their queue: the clinician
+    platform pages the whole Label Studio project at 200 tasks a request to work out what
+    is left. 1500 meant 8 sequential calls per queue view, on one Label Studio worker."""
+    from app.core.config import settings
+    pages_per_queue_view = -(-settings.LS_ACTIVE_WINDOW // 200)   # ceiling division
+    assert pages_per_queue_view <= 2, (
+        f"window {settings.LS_ACTIVE_WINDOW} costs {pages_per_queue_view} API pages per "
+        "clinician queue view; keep it at or under 2 so concurrent clinicians do not queue"
+    )

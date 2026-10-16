@@ -850,9 +850,14 @@ def _task_for(it: dict) -> dict:
     return {"data": data}
 
 
-def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 500) -> int:
+def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 200) -> int:
     """Import ready-built tasks ({data, predictions?}) in chunks, so a bulk batch never
-    exceeds Label Studio's import limits."""
+    exceeds Label Studio's import limits.
+
+    200 rather than 500: one import is a single request Label Studio holds in memory
+    while it writes, and it runs on one worker. A 500-task import blocks every clinician
+    reading their queue for as long as it takes. Smaller chunks take marginally longer
+    in total and keep the instance responsive to the people doing the work."""
     for i in range(0, len(tasks), chunk):
         r = httpx.post(
             f"{_base()}/api/projects/{ls_project_id}/import",
@@ -864,7 +869,7 @@ def import_tasks(ls_project_id: int, tasks: list[dict], chunk: int = 500) -> int
     return len(tasks)
 
 
-def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 500) -> int:
+def push_tasks(ls_project_id: int, items: list[dict], chunk: int = 200) -> int:
     """Import items as tasks. Each item is {id, content}; we carry id as _item_id.
 
     Internal content keys (any starting with `_`, e.g. a gold item's `_gold_expected`

@@ -465,7 +465,35 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
     for i in range(0, len(ids), 100):
         db.table("project_items").update({"status": "queued"}).in_("id", ids[i:i + 100]).execute()
 
-    return {"ok": True, "ls_project_id": ls_pid, "pushed": pushed}
+    out = {"ok": True, "ls_project_id": ls_pid, "pushed": pushed}
+
+    # Tasks in Label Studio are not yet work a clinician can reach. The clinician
+    # platform serves from `pools`, which this repo only ever reads: a pool is created
+    # by an operator over there. Until one points at this Label Studio project, the
+    # sync has succeeded and shipped nothing anybody can open.
+    #
+    # Reporting a bare ok:true here let an operator complete every documented step and
+    # believe the work was live. That is survivable with four cases and someone watching;
+    # with a bulk client it is the whole job sitting idle while everyone assumes it is
+    # being done. So say it plainly instead.
+    try:
+        pools = (db.table("pools").select("id,name").eq("ls_project_id", int(ls_pid))
+                 .execute()).data or []
+    except Exception:
+        pools = None          # the pools table belongs to the other repo; never fail on it
+    if pools is not None:
+        out["pools"] = [p.get("name") for p in pools]
+        if not pools:
+            out["clinicians_can_reach_this"] = False
+            out["next_step"] = (
+                f"No pool points at Label Studio project {ls_pid}, so no clinician can see "
+                "these tasks yet. Create one in the clinician platform's operator console "
+                "(/ops) against this project id, then assign clinicians to it."
+            )
+        else:
+            out["clinicians_can_reach_this"] = True
+
+    return out
 
 
 @router.post("/pull", summary="Pull annotations from LS into the database (admin)")
