@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -70,6 +71,19 @@ class Settings(BaseSettings):
     LS_URL: str | None = None              # e.g. http://localhost:8080
     LS_TOKEN: str | None = None            # Account & Settings → Access Token
     LS_WEBHOOK_SECRET: str | None = None   # shared secret to verify LS → backend webhooks
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        """Trim whitespace off every setting as it is read.
+
+        Secrets reach production by being pasted into a hosting dashboard, where a
+        trailing newline is invisible and survives the paste. httpx then refuses to
+        build a header containing it and raises before any request is sent, which
+        surfaces as a connection error blaming the host rather than the value. That
+        cost an evening once; one strip here closes it for every secret at once.
+        """
+        return v.strip() if isinstance(v, str) else v
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

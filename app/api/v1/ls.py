@@ -207,8 +207,13 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
     for a in anns:
         cb = a.get("completed_by")
         who = cb.get("email") if isinstance(cb, dict) else (a.get("created_username") or "clinician")
+        # `_label` is an already-parsed answer, which is what services/tasks.py supplies
+        # when the annotation came from our own store rather than from Label Studio.
+        # Everything below this line is indifferent to where the answer came from, which
+        # is why consensus, adjudication and second reading needed no change.
+        lbl = a["_label"] if isinstance(a.get("_label"), dict) else _parse_result(a.get("result", []))
         parsed.append({"by": who, "at": a.get("created_at") or a.get("updated_at"),
-                       "label": _parse_result(a.get("result", []))})
+                       "label": lbl})
     if len(parsed) == 1:
         label = dict(parsed[0]["label"])
     else:
@@ -430,7 +435,14 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
         raise HTTPException(status_code=502, detail=ls.explain_ls_error(exc))
     except Exception as exc:
         logger.error("LS sync failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not reach Label Studio. Check that it is running and LS_URL / LS_TOKEN are set.")
+        # Name the actual failure. The old message asserted that LS_URL or LS_TOKEN
+        # were unset and that Label Studio was down, and the real cause was a
+        # trailing newline on a pasted token. An operator reading a message that
+        # confidently blames the wrong thing goes and checks the wrong thing.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Label Studio call failed: {type(exc).__name__}: {exc}",
+        )
 
     # Mark what we pushed as 'queued' (in LS, awaiting review) so the background
     # /sync-pending never re-pushes the same items.
@@ -464,9 +476,15 @@ def ls_pull(body: PullIn, x_admin_key: str | None = Header(default=None)):
 
     try:
         tasks = ls.export_tasks(ls_pid)
+    except httpx.HTTPStatusError as exc:
+        logger.error("LS pull failed: %s", exc)
+        raise HTTPException(status_code=502, detail=ls.explain_ls_error(exc))
     except Exception as exc:
         logger.error("LS pull failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not reach Label Studio.")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Label Studio call failed: {type(exc).__name__}: {exc}",
+        )
 
     written = 0
     for t in tasks:
