@@ -20,6 +20,8 @@ from app.services.supabase_client import get_client
 from app.services import labelstudio as ls
 from app.services import audit
 from app.services import second_reading
+from app.services import tasks
+from app.services import items as items_svc
 from app.services.paging import fetch_all
 
 logger = logging.getLogger(__name__)
@@ -210,23 +212,38 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
     # annotations and put a settled item back in the adjudication queue.
     if (current.get("label") or {}).get("_adjudicated"):
         return current.get("status")
+    # A superseded version is history: its content was replaced after work began. Answers
+    # given before that still belong to it and are scored onto it (so the record shows what
+    # they concluded), but its status stays superseded and it is never delivered. An answer
+    # given after it was replaced (Label Studio may still hold the old task) is ignored.
+    superseded = current.get("status") == items_svc.SUPERSEDED
+    if superseded:
+        cut = (db.table("project_items").select("superseded_at").eq("id", item_id)
+               .limit(1).execute()).data
+        anns = items_svc.given_before(anns, (cut[0] if cut else {}).get("superseded_at"))
+        if not anns:
+            return items_svc.SUPERSEDED
+    # A task from the native store (services/tasks.py) arrives in this same shape, with the
+    # answers in the same result format, so everything below is indifferent to which store
+    # it came from. Only where the pool is found, and what the task id is called, differ.
+    native = bool(task.get("_native"))
     # Authored work under second reading counts only once the clinician platform records
     # that a different clinician approved it, and only the approved annotation is the
     # answer (services/second_reading.py).
     sr = project_id and second_reading.enabled(ec)
     if sr:
-        sr_status, sr_record, sr_row = second_reading.decide(
-            db, task.get("project") or _ls_project_of(db, project_id), task.get("id"), sr_wait)
+        if native:
+            sr_status, sr_record, sr_row = second_reading.decide(
+                db, None, task.get("id"), sr_wait, project_id=project_id)
+        else:
+            sr_status, sr_record, sr_row = second_reading.decide(
+                db, task.get("project") or _ls_project_of(db, project_id), task.get("id"), sr_wait)
         anns = second_reading.approved_annotations(anns, sr_row)
     parsed = []
     for a in anns:
         cb = a.get("completed_by")
         who = cb.get("email") if isinstance(cb, dict) else (a.get("created_username") or "clinician")
-        # `_label` is an already-parsed answer, which is what services/tasks.py supplies
-        # when the annotation came from our own store rather than from Label Studio.
-        # Everything below this line is indifferent to where the answer came from, which
-        # is why consensus, adjudication and second reading needed no change.
-        lbl = a["_label"] if isinstance(a.get("_label"), dict) else _parse_result(a.get("result", []))
+        lbl = _parse_result(a.get("result", []))
         parsed.append({"by": who, "at": a.get("created_at") or a.get("updated_at"),
                        "label": lbl})
     if len(parsed) == 1:
@@ -243,10 +260,14 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
                               "label": {k: v for k, v in p["label"].items() if k != "_result"}}
                              for p in parsed],
         }
-    # Bridge to the workforce system of record: LS annotations all carry the single
-    # LS service user, so real per-clinician attribution lives in task_completions,
-    # keyed by this LS task id. Store it so reviewer_quality can join by clinician.
-    label["_ls_task_id"] = task.get("id")
+    # Bridge to the workforce system of record, whose task_completions are keyed by this
+    # task id: the native task number, or the Label Studio task id for work done there
+    # (where every annotation carries the one LS service user, so this join is the only
+    # per-clinician attribution). Read back through tasks.task_ref.
+    if native:
+        label["_task_no"] = task.get("id")
+    else:
+        label["_ls_task_id"] = task.get("id")
     reached = len(parsed) >= reviewers_target
     disagreed = isinstance(label, dict) and label.get("_disagreed")
     if reached and adjudicate and len(parsed) > 1 and disagreed:
@@ -262,10 +283,24 @@ def _apply_task_annotations(db, task: dict, reviewers_target: int, project_id: s
         if sr_record:
             label["_second_reading"] = sr_record
         update["status"] = status
+    if superseded:
+        # Its conclusion is recorded; it stays history, out of every count and delivery.
+        status = update["status"] = items_svc.SUPERSEDED
     db.table("project_items").update(update).eq("id", item_id).execute()
     audit.record(db, item_id=item_id, project_id=project_id, action=audit.LABEL,
-                 actor_id=parsed[-1]["by"], actor_name=parsed[-1]["by"], source="label_studio", value=label)
+                 actor_id=parsed[-1]["by"], actor_name=parsed[-1]["by"],
+                 source="native" if native else "label_studio", value=label)
     return status
+
+
+NATIVE_PROJECT = ("This project uses Senebiclabs' own task store, not Label Studio. Its items "
+                  "are released by POST /project/admin/release and re-scored by "
+                  "POST /project/admin/rebuild.")
+
+
+def _refuse_native(db, project_id: str) -> None:
+    if tasks.is_native(db, project_id):
+        raise HTTPException(status_code=409, detail=NATIVE_PROJECT)
 
 
 def _ls_project_of(db, project_id: str) -> int | None:
@@ -331,7 +366,7 @@ def _maybe_auto_deliver(db, project_id: str) -> None:
             return
         # Paged: a truncated read would show every status as done when the pages past
         # the first are still pending, and auto-deliver a half-reviewed batch.
-        rows = fetch_all(lambda: db.table("project_items").select("status")
+        rows = fetch_all(lambda: items_svc.current(db.table("project_items").select("status"))
                          .eq("project_id", project_id))
         if not rows or any(r.get("status") != "done" for r in rows):
             return
@@ -343,9 +378,14 @@ def _maybe_auto_deliver(db, project_id: str) -> None:
                 db.table("project_submissions").update({"eval_config": ec}).eq("id", project_id).execute()
                 logger.info("Project %s fully labeled — awaiting human sign-off (auto_deliver off).", project_id)
             return
-        db.table("project_submissions").update(
+        # Conditional: only the caller whose update actually moves the project to delivered
+        # sends the webhook. Two scoring workers finishing the last items at once would
+        # otherwise both see "not delivered" above and both notify the client.
+        moved = (db.table("project_submissions").update(
             {"stage": "delivered", "updated_at": datetime.now(timezone.utc).isoformat()}
-        ).eq("id", project_id).execute()
+        ).eq("id", project_id).neq("stage", "delivered").execute()).data
+        if not moved:
+            return
         logger.info("Auto-delivered project %s (all items complete, auto_deliver on)", project_id)
         from app.api.v1.project import _fire_webhook   # lazy: avoid circular import
         _fire_webhook(db, project_id)
@@ -359,6 +399,8 @@ def push_new_items(db, project_id: str, items: list[dict], task_type: str = "eva
     Pushes only the given items, so repeated ingests never duplicate tasks."""
     if not items:
         return {"pushed": 0}
+    if tasks.is_native(db, project_id):
+        raise ValueError(NATIVE_PROJECT)
     sub = db.table("project_submissions").select("id,company,ls_project_id,eval_config").eq("id", project_id).limit(1).execute()
     if not sub.data:
         raise ValueError("project not found")
@@ -391,6 +433,7 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
+    _refuse_native(db, body.project_id)
 
     # eval_config may not exist yet (pre-migration) — degrade to the static config.
     try:
@@ -504,6 +547,7 @@ def ls_pull(body: PullIn, x_admin_key: str | None = Header(default=None)):
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
+    _refuse_native(db, body.project_id)
 
     sub = db.table("project_submissions").select("id,ls_project_id,eval_config").eq("id", body.project_id).limit(1).execute()
     if not sub.data:

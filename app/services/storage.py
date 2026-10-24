@@ -41,10 +41,20 @@ def client_id_for(email: str) -> str:
     return hashlib.sha256((email or "unknown").strip().lower().encode()).hexdigest()[:16]
 
 
-def _deid_key(client_id: str, original_name: str) -> str:
+def image_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _deid_key(client_id: str, original_name: str, data: bytes) -> str:
+    """The object's key: the client's prefix and a digest of the image's own bytes.
+
+    Content-addressed, so identical bytes always land on the same object (a retried upload
+    writes nothing new) and different bytes never overwrite an object an earlier version of
+    an item still points at. Keying on the filename did exactly that: a corrected image
+    uploaded under the same name replaced the one clinicians had already judged. The
+    filename still never appears in a key."""
     ext = os.path.splitext(original_name)[1].lower() or ".png"
-    digest = hashlib.sha256(f"{client_id}/{original_name}".encode()).hexdigest()[:32]
-    return f"{client_id}/{digest}{ext}"
+    return f"{client_id}/{image_sha256(data)[:32]}{ext}"
 
 
 def upload_image(client_id: str, local_path: str, db=None) -> str:
@@ -52,19 +62,16 @@ def upload_image(client_id: str, local_path: str, db=None) -> str:
 
     Returns the storage path (not a URL). The original filename never leaves this call.
     """
-    db = _db(db)
-    key = _deid_key(client_id, os.path.basename(local_path))
-    ctype = mimetypes.guess_type(local_path)[0] or "image/png"
     with open(local_path, "rb") as f:
-        db.storage.from_(BUCKET).upload(key, f.read(), {"content-type": ctype, "upsert": "true"})
-    return key
+        return upload_image_bytes(client_id, os.path.basename(local_path), f.read(), db)
 
 
 def upload_image_bytes(client_id: str, original_name: str, data: bytes, db=None) -> str:
     """Upload one image from raw bytes (e.g. a browser upload) under the client's prefix with
-    a de-identified key. Same isolation/de-id as upload_image; the original name never leaves."""
+    a de-identified, content-addressed key. Writing the same bytes twice is harmless: the key
+    is the same object with the same content."""
     db = _db(db)
-    key = _deid_key(client_id, original_name or "image.png")
+    key = _deid_key(client_id, original_name or "image.png", data)
     ctype = mimetypes.guess_type(original_name or "image.png")[0] or "image/png"
     db.storage.from_(BUCKET).upload(key, data, {"content-type": ctype, "upsert": "true"})
     return key

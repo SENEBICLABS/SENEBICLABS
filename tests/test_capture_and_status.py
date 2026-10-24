@@ -32,6 +32,10 @@ class _Q:
         self.filters[col] = val
         return self
 
+    def neq(self, col, val):
+        self.excluded = {**getattr(self, "excluded", {}), col: val}
+        return self
+
     def range(self, s, e):
         self.window = (s, e)
         return self
@@ -42,7 +46,8 @@ class _Q:
 
     def execute(self):
         rows = [r for r in self.db.rows.get(self.name, [])
-                if all(r.get(k) == v for k, v in self.filters.items())]
+                if all(r.get(k) == v for k, v in self.filters.items())
+                and all(r.get(k) != v for k, v in getattr(self, "excluded", {}).items())]
         if self.window:
             rows = rows[self.window[0]: self.window[1] + 1]
         return _Res(rows)

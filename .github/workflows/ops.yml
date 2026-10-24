@@ -1,0 +1,42 @@
+# The scheduled operations check (scripts/ops_check.py): scores waiting answers, re-sends
+# failed client deliveries, and fails when anything is down, stuck or failing. A failed run
+# emails the repository owner, which is the alert.
+#
+# Needs three repository secrets before it does anything (it skips cleanly without them):
+#   OPS_API_BASE   https://api.senebiclabs.com
+#   OPS_APP_URL    https://app.senebiclabs.com
+#   OPS_ADMIN_KEY  a dedicated operator key (POST /project/admin/operators), revocable alone
+name: ops
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# One run at a time: scoring and delivery retries must never run twice over.
+concurrency:
+  group: ops
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Check, score and retry
+        env:
+          OPS_API_BASE: ${{ secrets.OPS_API_BASE }}
+          OPS_APP_URL: ${{ secrets.OPS_APP_URL }}
+          OPS_ADMIN_KEY: ${{ secrets.OPS_ADMIN_KEY }}
+        run: |
+          if [ -z "$OPS_API_BASE" ] || [ -z "$OPS_ADMIN_KEY" ]; then
+            echo "ops secrets not set; skipping"; exit 0
+          fi
+          python scripts/ops_check.py

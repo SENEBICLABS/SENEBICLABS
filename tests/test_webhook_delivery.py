@@ -36,6 +36,9 @@ class _FakeTable:
         self._filters[col] = val
         return self
 
+    def neq(self, _col, _val):
+        return self
+
     def limit(self, _n):
         return self
 

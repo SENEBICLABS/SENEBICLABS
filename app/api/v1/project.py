@@ -24,6 +24,9 @@ from app.services import operators
 from app.services import report as report_svc
 from app.services import clinical_analytics
 from app.services import failure_library
+from app.services import eval_schema
+from app.services import items as items_svc
+from app.services import tasks
 from app.services.paging import fetch_all
 from app.services import storage
 from app.services.portal_tokens import make_token, make_api_key, verify_token
@@ -440,7 +443,7 @@ def portal_projects(token: str):
     if subs:
         try:
             ids = [s["id"] for s in subs]
-            its = fetch_all(lambda: db.table("project_items").select("project_id,status")
+            its = fetch_all(lambda: items_svc.current(db.table("project_items").select("project_id,status"))
                             .in_("project_id", ids))
             for it in its:
                 c = counts.setdefault(it["project_id"], {"total": 0, "done": 0})
@@ -537,22 +540,47 @@ async def portal_upload_image(
     if not sub.data or sub.data[0].get("email") != email:
         raise HTTPException(status_code=403, detail="That project is not on this account.")
 
+    if int(idx) < 0:
+        raise HTTPException(status_code=422, detail="idx must be zero or more.")
     try:
         client_id = storage.client_id_for(email)
         storage.ensure_bucket(db)
         data = await file.read()
+        if not data:
+            raise HTTPException(status_code=422, detail="That file is empty.")
         key = storage.upload_image_bytes(client_id, file.filename or "image.png", data, db)
         url = storage.signed_url(key, 30 * 24 * 3600, db)  # 30-day review window
-        content = {"image": url, "prediction": (prediction or None)}
+        # `_image_key` and `_image_sha256` are internal (never sent to a client or a
+        # clinician): the key lets the clinician platform sign a fresh short-lived link for
+        # each view, and the hash is what identifies the image when deciding whether an
+        # upload changed anything (the signed URL differs on every upload).
+        content = {"image": url, "_image_key": key, "_image_sha256": storage.image_sha256(data),
+                   "prediction": (prediction or None)}
         if study_id:
             content["study_id"] = study_id
-        # Idempotent per row: re-uploading the same idx replaces it, never duplicates
-        # (guards against double-clicks and re-runs of the same batch).
-        db.table("project_items").delete().eq("project_id", project_id).eq("idx", int(idx)).execute()
-        db.table("project_items").insert({"project_id": project_id, "idx": int(idx), "content": content}).execute()
+        # Never delete and re-insert: that took every answer recorded against the old row
+        # with it. A repeat is a no-op, a change to untouched work is made in place, and a
+        # change to worked-on content becomes a new version beside the old one.
+        rec = items_svc.record(db, project_id, int(idx), content)
+    except HTTPException:
+        raise
+    except items_svc.IngestUnavailable:
+        logger.error("Portal image upload refused: migration 006 is not applied")
+        raise HTTPException(status_code=503, detail="Uploads are paused for maintenance. Please try again shortly.")
     except Exception as exc:
-        logger.error("Portal image upload failed: %s", exc)
+        logger.error("Portal image upload failed (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Could not upload that image. Please try again.")
+    audit.record(db, item_id=rec["item_id"], project_id=project_id, action="upload",
+                 actor_id=email, actor_name=email, source="portal",
+                 value={"outcome": rec["outcome"], "idx": int(idx), "previous_item_id": rec["previous_item_id"]})
+    if rec["outcome"] == "superseded":
+        # A new version is queued for review. Clients never see the people involved, so
+        # the message says what happened to their data, not to anyone's work.
+        return SubmissionResponse(ok=True, message=(
+            f"Updated {file.filename}. Review had already started on the earlier version, so it "
+            "is kept on record and the new version will be reviewed in its place."))
+    if rec["outcome"] == "unchanged":
+        return SubmissionResponse(ok=True, message=f"{file.filename} was already uploaded; nothing changed.")
     return SubmissionResponse(ok=True, message=f"Uploaded {file.filename}")
 
 
@@ -599,7 +627,7 @@ def portal_results(token: str, project_id: str):
 
     try:
         # Paged: the client downloads their whole delivered batch here.
-        rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+        rows = fetch_all(lambda: items_svc.current(db.table("project_items").select("idx,content,label,labeled_at"))
                          .eq("project_id", project_id).order("idx"))
     except Exception as exc:
         logger.error("Portal results fetch failed: %s", exc)
@@ -717,10 +745,9 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
         eval_config = body.eval_config
     else:
         raise HTTPException(status_code=422, detail="Provide a `template` (with optional `classes`) or a custom `eval_config`.")
-    # Validate the schema renders before we save it — a broken config fails here.
+    # Validate the schema before we save it — a broken config fails here.
     try:
-        from app.services import labelstudio as ls
-        ls.build_label_config(eval_config)
+        eval_schema.validate(eval_config)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid eval_config: {exc}")
     ec = dict(eval_config)
@@ -891,6 +918,21 @@ def _kick_sync(project_id: str) -> None:
         pass   # the read-timeout is expected; the sync request is now running independently
 
 
+def _kick_answers() -> None:
+    """Fire-and-forget trigger for the native store's event drain on this service. The
+    clinician platform sends the same nudge after every answer; this one is the safety net.
+    A lost nudge delays scoring but loses nothing: the events wait in the database."""
+    if not settings.ADMIN_API_KEY:
+        return
+    url = f"{settings.SELF_URL.rstrip('/')}/api/v1/project/internal/process-answers"
+    try:
+        import httpx
+        httpx.post(url, headers={"X-Admin-Key": settings.ADMIN_API_KEY},
+                   timeout=httpx.Timeout(5.0, read=0.5))
+    except Exception:
+        pass
+
+
 def _kick_ingest_source(project_id: str, manifest_url: str, sample: int | None, key: str | None = None, mode: str = "sample") -> None:
     """Fire-and-forget trigger for the background manifest ingest (stream + sample/ingest-all)."""
     if not settings.ADMIN_API_KEY:
@@ -940,6 +982,13 @@ def sync_pending(project_id: str, x_admin_key: str | None = Header(default=None)
     ec = s.get("eval_config")
     if not ec:
         return SubmissionResponse(ok=True, message="No config yet; nothing to sync.")
+
+    # The native store serves straight from project_items: releasing is a status change,
+    # with no copy to make and no window to respect.
+    if tasks.is_native(db, project_id):
+        n = tasks.release(db, project_id)
+        logger.info("sync-pending: released %d native tasks for %s", n, project_id)
+        return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
 
     # Ensure the LS project exists once, up front (stored on the submission).
     try:
@@ -1026,8 +1075,7 @@ def ingest_source(body: IngestSourceIn, x_admin_key: str | None = Header(default
     if body.key and body.key in (ec.get("_ingest_keys") or []):
         return SubmissionResponse(ok=True, message="Manifest already ingested (idempotent).")
     try:
-        from app.services import labelstudio as ls
-        required = ls.required_data_keys(ec)
+        required = eval_schema.required_data_keys(ec)
     except Exception:
         required = []
 
@@ -1157,6 +1205,16 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
             _kick_sync(project_id)
     except Exception:
         pass
+    # Native store: answers whose scoring has not run yet (the platform's own nudge was
+    # lost, or a worker died) are picked up on the client's next poll.
+    native = tasks.is_native(db, project_id)
+    if native:
+        try:
+            if (db.table("answer_events").select("id").eq("project_id", project_id)
+                    .eq("status", "pending").limit(1).execute().data):
+                _kick_answers()
+        except Exception:
+            pass
     # Safety net for bulk: a manifest ingest whose background trigger was missed (or whose
     # worker died) leaves a pending marker that never clears. If it's gone stale, re-fire it
     # and bump the timestamp so we don't re-fire on every poll. This is what makes a lost
@@ -1190,7 +1248,8 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
         # Authors draft on the clinician platform and nothing reaches us until a reader
         # approves, so look there for work under way.
         from app.services import second_reading
-        reviewing = second_reading.drafting_started(db, s.get("ls_project_id"))
+        reviewing = (second_reading.drafting_started(db, None, project_id) if native
+                     else second_reading.drafting_started(db, s.get("ls_project_id")))
     client_status = ("delivered" if stage == "delivered"
                      else "in_review" if (stage != "submitted" or reviewing)
                      else "received")
@@ -1203,7 +1262,7 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
         try:
             # Paged: the delivered payload must carry every reviewed item, not the
             # first page of them.
-            rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+            rows = fetch_all(lambda: items_svc.current(db.table("project_items").select("idx,content,label,labeled_at"))
                              .eq("project_id", project_id).order("idx"))
             out["items"] = [_client_item(r) for r in rows]
             out["report"] = report_svc.build_report(db, project_id)
@@ -1308,7 +1367,7 @@ def _pooled_rows(db, project_ids: list[str], case_id_field: str | None, side: st
     rows: list[dict] = []
     seen: dict = {}
     for pid in project_ids:
-        for r in fetch_all(lambda pid=pid: db.table("project_items").select("idx,content,label,status")
+        for r in fetch_all(lambda pid=pid: items_svc.current(db.table("project_items").select("idx,content,label,status"))
                            .eq("project_id", pid).order("idx")):
             key = clinical_analytics._key(r, case_id_field)
             if key is not None and len(project_ids) > 1:
@@ -1387,7 +1446,7 @@ def api_capture_failures(body: CaptureIn, authorization: str | None = Header(def
 
     # Paged: failures past the first page would never enter the library, and the
     # cases this run passed would never be closed out.
-    rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+    rows = fetch_all(lambda: items_svc.current(db.table("project_items").select("idx,content,label,status"))
                      .eq("project_id", body.project_id).order("idx"))
 
     found = failure_library.extract(rows, client_email=email, project_id=body.project_id,
@@ -1652,7 +1711,7 @@ def _fire_webhook(db, project_id: str) -> None:
         url = ec.get("_webhook_url")
         if not url:
             return
-        rows = fetch_all(lambda: db.table("project_items").select("idx,content,label,labeled_at")
+        rows = fetch_all(lambda: items_svc.current(db.table("project_items").select("idx,content,label,labeled_at"))
                          .eq("project_id", project_id).order("idx"))
         payload = {
             "event": "results.delivered",
@@ -1667,8 +1726,10 @@ def _fire_webhook(db, project_id: str) -> None:
         # An event id so a receiver can recognise a redelivery of something it has
         # already processed, and a timestamp inside the signed string so a captured
         # payload cannot be replayed against them a week later. Signing the body alone
-        # is valid forever, which is the whole weakness.
-        event_id = str(uuid.uuid4())
+        # is valid forever, which is the whole weakness. The id is the delivery's, not the
+        # attempt's: every retry and redelivery of it carries the same one, so a receiver
+        # that de-duplicates on it processes the delivery once.
+        event_id = ec.get("_webhook_event_id") or str(uuid.uuid4())
         timestamp = str(int(time.time()))
 
         headers = {
@@ -1703,27 +1764,76 @@ def _fire_webhook(db, project_id: str) -> None:
                 error = f"{type(exc).__name__}: {exc}"
                 status = None
         delivered = status is not None and 200 <= status < 300
-        logger.info("Webhook for %s -> %s (status=%s, attempts=%s, delivered=%s)",
-                    project_id, url, status, attempts, delivered)
+        # The client's URL is not logged: webhook URLs often carry a token of their own.
+        logger.info("Webhook for %s (status=%s, attempts=%s, delivered=%s)",
+                    project_id, status, attempts, delivered)
         # Record the outcome so the client can see, from GET /results, whether the push
         # actually landed — otherwise a silently-lost webhook is indistinguishable from
         # one that was never due, and polling stays the only trustworthy path.
+        ec = dict(ec)
+        ec["_webhook_event_id"] = event_id
         _record_webhook_result(db, project_id, ec, delivered=delivered, status=status,
                                attempts=attempts, error=error)
     except Exception as exc:
-        logger.error("Webhook delivery failed for %s: %s", project_id, exc)
+        logger.error("Webhook delivery failed for %s (%s)", project_id, type(exc).__name__)
 
 
 def _record_webhook_result(db, project_id, ec, *, delivered, status, attempts, error) -> None:
     """Persist the last delivery attempt on the project. Best-effort: a failure to record
-    the outcome must never mask the delivery itself."""
+    the outcome must never mask the delivery itself. `rounds` counts deliveries tried, each
+    of up to three attempts, so the scheduled retry knows when to stop."""
     try:
         ec = dict(ec or {})
-        ec["_webhook_last"] = {"delivered": delivered, "status": status,
-                               "attempts": attempts, "error": error, "at": _now_iso()}
+        rounds = int(((ec.get("_webhook_last") or {}).get("rounds")) or 0) + 1
+        ec["_webhook_last"] = {"delivered": delivered, "status": status, "attempts": attempts,
+                               "rounds": rounds, "error": error, "at": _now_iso()}
         db.table("project_submissions").update({"eval_config": ec}).eq("id", project_id).execute()
     except Exception as exc:
         logger.error("Could not record webhook result for %s: %s", project_id, exc)
+
+
+# A failed delivery is retried on the scheduled run with growing gaps, then left for an
+# operator: round n waits 2**n minutes, and after DELIVERY_MAX_ROUNDS it stops.
+DELIVERY_MAX_ROUNDS = 6
+
+
+def _delivery_due(last: dict, now: datetime) -> bool:
+    if not last or last.get("delivered"):
+        return False
+    status = last.get("status")
+    if status is not None and 400 <= int(status) < 500:
+        return False                      # the client refused the request itself
+    rounds = int(last.get("rounds") or 1)
+    if rounds >= DELIVERY_MAX_ROUNDS:
+        return False
+    try:
+        at = datetime.fromisoformat(str(last.get("at")))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return now - at >= timedelta(minutes=2 ** rounds)
+
+
+def retry_failed_deliveries(db, now: datetime | None = None) -> dict:
+    """Re-send the results webhook for delivered projects whose last push failed, when its
+    backoff has passed. The same event id is reused (see _fire_webhook), so a receiver that
+    already got it can tell. Run by the scheduled job; one run at a time."""
+    now = now or datetime.now(timezone.utc)
+    retried = gave_up = 0
+    subs = fetch_all(lambda: db.table("project_submissions").select("id,eval_config")
+                     .eq("stage", "delivered").order("id"))
+    for s in subs:
+        ec = s.get("eval_config") or {}
+        last = ec.get("_webhook_last") or {}
+        if not ec.get("_webhook_url") or not last or last.get("delivered"):
+            continue
+        if _delivery_due(last, now):
+            _fire_webhook(db, s["id"])
+            retried += 1
+        elif int(last.get("rounds") or 1) >= DELIVERY_MAX_ROUNDS:
+            gave_up += 1
+    return {"deliveries_retried": retried, "deliveries_given_up": gave_up}
 
 
 @router.post("/webhook/redeliver", response_model=SubmissionResponse,
@@ -1857,8 +1967,31 @@ def admin_held_for_pool(ls_project_id: int, x_admin_key: str | None = Header(def
            .eq("ls_project_id", ls_project_id).limit(1).execute()).data
     if not sub:
         raise HTTPException(status_code=404, detail="No project uses that Label Studio project.")
-    project_id = sub[0]["id"]
-    case_id_field = _case_id_field(sub[0].get("eval_config") or {})
+    held = _held_cases(db, sub[0]["id"], sub[0].get("eval_config") or {})
+    return {"ok": True, "ls_project_id": ls_project_id, "project_id": sub[0]["id"],
+            "count": len(held), "held": held}
+
+
+@router.get("/admin/held/project/{project_id}",
+            summary="Held cases for a project on the native task store, for the clinician platform (admin)")
+def admin_held_for_project(project_id: str, x_admin_key: str | None = Header(default=None)):
+    """The same held cases as /admin/held/{ls_project_id}, addressed by HEALTH project, for
+    pools on the native task store. `ls_task_id` in each case carries the native task number:
+    the platform's tables call every task id that, whichever store issued it."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    sub = (db.table("project_submissions").select("id,eval_config")
+           .eq("id", project_id).limit(1).execute()).data
+    if not sub:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    held = _held_cases(db, project_id, sub[0].get("eval_config") or {})
+    return {"ok": True, "project_id": project_id, "count": len(held), "held": held}
+
+
+def _held_cases(db, project_id: str, ec: dict) -> list[dict]:
+    case_id_field = _case_id_field(ec)
     rows = fetch_all(lambda: db.table("project_items").select("idx,content,label")
                      .eq("project_id", project_id).eq("status", "needs_adjudication").order("idx"))
     held = []
@@ -1870,15 +2003,14 @@ def admin_held_for_pool(ls_project_id: int, x_admin_key: str | None = Header(def
         held.append({
             "project_id": project_id,
             "idx": r.get("idx"),
-            "ls_task_id": label.get("_ls_task_id"),
+            "ls_task_id": tasks.task_ref(label),
             "case_id": (content.get(case_id_field) if case_id_field else None) or content.get("case_id"),
             "agreement": label.get("_agreement"),
             "content": content,
             # Anonymous, and deliberately unordered relative to who wrote them.
             "earlier_answers": answers,
         })
-    return {"ok": True, "ls_project_id": ls_project_id, "project_id": project_id,
-            "count": len(held), "held": held}
+    return held
 
 
 @router.get("/admin/adjudication/{project_id}", summary="Items awaiting adjudication — reviewers disagreed (admin)")
@@ -1918,7 +2050,7 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     row = (
-        db.table("project_items").select("id,label,status")
+        items_svc.current(db.table("project_items").select("id,label,status"))
         .eq("project_id", body.project_id).eq("idx", body.idx).limit(1).execute()
     )
     if not row.data:
@@ -1978,8 +2110,13 @@ def admin_reviewer_quality(project_id: str, x_admin_key: str | None = Header(def
     try:
         sub = db.table("project_submissions").select("ls_project_id").eq("id", project_id).limit(1).execute()
         ls_pid = sub.data[0].get("ls_project_id") if sub.data else None
-        if ls_pid:
+        if tasks.is_native(db, project_id):
+            pools = db.table("pools").select("id").eq("project_id", project_id).execute().data or []
+        elif ls_pid:
             pools = db.table("pools").select("id").eq("ls_project_id", int(ls_pid)).execute().data or []
+        else:
+            pools = []
+        if pools:
             pool_ids = [p["id"] for p in pools]
             if pool_ids:
                 comps = (db.table("task_completions").select("clinician_id,ls_task_id,annotation_data")
@@ -2039,7 +2176,7 @@ def admin_submissions(x_admin_key: str | None = Header(default=None)):
     try:
         # Every item across every project: the one read most certain to outgrow a
         # single page, and it drives the progress numbers an operator acts on.
-        items = fetch_all(lambda: db.table("project_items").select("project_id,status"))
+        items = fetch_all(lambda: items_svc.current(db.table("project_items").select("project_id,status")))
         counts: dict[str, dict[str, int]] = {}
         for it in items:
             c = counts.setdefault(it["project_id"], {"total": 0, "done": 0})
@@ -2157,10 +2294,9 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    # Validate it renders BEFORE saving — a broken schema fails here, not later at sync.
+    # Validate BEFORE saving — a broken schema fails here, not later at sync.
     try:
-        from app.services import labelstudio as ls
-        ls.build_label_config(body.eval_config)
+        eval_schema.validate(body.eval_config)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid eval config: {exc}")
     new_ec = dict(body.eval_config)
@@ -2209,8 +2345,12 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
         ls_pid = row[0].get("ls_project_id") if row else None
     except Exception:
         ls_pid = None
-    if ls_pid:
+    if tasks.is_native(db, body.project_id):
+        # The clinician platform reads this config directly; there is no copy to update.
+        msg += " The clinicians' form now reads this config."
+    elif ls_pid:
         try:
+            from app.services import labelstudio as ls
             ls.update_project_config(ls_pid, ls.build_label_config(new_ec),
                                      reviewers=int(new_ec.get("reviewers_per_item") or 1))
             msg += " The clinicians' form was updated."
@@ -2245,6 +2385,141 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
     return {"ok": True, "api_key": key, "email": email, "project_id": body.project_id}
 
 
+# ── Native task store ───────────────────────────────────────────────────────────
+# Operator controls for projects on Senebiclabs' own task store (services/tasks.py).
+# Every route here is admin-only; the drain is also called by the clinician platform,
+# which holds the same admin key it uses for /admin/adjudicate.
+
+class TaskStoreIn(BaseModel):
+    project_id: str
+    store: str
+
+
+class ProjectIdIn(BaseModel):
+    project_id: str
+
+
+def _native_project_or_409(db, project_id: str) -> None:
+    if not (db.table("project_submissions").select("id").eq("id", project_id).limit(1).execute()).data:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if not tasks.is_native(db, project_id):
+        raise HTTPException(status_code=409, detail="This project is on Label Studio, not the native task store.")
+
+
+@router.post("/admin/task-store", response_model=SubmissionResponse,
+             summary="Move a project between Label Studio and the native task store (admin)")
+def admin_set_task_store(body: TaskStoreIn, x_admin_key: str | None = Header(default=None)):
+    op = _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    try:
+        tasks.set_store(db, body.project_id, body.store)
+    except tasks.StoreChangeRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    _admin_audit(db, op, body.project_id, "task_store", {"store": body.store})
+    note = ""
+    if body.store == tasks.NATIVE:
+        note = (" Create its clinician pool with project_id set to this project; the pool then "
+                "reads this project's config and reviewer count directly.")
+    return SubmissionResponse(ok=True, message=f"Project now uses the {body.store} task store.{note}")
+
+
+@router.post("/admin/release", response_model=SubmissionResponse,
+             summary="Release a native project's pending items to clinicians (admin)")
+def admin_release(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
+    op = _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    _native_project_or_409(db, body.project_id)
+    n = tasks.release(db, body.project_id)
+    _admin_audit(db, op, body.project_id, "release", {"released": n})
+    return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
+
+
+@router.post("/admin/rebuild", response_model=SubmissionResponse,
+             summary="Re-score every released task of a native project from its stored answers (admin)")
+def admin_rebuild(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
+    """The native counterpart of /ls/pull: queue every released task to be scored again
+    from the answers held in our own database. A senior's settled decision is never undone
+    by it (ls._apply_task_annotations keeps an adjudicated label as final)."""
+    op = _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    _native_project_or_409(db, body.project_id)
+    n = db.rpc("request_rebuild", {"p_project": body.project_id}).execute().data
+    _admin_audit(db, op, body.project_id, "rebuild", {"queued": n})
+    _kick_answers()
+    return SubmissionResponse(ok=True, message=f"Queued {n} tasks to be re-scored.")
+
+
+@router.get("/admin/answer-events/{project_id}",
+            summary="Answer events not yet done for a native project: pending, processing, failed (admin)")
+def admin_answer_events(project_id: str, status: str | None = None,
+                        x_admin_key: str | None = Header(default=None)):
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    if status and status not in ("pending", "processing", "done", "failed"):
+        raise HTTPException(status_code=422, detail="status must be pending, processing, done or failed.")
+    events = tasks.open_events(db, project_id, status)
+    counts: dict = {}
+    for e in events:
+        counts[e["status"]] = counts.get(e["status"], 0) + 1
+    return {"ok": True, "project_id": project_id, "counts": counts, "events": events}
+
+
+@router.post("/admin/answer-events/retry", response_model=SubmissionResponse,
+             summary="Put a native project's failed answer events back in the queue (admin)")
+def admin_retry_answer_events(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
+    op = _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    n = db.rpc("retry_failed_events", {"p_project": body.project_id}).execute().data
+    _admin_audit(db, op, body.project_id, "answer_events_retry", {"requeued": n})
+    _kick_answers()
+    return SubmissionResponse(ok=True, message=f"Requeued {n} failed events.")
+
+
+@router.get("/admin/ops-health",
+            summary="Anything stuck, failing or waiting on a person: 503 when something needs action (admin)")
+def admin_ops_health(x_admin_key: str | None = Header(default=None)):
+    """For an operator and for a monitor. Read-only; reports ids and counts, never content.
+    A plain uptime check pointed here alerts on any 'alert' check (see docs/operations.md)."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    from app.services import ops_health
+    from fastapi.responses import JSONResponse
+    out = ops_health.run(db)
+    return JSONResponse(out, status_code=503 if out["status"] == "alert" else 200)
+
+
+@router.post("/internal/process-answers",
+             summary="Background: score answers recorded on the native task store (internal)")
+def internal_process_answers(x_admin_key: str | None = Header(default=None)):
+    """Drain the answer outbox. Called by the clinician platform after each answer, by
+    /results as a safety net, and after a rebuild or retry. Several calls at once are safe:
+    each task is given to one caller at a time."""
+    _require_admin(x_admin_key)
+    db = get_client()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    out = {"ok": True, **tasks.process_events(db)}
+    # The same scheduled call re-sends failed client deliveries whose backoff has passed.
+    try:
+        out.update(retry_failed_deliveries(db))
+    except Exception as exc:
+        logger.error("delivery retry pass failed (%s)", type(exc).__name__)
+        out["delivery_retry_error"] = type(exc).__name__
+    return out
+
+
 # ── Work: items + labeling ──────────────────────────────────────────────────────
 
 
@@ -2253,7 +2528,7 @@ def _item_statuses(db, project_id: str) -> list:
     # Paged: this gates delivery. admin_advance refuses to mark a batch delivered
     # until done == total, so a truncated read here would report 1000 of 1000 on a
     # larger project and release a batch that was never finished.
-    return [r.get("status") for r in fetch_all(lambda: db.table("project_items").select("status")
+    return [r.get("status") for r in fetch_all(lambda: items_svc.current(db.table("project_items").select("status"))
                                                .eq("project_id", project_id))]
 
 
@@ -2266,13 +2541,12 @@ def _guard_item_keys(db, project_id: str, items: list[dict]) -> None:
     """Reject a bulk item add whose rows lack a key the project's config needs
     (e.g. a plain CSV added to an image task), with the exact next step — before any
     broken items are created. No-op when the config imposes no required keys."""
-    from app.services import labelstudio as ls
     try:
         sub = db.table("project_submissions").select("eval_config").eq("id", project_id).limit(1).execute()
         eval_config = sub.data[0].get("eval_config") if sub.data else None
     except Exception:
         eval_config = None
-    for k in ls.required_data_keys(eval_config):
+    for k in eval_schema.required_data_keys(eval_config):
         n_missing = sum(1 for c in items if not (c or {}).get(k))
         if n_missing:
             hint = (

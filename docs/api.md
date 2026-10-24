@@ -225,18 +225,13 @@ pairs with a coverage/agreement summary instead of a scorecard.
 - `auto_deliver` — by default a finished batch is held for a human sign-off before it is
   released to you (status stays `in_review` until then). Set `true` for hands-off delivery
   the moment every item is done. Optional (default `false`).
-- `input` — `"text"` (shows the `context` fields), `"image"` (each item needs an
-  `image` URL), or `"audio"` / `"video"` (each item needs an `audio` / `video` URL; a
-  clinician plays it, streamed straight from your storage).
+- `input` — `"text"` (shows the `context` fields) or `"image"` (each item needs an
+  `image` URL and a `prediction`; clinicians view it in a zoomable viewer, fetched straight
+  from your storage). `"audio"` and `"video"` are not accepted yet: a project that asks for
+  them is refused with a `422`.
 - `context` — text mode only: which data keys to show the clinician, in order.
 - `classes` — the label set used by `from_classes` and `structured` fields.
 - `case_id_field` — which item field ties a result back to your own record.
-- `field_order` — the order clinicians are asked the fields, as a list of field names.
-  Worth setting: configs are stored as JSON, whose key order is not preserved, so without
-  it the form is ordered arbitrarily and a clinician can be asked for a rationale before
-  the verdict it explains. Templates set it for you. Names you leave out are asked last.
-- Each field takes a `label` (the question a clinician reads — without one the field name
-  is prettified, so `correct_label` reads as "Correct label") and an optional `hint`.
 - `field_order` — the order clinicians are asked the fields, as a list of field names.
   Worth setting: configs are stored as JSON, whose key order is not preserved, so without
   it the form is ordered arbitrarily and a clinician can be asked for a rationale before
@@ -251,6 +246,8 @@ pairs with a coverage/agreement summary instead of a scorecard.
   - `from_classes` — choose one of the project `classes`
   - `structured` — yes/no plus which finding (from classes)
   - `scale` — a 1..`max` rating
+  - `number` — a whole number, optionally between `min` and `max` (e.g. the step of an
+    agent trace where it first went wrong); anything else is refused, never rounded
   - `flag` — a single checkbox
   - `text` — free-text notes (`rows` sets the box height for long-form)
   - `spans` — highlight text in the model output and tag each span with one of `options` (text input only)
@@ -611,9 +608,14 @@ async def hook(request: Request):
 Return `2xx` to acknowledge.
 
 **Retries.** A `5xx` or a refused connection is retried up to three times (immediately,
-then after 2s and 6s) — that pattern means your endpoint blipped. A **`4xx` is never
-retried**: your service rejected the request itself, and repeating it would just deliver
-the same rejection.
+then after 2s and 6s) — that pattern means your endpoint blipped. If all three fail, we
+keep trying on a schedule with growing gaps (minutes at first, then hours) before giving
+up. A **`4xx` is never retried**: your service rejected the request itself, and repeating
+it would just deliver the same rejection.
+
+**One event id per delivery.** Every attempt, scheduled retry and redelivery of the same
+results carries the same `X-Senebiclabs-Event-Id`, so if you have already processed it you
+can safely acknowledge and ignore the repeat.
 
 **Was it delivered?** The outcome is recorded on the project and returned by
 `GET /results` once delivered, so a lost webhook is distinguishable from one that was
