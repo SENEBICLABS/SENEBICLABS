@@ -73,6 +73,8 @@ means the cases reached Label Studio.
 
 Pools are created by hand, in Supabase, one per project. **Closed by default.**
 
+For a project on the native task store, create the pool as in [native-task-store.md](native-task-store.md) instead: it takes `project_id` and no copy of the config.
+
 ```sql
 insert into pools (name, ls_project_id, calibration_items, eval_config,
                    maximum_annotations, open_access)
