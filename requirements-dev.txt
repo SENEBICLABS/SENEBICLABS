@@ -3,3 +3,5 @@ pytest==9.1.1
 pytest-playwright==0.9.0
 playwright==1.62.0
 numpy==2.2.6
+# Only for tests/sql, which run against a throwaway Postgres (see that folder's README).
+psycopg[binary]==3.2.3

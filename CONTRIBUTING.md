@@ -44,7 +44,11 @@ network, no credentials.
 PYTHONPATH=. pytest -q tests --ignore=tests/e2e
 ```
 
-176 tests, about 8 seconds. If that passes, your environment is correct and **you can write
+About 270 tests, about 8 seconds. `tests/sql` skips itself here: it needs a throwaway
+Postgres, and proves what a fake database cannot (the native task store's transactions,
+concurrency and recovery). How to run it is in
+[docs/native-task-store.md](docs/native-task-store.md). If the hermetic run passes, your
+environment is correct and **you can write
 and test most changes without any credentials at all.** `tests/e2e` is excluded because it
 drives a real browser against a running server.
 

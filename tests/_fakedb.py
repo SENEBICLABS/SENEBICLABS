@@ -28,9 +28,19 @@ class _Query:
         self.filters.append(lambda r, c=col, v=val: r.get(c) == v)
         return self
 
+    def neq(self, col, val):
+        self.filters.append(lambda r, c=col, v=val: r.get(c) != v)
+        return self
+
     def in_(self, col, vals):
         vals = list(vals)
         self.filters.append(lambda r, c=col, v=vals: r.get(c) in v)
+        return self
+
+    def is_(self, col, val):
+        # PostgREST's IS: only the null test is used.
+        assert val in ("null", None), "only is_(col, 'null') is supported"
+        self.filters.append(lambda r, c=col: r.get(c) is None)
         return self
 
     def order(self, col, desc=False):
@@ -92,9 +102,30 @@ class _Query:
         return _Res(copy.deepcopy(rows), count=len(rows))
 
 
+class _Rpc:
+    def __init__(self, fn, params):
+        self.fn, self.params = fn, params
+
+    def execute(self):
+        return _Res(self.fn(self.params))
+
+
 class FakeDB:
-    def __init__(self, rows=None):
+    """`rpcs` maps a database function's name to a Python stand-in taking the params dict.
+    The real functions are tested against Postgres in tests/sql; here they only need to
+    return the shape the code reads. Calling one that is not given raises, as PostgREST
+    does for a function that does not exist."""
+
+    def __init__(self, rows=None, rpcs=None):
         self.rows = copy.deepcopy(rows or {})
+        self.rpcs = dict(rpcs or {})
+        self.rpc_calls: list[tuple[str, dict]] = []
 
     def table(self, name):
         return _Query(self, name)
+
+    def rpc(self, name, params=None):
+        self.rpc_calls.append((name, dict(params or {})))
+        if name not in self.rpcs:
+            raise RuntimeError(f"function {name} does not exist")
+        return _Rpc(self.rpcs[name], dict(params or {}))

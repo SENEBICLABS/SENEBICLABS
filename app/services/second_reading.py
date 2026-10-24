@@ -41,12 +41,23 @@ def enabled(ec: dict | None) -> bool:
     return bool((ec or {}).get("second_reading"))
 
 
-def review_row(db, ls_project_id: int | None, ls_task_id: int | None) -> dict | None:
-    """The platform's review record for one Label Studio task, or None."""
-    if not ls_project_id or not ls_task_id:
+def _pools(db, ls_project_id: int | None = None, project_id: str | None = None) -> list[dict]:
+    """The platform's pools for a project: by HEALTH project on the native store (one pool
+    per project, enforced there), by Label Studio project otherwise."""
+    if project_id:
+        return (db.table("pools").select("id").eq("project_id", project_id).execute()).data or []
+    if ls_project_id:
+        return (db.table("pools").select("id").eq("ls_project_id", ls_project_id).execute()).data or []
+    return []
+
+
+def review_row(db, ls_project_id: int | None, ls_task_id: int | None,
+               project_id: str | None = None) -> dict | None:
+    """The platform's review record for one task, or None. The workforce table calls the
+    task id ls_task_id whichever store issued it."""
+    if not ls_task_id:
         return None
-    pools = (db.table("pools").select("id").eq("ls_project_id", ls_project_id)
-             .execute()).data or []
+    pools = _pools(db, ls_project_id, project_id)
     if not pools:
         return None
     rows = (db.table("review_items").select("*")
@@ -55,15 +66,14 @@ def review_row(db, ls_project_id: int | None, ls_task_id: int | None) -> dict | 
     return rows[0] if rows else None
 
 
-def drafting_started(db, ls_project_id: int | None) -> bool:
+def drafting_started(db, ls_project_id: int | None, project_id: str | None = None) -> bool:
     """Whether any clinician has started on this project on the platform. Drafts stay there
     until approved, so nothing reaches us while authors write; the platform's review rows
     are the only sign that work is under way."""
-    if not ls_project_id:
+    if not ls_project_id and not project_id:
         return False
     try:
-        pools = (db.table("pools").select("id").eq("ls_project_id", ls_project_id)
-                 .execute()).data or []
+        pools = _pools(db, ls_project_id, project_id)
         if not pools:
             return False
         return bool((db.table("review_items").select("id")
@@ -81,15 +91,17 @@ def approved_annotations(anns: list[dict], row: dict | None) -> list[dict]:
     return keep or anns
 
 
-def decide(db, ls_project_id, ls_task_id, wait_s: float = 0.0) -> tuple[str, dict | None, dict | None]:
+def decide(db, ls_project_id, ls_task_id, wait_s: float = 0.0,
+           project_id: str | None = None) -> tuple[str, dict | None, dict | None]:
     """(status, second_reading record for the label, review row) for an authored answer.
 
-    `wait_s`: the platform publishes the annotation first and records the approval right
-    after, so a webhook can arrive in between. The webhook waits briefly for the approval
-    rather than parking the item; anything later is caught by `reconcile`."""
+    `wait_s`: on Label Studio the platform publishes the annotation first and records the
+    approval right after, so a webhook can arrive in between. The webhook waits briefly for
+    the approval rather than parking the item; anything later is caught by `reconcile`. On
+    the native store the two are one transaction, so there is never anything to wait for."""
     deadline = time.monotonic() + wait_s
     while True:
-        row = review_row(db, ls_project_id, ls_task_id)
+        row = review_row(db, ls_project_id, ls_task_id, project_id)
         if row and row.get("state") == "approved":
             return "done", {
                 "approved": True,
@@ -117,14 +129,19 @@ def reconcile(db, project_id: str, ec: dict) -> int:
     if not waiting:
         return 0
     from app.api.v1.ls import _apply_task_annotations, _qa_from_ec   # lazy: ls imports us
+    from app.services import tasks
     target, adjudicate, text_fields, primary = _qa_from_ec(ec)
+    native = tasks.is_native(db, project_id)
     settled = 0
     for it in waiting:
-        task_id = (it.get("label") or {}).get("_ls_task_id")
+        label = it.get("label") or {}
+        task_id = label.get("_task_no") if native else label.get("_ls_task_id")
         if not task_id:
             continue
         try:
-            task = ls.get_task(task_id)
+            task = tasks.native_task_by_number(db, task_id) if native else ls.get_task(task_id)
+            if task is None:
+                continue
             status = _apply_task_annotations(db, task, target, project_id, adjudicate,
                                              text_fields, primary, ec)
             if status != STATUS:

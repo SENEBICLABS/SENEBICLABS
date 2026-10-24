@@ -198,6 +198,7 @@ def test_build_report_scores_free_text_only_when_the_schema_has_no_class_field()
             class Q:
                 def select(self, *_a, **_k): return self
                 def eq(self, *_a): return self
+                def neq(self, *_a): return self
                 def order(self, *_a, **_k): return self
                 def limit(self, _n): return self
                 def range(self, s, e):

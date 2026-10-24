@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 
 from app.services import clinical_analytics
 from app.services.paging import fetch_all
+from app.services.tasks import task_ref
+from app.services import items as items_svc
 
 # A project's purpose decides its deliverable: 'evaluate' -> a model-performance scorecard;
 # 'label'/'create' -> a summary of the produced dataset (there is no prediction to score).
@@ -390,6 +392,8 @@ def _label_from_annotation_data(ad) -> dict:
             out[fn] = c[0] if len(c) == 1 else c
         elif "rating" in v:
             out[fn] = v.get("rating")
+        elif "number" in v:
+            out[fn] = v.get("number")
         elif "text" in v:
             t = v.get("text") or []
             out[fn] = t[0] if len(t) == 1 else t
@@ -419,7 +423,8 @@ def reviewer_quality(items: list[dict], completions_by_task: dict | None = None,
         content = it.get("content") or {}
         gold = content.get("_gold_expected") if isinstance(content, dict) else None
         consensus_verdict = lbl.get("verdict")
-        comps = completions_by_task.get(lbl.get("_ls_task_id")) if lbl.get("_ls_task_id") is not None else None
+        ref = task_ref(lbl)
+        comps = completions_by_task.get(ref) if ref is not None else None
         anns = lbl.get("_annotations")
         if comps:                                       # real per-clinician attribution
             for comp in comps:
@@ -572,7 +577,7 @@ def build_report(db, project_id: str) -> dict:
     case_id_field = ec.get("case_id_field") or schema.get("case_id_field")
     # Paged: a truncated read here would score the client's model on part of their
     # batch and report it as the whole thing.
-    items = fetch_all(lambda: db.table("project_items").select("idx,content,label,status")
+    items = fetch_all(lambda: items_svc.current(db.table("project_items").select("idx,content,label,status"))
                       .eq("project_id", project_id).order("idx"))
 
     if purpose == "evaluate":

@@ -83,8 +83,14 @@ async def hook(request: Request):
           <p>
             Return <C>2xx</C> to acknowledge. A <C>5xx</C> or a refused connection is retried up
             to three times (immediately, then after 2s and 6s) — that pattern means your endpoint
-            blipped. A <C>4xx</C> is never retried: your service rejected the request itself, and
-            repeating it would just deliver the same rejection.
+            blipped. If all three fail, we keep trying on a schedule with growing gaps (minutes at
+            first, then hours) before giving up. A <C>4xx</C> is never retried: your service
+            rejected the request itself, and repeating it would just deliver the same rejection.
+          </p>
+          <p>
+            Every attempt, scheduled retry and redelivery of the same results carries the same{' '}
+            <C>X-Senebiclabs-Event-Id</C>, so a repeat of one you have already processed can be
+            acknowledged and ignored.
           </p>
           <p>
             The outcome is recorded and returned by <C>GET /results</C> once delivered, so a lost
