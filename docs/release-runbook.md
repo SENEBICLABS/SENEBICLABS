@@ -57,8 +57,12 @@ D=~/senebiclabs-backups/<date>-release
 python scripts/backup_verify.py --out $D/db --preflight-only   # metadata only; dumps nothing
 python scripts/backup_verify.py --out $D/db       # reads the file above; refuses it if not mode 600
 python scripts/storage_backup.py --out $D/images --expect $D/db/db-<stamp>.json
-~/senebiclabs-backups/backup.sh                   # Label Studio, with the VM up
 ```
+
+**Label Studio is not part of this step.** Everything in Label Studio so far is internal test
+work: its projects, tasks and annotations can be recreated, so a fresh Label Studio export is
+not a release gate. The exports already taken are kept unchanged. A final export is still
+taken before Label Studio is retired (step 9).
 
 **The preflight runs first, every time.** It connects read-only, with a 10-second connect
 timeout and a 30-second statement timeout, and reads only catalog metadata: the server
@@ -186,8 +190,9 @@ delivery given up.
   database default is a later one-line change, once you decide it.
 - **Existing Label Studio projects** keep working until delivered, then retire with Label
   Studio.
-- The old **rehearsal and demo** projects are disposable. Recreate them natively from
-  their exports if they are still useful. Do not migrate them.
+- The old **rehearsal and demo** projects are internal test work and disposable. Recreate
+  them natively, from the existing exports or from scratch, if they are still useful. Do not
+  migrate them.
 
 ## 9. Retire Label Studio [approval]
 
