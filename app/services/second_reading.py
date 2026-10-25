@@ -128,7 +128,8 @@ def reconcile(db, project_id: str, ec: dict) -> int:
                .eq("project_id", project_id).eq("status", STATUS).execute()).data or []
     if not waiting:
         return 0
-    from app.api.v1.ls import _apply_task_annotations, _qa_from_ec   # lazy: ls imports us
+    # lazy: scoring imports this module
+    from app.services.scoring import apply_task_annotations as _apply_task_annotations, qa_from_ec as _qa_from_ec
     from app.services import tasks
     target, adjudicate, text_fields, primary = _qa_from_ec(ec)
     native = tasks.is_native(db, project_id)

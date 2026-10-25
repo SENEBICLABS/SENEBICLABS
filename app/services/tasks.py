@@ -14,7 +14,7 @@ A project is on one store at a time (project_submissions.task_store). A native p
 never calls Label Studio, and nothing here falls back to it.
 
 The scoring path is unchanged. native_task() returns a task in the same shape as Label
-Studio's GET /api/tasks/{id}, so ls._apply_task_annotations parses, votes, holds splits for
+Studio's GET /api/tasks/{id}, so scoring.apply_task_annotations parses, votes, holds splits for
 adjudication and bridges second reading exactly as it always has. The one thing that
 changes is who an answer is attributed to: the clinician who gave it, where Label Studio
 could only say "the service account".
@@ -22,6 +22,7 @@ could only say "the service account".
 import logging
 import time
 
+from app.services import delivery, scoring
 from app.services.paging import fetch_all
 
 logger = logging.getLogger(__name__)
@@ -172,15 +173,13 @@ def native_task_by_number(db, task_no) -> dict | None:
 def process_task(db, task_no: int, project_id: str) -> str | None:
     """Re-score one task from all of its stored answers. Idempotent: running it twice, or
     after more answers arrive, gives the label the full set of answers implies."""
-    from app.api.v1 import ls as ls_api      # lazy: ls imports second_reading, which imports us
-
     rows = (db.table("project_items").select("id,task_no,project_id,content")
             .eq("task_no", task_no).limit(1).execute()).data
     if not rows:
         return None                          # the project was deleted under the event
-    ec = ls_api._project_ec(db, project_id)
-    target, adjudicate, text_fields, primary = ls_api._qa_from_ec(ec)
-    return ls_api._apply_task_annotations(db, native_task(db, rows[0]), target, project_id,
+    ec = scoring.project_ec(db, project_id)
+    target, adjudicate, text_fields, primary = scoring.qa_from_ec(ec)
+    return scoring.apply_task_annotations(db, native_task(db, rows[0]), target, project_id,
                                           adjudicate, text_fields, primary, ec)
 
 
@@ -188,8 +187,6 @@ def process_events(db, limit: int = 20, budget_s: float = 20.0) -> dict:
     """Drain the outbox: claim, score, finish, until it is empty or the time budget is
     spent. Safe to run from several places at once (the claim gives each task to one worker)
     and safe to run again after a crash (an abandoned claim goes back to pending)."""
-    from app.api.v1 import ls as ls_api
-
     started = time.monotonic()
     processed = failed = 0
     finished_projects: set = set()
@@ -220,7 +217,7 @@ def process_events(db, limit: int = 20, budget_s: float = 20.0) -> dict:
                 failed += 1
     # Once per project rather than per task: it reads every item's status.
     for project_id in finished_projects:
-        ls_api._maybe_auto_deliver(db, project_id)
+        delivery.maybe_auto_deliver(db, project_id)
     return {"processed": processed, "failed": failed}
 
 
