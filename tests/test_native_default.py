@@ -55,12 +55,17 @@ def test_the_label_studio_modules_are_gone(module):
 
 
 def test_no_route_reaches_label_studio():
+    """Asked over HTTP rather than read from app.routes, whose shape differs between
+    FastAPI versions (0.141 keeps an included router as one entry)."""
+    from fastapi.testclient import TestClient
     from app.main import app
-    paths = {getattr(r, "path", "") for r in app.routes}
-    assert not [p for p in paths if p.startswith("/api/v1/ls")]
-    assert "/api/v1/project/admin/task-store" not in paths
-    assert "/api/v1/project/admin/held/{ls_project_id}" not in paths
-    assert "/api/v1/project/admin/held/project/{project_id}" in paths
+    client = TestClient(app)
+    for path in ("/api/v1/ls/webhook", "/api/v1/project/admin/task-store",
+                 "/api/v1/project/admin/held/194"):
+        assert client.get(path).status_code == 404, path
+    # The held list is asked for by project, and that route exists: refused for want of
+    # a key, not missing.
+    assert client.get("/api/v1/project/admin/held/project/p-1").status_code in (401, 403)
 
 
 def test_no_application_code_keeps_a_label_studio_path():
