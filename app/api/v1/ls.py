@@ -72,38 +72,6 @@ def _refuse_native(db, project_id: str) -> None:
         raise HTTPException(status_code=409, detail=NATIVE_PROJECT)
 
 
-def push_new_items(db, project_id: str, items: list[dict], task_type: str = "eval_rating") -> dict:
-    """Auto-sync: ensure the LS project exists (built from the project's config) and push
-    exactly these newly-ingested items, so clinicians can start without an operator click.
-    Pushes only the given items, so repeated ingests never duplicate tasks."""
-    if not items:
-        return {"pushed": 0}
-    if tasks.is_native(db, project_id):
-        raise ValueError(NATIVE_PROJECT)
-    sub = db.table("project_submissions").select("id,company,ls_project_id,eval_config").eq("id", project_id).limit(1).execute()
-    if not sub.data:
-        raise ValueError("project not found")
-    s = sub.data[0]
-    eval_config = s.get("eval_config")
-    if not eval_config:
-        raise ValueError("no eval_config yet")     # unconfigured project: skip, operator syncs later
-    label_config = ls.build_label_config(eval_config)
-    for k in ls.required_data_keys(eval_config):
-        if any(not (r.get("content") or {}).get(k) for r in items):
-            raise ValueError(f"items missing '{k}'")
-    reviewers = int(eval_config.get("reviewers_per_item") or 1)
-    ls_pid = s.get("ls_project_id")
-    if not ls_pid:
-        title = f"{s.get('company') or 'Senebiclabs project'} — {task_type}"
-        ls_pid = ls.create_project(title=title, label_config=label_config, reviewers=reviewers)
-        db.table("project_submissions").update({"ls_project_id": ls_pid}).eq("id", project_id).execute()
-    else:
-        ls.update_project_config(ls_pid, label_config, reviewers=reviewers)
-    pushed = ls.push_tasks(ls_pid, items)
-    logger.info("Auto-sync pushed %d new items to LS project %s", pushed, ls_pid)
-    return {"ls_project_id": ls_pid, "pushed": pushed}
-
-
 @router.post("/sync", summary="Create LS project + push pending items as tasks (admin)")
 def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
     _require_admin(x_admin_key)
@@ -123,6 +91,8 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
         raise HTTPException(status_code=404, detail="Project not found.")
     s = sub.data[0]
     ls_pid = s.get("ls_project_id")
+    if not ls_pid:
+        raise HTTPException(status_code=409, detail=tasks.NO_NEW_LABEL_STUDIO)
 
     # Per-project schema drives the labeling config when present; otherwise fall back
     # to a built-in task-type config (keeps existing projects working).
@@ -158,14 +128,9 @@ def ls_sync(body: SyncIn, x_admin_key: str | None = Header(default=None)):
 
     reviewers = int((eval_config or {}).get("reviewers_per_item") or 1)   # overlap: N clinicians per item
     try:
-        if not ls_pid:
-            title = f"{s.get('company') or 'Senebiclabs project'} — {body.task_type}"
-            ls_pid = ls.create_project(title=title, label_config=label_config, reviewers=reviewers)
-            db.table("project_submissions").update({"ls_project_id": ls_pid}).eq("id", body.project_id).execute()
-        else:
-            # Keep the live LS project in step with the current config, so edits made
-            # in "Set config" after the first sync are actually applied.
-            ls.update_project_config(ls_pid, label_config, reviewers=reviewers)
+        # Keep the live LS project in step with the current config, so edits made
+        # in "Set config" after the first sync are actually applied.
+        ls.update_project_config(ls_pid, label_config, reviewers=reviewers)
         pushed = ls.push_tasks(ls_pid, rows)
     except httpx.HTTPStatusError as exc:
         logger.error("LS sync failed: %s", exc)

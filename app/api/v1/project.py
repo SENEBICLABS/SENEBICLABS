@@ -364,6 +364,7 @@ def submit(submission: ProjectSubmission):
                 "timeline": submission.timeline,
                 "data_sensitivity": submission.data_sensitivity,
                 "sample_link": submission.sample_link,
+                "task_store": tasks.NATIVE,
                 "budget_notes": submission.budget_notes,
                 "status": "new",
             }
@@ -784,6 +785,7 @@ def api_create_project(body: CreateProjectIn, authorization: str | None = Header
             "eval_config": ec,
             "stage": "submitted",
             "status": "new",
+            "task_store": tasks.NATIVE,
         }).execute()
         pid = res.data[0]["id"]
     except Exception as exc:
@@ -990,16 +992,15 @@ def sync_pending(project_id: str, x_admin_key: str | None = Header(default=None)
         logger.info("sync-pending: released %d native tasks for %s", n, project_id)
         return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
 
-    # Ensure the LS project exists once, up front (stored on the submission).
+    # A project still on Label Studio keeps using the Label Studio project it already has.
+    # None is ever created: new work belongs on the native store.
+    ls_pid = s.get("ls_project_id")
+    if not ls_pid:
+        raise HTTPException(status_code=409, detail=tasks.NO_NEW_LABEL_STUDIO)
     try:
         from app.services import labelstudio as ls
         label_config = ls.build_label_config(ec)
         reviewers = int(ec.get("reviewers_per_item") or 1)
-        ls_pid = s.get("ls_project_id")
-        if not ls_pid:
-            title = f"{s.get('company') or 'Senebiclabs project'} — eval"
-            ls_pid = ls.create_project(title=title, label_config=label_config, reviewers=reviewers)
-            db.table("project_submissions").update({"ls_project_id": ls_pid}).eq("id", project_id).execute()
     except Exception as exc:
         logger.error("sync-pending setup failed for %s: %s", project_id, exc)
         raise HTTPException(status_code=502, detail="Sync setup failed; will retry.")
@@ -1622,6 +1623,7 @@ def api_benchmark_run(body: BenchmarkRunIn, authorization: str | None = Header(d
                 "name": name, "company": name,
                 "email": email, "description": "Regression run seeded from the failure library.",
                 "eval_config": ec, "stage": "submitted", "status": "new",
+                "task_store": tasks.NATIVE,
             }).execute()
             pid = res.data[0]["id"]
             items = failure_library.as_items(g["rows"])
