@@ -56,7 +56,7 @@ pointed at it with the admin key header raises the same alarm without parsing th
 |---|---|---|
 | The database | `scripts/backup_verify.py --out <private folder>` (connection string from `~/.config/senebiclabs/backup-db.url`, mode 600) | Dumps from one snapshot, restores into a throwaway in-memory Postgres of the same version, and compares row counts, per-table content checksums and the schema inventory. Records the images the database refers to. Exit 1 on any difference. The password never appears in arguments, environment or output |
 | Images (`client-images`) | `scripts/storage_backup.py --out <private folder> --expect <db report>` | Each copy is checked against the source's recorded size and must decode as an image; content-addressed keys are also checked against the bytes. Every image the database refers to must be present. Refuses to start if the copy would not fit on disk; reruns copy only new objects |
-| Label Studio (while it exists) | `~/senebiclabs-backups/backup.sh` | Task and annotation counts per project |
+| Label Studio (until its VM is decommissioned; HEALTH no longer uses it) | `~/senebiclabs-backups/backup.sh` | Task and annotation counts per project |
 
 The image check decodes client uploads, so it runs only with Pillow 13 or later, the first
 release without known decoder vulnerabilities, which needs Python 3.11 or later. With an older

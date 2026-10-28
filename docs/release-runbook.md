@@ -5,16 +5,12 @@ each one is a separate go. Commands use `$DB` for the database's **direct** conn
 string, `$API` for the API base URL, and `$ADMIN` for an operator key. Nothing here prints
 secrets or client data.
 
-What this sequence rests on (all verified 24 Oct 2026 on throwaway infrastructure):
-- **Either app can be deployed before or after the migrations.** The workforce app falls
-  back to the pre-migration pool columns when the database lacks the new ones (it serves
-  Label Studio pools only), and HEALTH treats a missing `task_store` as Label Studio. The
-  new code on the pre-release schema passes the Label Studio end-to-end scenario
-  (`scripts/native_e2e_stack.sh up --with-label-studio --schema before`).
-- **The migrations are safe for the deployed old code.** Every addition has a default or
-  is unused by it.
-- The only ordering constraints are between migrations: workforce `021` before HEALTH
-  `005` (005's functions read `pools.project_id`), and `006` after `005`.
+Steps 1 to 5 were carried out for the native-pilot release in October 2026, when HEALTH
+still served Label Studio projects alongside the task store; the migrations they apply are
+in production. HEALTH has since removed Label Studio (see step 9), so it now **requires**
+those migrations: it no longer runs on a schema without `task_store`. The only ordering
+constraints are between migrations: workforce `021` before HEALTH `005` (005's functions
+read `pools.project_id`), and `006` after `005`.
 
 ## 0. Release content [decided]
 
@@ -29,8 +25,6 @@ which is safe (see above), but merge deliberately rather than by accident.
 # HEALTH
 PYTHONPATH=. pytest -q --ignore=tests/e2e                         # expect all pass
 scripts/native_e2e_stack.sh up                                    # then the printed rehearsal command
-scripts/native_e2e_stack.sh down
-scripts/native_e2e_stack.sh up --with-label-studio                # rehearsal again, with the transition test
 scripts/native_e2e_stack.sh down
 # workforce
 npx vitest run && npx tsc --noEmit && npx eslint . && npx next build
@@ -59,10 +53,10 @@ python scripts/backup_verify.py --out $D/db       # reads the file above; refuse
 python scripts/storage_backup.py --out $D/images --expect $D/db/db-<stamp>.json
 ```
 
-**Label Studio is not part of this step.** Everything in Label Studio so far is internal test
+**Label Studio is not part of this step.** Everything in Label Studio was internal test
 work: its projects, tasks and annotations can be recreated, so a fresh Label Studio export is
 not a release gate. The exports already taken are kept unchanged. A final export is still
-taken before Label Studio is retired (step 9).
+taken before the Label Studio VM is decommissioned (step 9).
 
 **The preflight runs first, every time.** It connects read-only, with a 10-second connect
 timeout and a 30-second statement timeout, and reads only catalog metadata: the server
@@ -112,8 +106,8 @@ In the Supabase SQL editor, in this order, checking after each:
 | 5 | workforce `migrations/022_declare_production_schema.sql` | `--require workforce_022` |
 
 Then `notify pgrst, 'reload schema';`. Check that the live apps are unaffected: the
-dashboard loads, an existing Label Studio pool serves a case, and `/project/results`
-answers for an existing project.
+dashboard loads, a pool serves a case, and `/project/results` answers for an existing
+project.
 
 Before the first, `schema_check` (step 1) shows which of these are already applied. 007
 and 022 only declare objects production already has. 022 changes `invites.token` only if
@@ -131,7 +125,7 @@ HEALTH on Render first, then the workforce app on Vercel.
 - `$API/api/v1/health` is ok;
 - `POST $API/api/v1/project/internal/process-answers` without a key returns 403;
 - `GET .../admin/ops-health` with `$ADMIN` returns 200;
-- an existing Label Studio pool still serves and records a judgement.
+- a pool serves and records a judgement.
 
 **Roll back** by redeploying the previous revision of whichever app regressed. The schema
 stays: old code ignores it.
@@ -155,10 +149,10 @@ Use an internal account and synthetic cases. Do **not** migrate the old rehearsa
 projects. Use a text template. An image pilot waits until the portal upload and the
 clinician's image view have been checked against real Storage, which no test has done yet.
 
-1. `POST /project/projects` from a template. New projects are created on the native
+1. `POST /project/projects` from a template. New projects are created on the task
    store; confirm `task_store` is `native` before any ingest.
 2. Create its pool with `project_id` set
-   ([native-task-store.md](native-task-store.md#turning-it-on)), then grant the internal
+   ([native-task-store.md](native-task-store.md#starting-a-project)), then grant the internal
    clinicians who will test it, including a senior reviewer.
 3. `POST /project/ingest` a handful of synthetic items.
 
@@ -174,7 +168,6 @@ Validate through the real apps:
 **Stop and close the pool** (`pools.closed_at`) on any of:
 - a failed scoring event;
 - any 5xx;
-- any Label Studio call from the pool;
 - any label not matching what the rehearsal produces for the same answers.
 
 Keep the data, fix forward.
@@ -184,40 +177,107 @@ Keep the data, fix forward.
 The scheduled check stays green: no event pending over 10 minutes, nothing failed, no
 delivery given up.
 
-## 8. Transition away from Label Studio [approval per project]
+## 8. Transition away from Label Studio [done]
 
-- **New client projects go native:** the application creates every new project on the
-  native store, and never creates a new Label Studio project. The database column default
-  is still `label_studio`; changing it would be a separate migration, and is not needed.
-- **Existing Label Studio projects** keep working until delivered, then retire with Label
-  Studio.
-- The old **rehearsal and demo** projects are internal test work and disposable. Recreate
-  them natively, from the existing exports or from scratch, if they are still useful. Do not
-  migrate them.
+Every new project is created on the task store. The Label Studio projects were internal
+test work and are not migrated; recreate any still useful as new projects.
 
-## 9. Retire Label Studio [approval]
+## 9. Remove Label Studio
 
-Only when this returns no rows (read-only; run it against production):
+HEALTH's code no longer has Label Studio (`/ls/*`, `labelstudio.py`, the `LS_*` settings, the
+compose files, the `Makefile` targets, and every fallback for a project on it). Removal is
+complete only when every step below is done and verified; until then the deployed apps
+and the infrastructure still carry it. Each **[approval]** is a separate go.
 
-```sql
--- Projects still on Label Studio and not delivered, or with an open Label Studio pool.
-select s.id, s.stage from project_submissions s
- where s.task_store = 'label_studio' and s.ls_project_id is not null and s.stage <> 'delivered'
-union
-select p.project_id, 'open LS pool ' || p.id from pools p
- where p.project_id is null and p.ls_project_id > 0 and p.closed_at is null;
+The Label Studio work is internal test data, disposable by decision: it is deleted, not
+retired or migrated. No client project has ever run on this platform, so a Label Studio
+project's stage means nothing here: `delivered` and `production` are test workflow states,
+and those projects are deleted with the rest. On 28 Oct 2026 that was four projects (two of
+them `delivered`) and five pools, none holding a native answer.
+
+**1. Pre-check (read-only).**
+
+```bash
+python scripts/label_studio_precheck.py      # reads ~/.config/senebiclabs/backup-db.url (mode 600)
 ```
 
-Then:
-1. Take the final Label Studio export with `backup.sh` and archive it with its checksums.
-2. Stop the VM. Don't delete it yet.
-3. Run the scheduled check and the full native rehearsal against production read paths.
-   Both must stay green with Label Studio stopped.
-4. After a soak week: delete the VM and its disk; remove the
-   `annotate.senebiclabs.com` DNS record; remove `LS_URL`, `LS_TOKEN`,
-   `LS_WEBHOOK_SECRET` and `LS_CALLBACK_URL` (Render) and `LABEL_STUDIO_*` (Vercel).
-5. Remove the Label Studio code (`/ls/*`, `labelstudio.py`, `lib/labelstudio.ts`, the
-   compose files, the `Makefile` targets) in one reviewed change.
+It never prints the connection string or the host, and runs in one read-only snapshot. It
+applies the deletion script's own guards, taking the expected counts and the reviewed
+foreign keys from that file, and lists every project and pool it would delete with what
+hangs off each, the image keys only that work uses, and the kept counts the deletion asserts
+are unchanged. Exit 0 and `READY` is the go for step 3; anything else is a stop. The recruiting
+demo pool ("DEMO - lab interpretation") is one of the five: if demos still need it, recreate
+it on the task store first, because it is deleted with the rest.
+
+**2. Backup [approval: production credentials, read-only].** Step 2 of this runbook, fresh.
+It is the only undo for step 3. Then rehearse step 3 on that backup, never on production:
+
+```bash
+python scripts/rehearse_label_studio_removal.py --dump ~/senebiclabs-backups/<date>/db/db-<stamp>.dump
+```
+
+It restores the verified dump into a throwaway Postgres of the same version, and in separate
+copies of it: runs the deletion and checks that exactly the Label Studio work went and every
+other row of every table is unchanged, then applies 008 and `schema_check`; makes a write fail
+part way through and checks nothing changed; and adds an unreviewed rewrite rule and checks
+the deletion refuses. It prints counts and table names only. `REHEARSED` is the go for step 3.
+Run step 1 once more immediately before step 3.
+
+**3. Delete the Label Studio work [approval: production write].** Run
+`scripts/sql/delete_label_studio_test_data.sql` in the Supabase SQL editor. In one
+transaction it deletes those projects and pools and everything that hangs off them (items,
+answers, completions, review rows, flags, eligibility, calibration, failure-library rows,
+their audit rows), and writes one `audit_events` row per deleted project and pool, with
+`project_id` null so the deletion cannot remove it. It refuses, changing nothing, on anything
+step 1 would stop on, and if any count outside that work changes. If it refuses, look at what
+changed; do not edit its expected counts.
+
+Verify (read-only): step 1 now stops with `found 0` projects and pools, its kept counts
+match the ones printed before, and
+
+```sql
+select action, count(*) from audit_events
+ where actor_name = 'Label Studio removal (reviewed SQL)' group by action;
+-- label_studio_project_deleted 4, label_studio_pool_deleted 5
+```
+
+**4. Deploy HEALTH [approval].** Check: `$API/api/v1/ls/webhook` answers 404,
+`ops-health` is ok, and a new project releases, scores and delivers through the task store
+(step 6's checks, on an internal project).
+
+**5. Migration 008 [approval: production write].** `migrations/008_remove_label_studio.sql`
+in the SQL editor, after step 4 (the code before it reads `project_submissions.ls_project_id`,
+which 008 drops). It refuses while any Label Studio work remains. It makes `task_store`
+default to and only allow `'native'`, and drops `ls_task_map` and
+`project_submissions.ls_project_id`. Check: `schema_check --require health_008` is READY.
+
+**6. The workforce app [approval, separate PR in that repo].** Branch
+`remove-label-studio-full` removes its Label Studio client, the Label Studio paths of the
+task routes, the reconcile route, the pool gate's Label Studio and pre-migration fallbacks,
+and the verification scripts that needed a Label Studio project. A pool with no `project_id`
+is no longer served. Deploy it after step 3 (no pool without a project then exists), run
+`scripts/native_e2e_stack.sh` against it, and check a pool serves and records a judgement.
+
+**7. Infrastructure [approval each].**
+1. Stop the Label Studio VM. Don't delete it yet. Run the scheduled check and the full
+   rehearsal; both must stay green.
+2. After a soak week: delete the VM, its disk and its snapshots; remove the
+   `annotate.senebiclabs.com` DNS record.
+3. Remove `LS_URL`, `LS_TOKEN`, `LS_WEBHOOK_SECRET`, `LS_CALLBACK_URL` from Render (the
+   code ignores them) and `LABEL_STUDIO_*` from Vercel (after step 6). Revoke the Label
+   Studio tokens, and drop them from local `.env` files and wherever secrets are kept.
+4. Retire the Label Studio parts of the backup tooling (`~/senebiclabs-backups/backup.sh`,
+   `ls_export.py`). The exports already taken are kept or discarded by decision.
+5. The `client-images` bucket holds test images no row references (on 28 Oct, every object
+   in it: the database referenced none). Delete them through the Storage API, only after a
+   verified storage backup and only keys no `project_items` row references at that moment;
+   `orphaned_image_keys` in the audit rows lists any that step 3 itself released.
+
+**What stays in the schema, on purpose.** Migrations 001 to 007 are history and are not
+edited. The `task_store` column stays (always `'native'`) while the workforce app reads it.
+The workforce tables' `ls_task_id` / `ls_annotation_id` columns and `pools.ls_project_id`
+now hold task numbers, answer ids and `0`; renaming or dropping them is that repo's
+migration, after step 6.
 
 ## Rolling back, by situation
 
@@ -225,5 +285,5 @@ Then:
 |---|---|---|
 | A migration failed | Fix and re-run (transactional or idempotent) | Untouched |
 | A deploy regressed, no native pool open | Redeploy the previous revision | Untouched |
-| A native pool is open | Close the pool first, then redeploy if needed. Old code does not know the native store and would treat the pool as a Label Studio pool | Native answers stay in `task_answers`; `/admin/rebuild` re-scores when fixed code returns |
+| A pool is open | Close the pool first, then redeploy if needed. Code from before the native-pilot release does not know the task store and would treat the pool as a Label Studio pool | Answers stay in `task_answers`; `/admin/rebuild` re-scores when fixed code returns |
 | Data corrupted | Restore the step-2 dump into a new database, replay legitimate later writes by `created_at` | See [operations.md](operations.md#backups) |

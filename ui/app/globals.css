@@ -2494,7 +2494,7 @@ footer .grid { grid-template-columns: 1.6fr 1fr 1fr 1fr !important; }
 .cx-empty-title { font-size: 16px; font-weight: 600; color: var(--cx-text); }
 .cx-empty-sub { font-size: 13.5px; color: var(--cx-muted); margin-top: 6px; max-width: 360px; margin: 6px auto 0; line-height: 1.6; }
 
-/* Task brief → Label Studio handoff  */
+/* Task brief  */
 .cx-brief-wrap { max-width: 640px; margin: 0 auto; padding: 30px 28px 80px; }
 .cx-brief { margin-top: 22px; }
 .cx-brief-card { margin-top: 26px; }

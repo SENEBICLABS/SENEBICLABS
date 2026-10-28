@@ -36,8 +36,6 @@ class Settings(BaseSettings):
     # The API's own public URL, used to self-trigger the background /sync-pending run.
     # The custom domain, not the run.app address, which carries the GCP project number.
     SELF_URL: str = "https://api.senebiclabs.com"
-    # Where Label Studio sends annotation webhooks. Defaults to SELF_URL's /ls/webhook.
-    LS_CALLBACK_URL: str | None = None
     # Clinicians per item is OUR quality decision, not the client's. This default
     # applies to every new project; the operator can tune it per project.
     DEFAULT_REVIEWERS_PER_ITEM: int = 3
@@ -45,7 +43,7 @@ class Settings(BaseSettings):
     # instead of dropping at Cloud Run's payload limit. Bulk = many calls, or a manifest.
     MAX_ITEMS_PER_INGEST: int = 5000
     # Manifest (bulk) ingestion samples a bounded review set from the client's data,
-    # so clinician load and Label Studio stay steady no matter how large the source is.
+    # so clinician load stays steady no matter how large the source is.
     DEFAULT_SAMPLE_SIZE: int = 1000
     MAX_SAMPLE_SIZE: int = 10000
     # Stop streaming a manifest after this many lines so the worker can't run forever on
@@ -53,36 +51,8 @@ class Settings(BaseSettings):
     # ingest after this many minutes (safety net for a missed background trigger).
     MAX_MANIFEST_LINES: int = 5_000_000
     MANIFEST_STALE_MINUTES: int = 10
-    # Rolling window (backpressure): the most tasks we keep ACTIVE in Label Studio at once
-    # (queued or in review). The full backlog lives in our DB; /sync-pending tops LS up to
-    # this many and refills as clinicians finish, so LS load stays flat no matter how large
-    # the job is. Exhaustive ("all") ingestion relies on this to not overwhelm Label Studio.
-    #
-    # Counted PER PROJECT, so Label Studio's load is this times the number of clients
-    # running at once.
-    #
-    # This number also sets what every clinician pays to open their queue, which is the
-    # part that is easy to miss. The clinician platform's `taskStates()` pages the WHOLE
-    # Label Studio project at 200 tasks per request to work out what is left. So the
-    # window size is the page count each clinician triggers:
-    #
-    #     window 1500  ->  8 sequential API calls per queue view
-    #     window  300  ->  2
-    #
-    # With several clinicians working at once and one Label Studio worker, those calls
-    # queue behind each other and the clinician experiences it as our platform being slow.
-    # 300 costs nothing in throughput, because the backlog waits in our own database and
-    # the window refills the moment a clinician finishes a case. It is the difference
-    # between bulk being comfortable and bulk being the reason a clinician complains.
-    LS_ACTIVE_WINDOW: int = 300
-
     # Portal magic-link signing secret — falls back to the Supabase service key
     PORTAL_SECRET: str | None = None
-
-    # Label Studio integration (annotation surface)
-    LS_URL: str | None = None              # e.g. http://localhost:8080
-    LS_TOKEN: str | None = None            # Account & Settings → Access Token
-    LS_WEBHOOK_SECRET: str | None = None   # shared secret to verify LS → backend webhooks
 
     @field_validator("*", mode="before")
     @classmethod
@@ -97,7 +67,9 @@ class Settings(BaseSettings):
         """
         return v.strip() if isinstance(v, str) else v
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # Settings this code no longer reads (the retired LS_* keys, say) may still sit in a
+    # .env file; ignore them rather than refuse to start.
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

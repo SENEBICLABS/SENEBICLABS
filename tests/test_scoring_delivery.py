@@ -1,8 +1,7 @@
 """
-Scoring and delivery live in services (services/scoring.py, services/delivery.py), shared by
-the Label Studio routes and the native task store. The native path must not need the Label
-Studio API module at all, the Label Studio routes must keep using the very same code, and
-every delivery safeguard must hold whoever calls it.
+Scoring and delivery live in services (services/scoring.py, services/delivery.py). Scoring
+answers must not need the API layer at all, and every delivery safeguard must hold
+whoever calls it.
 """
 import os
 import subprocess
@@ -13,17 +12,16 @@ from unittest.mock import patch
 from _fakedb import FakeDB
 
 import test_native_tasks as N
-from app.api.v1 import ls as ls_api
 from app.api.v1 import project as proj
-from app.services import delivery, scoring, tasks
+from app.services import delivery, tasks
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 
-# ── the native path does not import the Label Studio API ────────────────────────
+# ── scoring does not import the API layer ───────────────────────────────────────
 
-def test_native_scoring_and_delivery_never_load_the_label_studio_api():
+def test_scoring_and_delivery_never_load_the_api_layer():
     """In a fresh interpreter: drain native answers, score the item, decide delivery."""
     script = textwrap.dedent("""
         import sys
@@ -36,7 +34,7 @@ def test_native_scoring_and_delivery_never_load_the_label_studio_api():
                    "value": {"choices": ["Correct"]}}]
         db = FakeDB({
             "project_submissions": [{"id": "p", "stage": "submitted", "eval_config": ec,
-                                     "task_store": "native", "ls_project_id": None}],
+                                     "task_store": "native"}],
             "project_items": [{"id": "i0", "project_id": "p", "idx": 0, "task_no": 1000000000,
                                "status": "queued", "content": {"prompt": "x", "prediction": "Normal"}}],
             "task_answers": [{"id": 1, "task_no": 1000000000, "project_id": "p", "pool_id": "pool",
@@ -54,55 +52,25 @@ def test_native_scoring_and_delivery_never_load_the_label_studio_api():
         item = db.rows["project_items"][0]
         ready = db.rows["project_submissions"][0]["eval_config"].get("_ready_for_delivery")
         print(out["processed"], item["status"], item["label"].get("_task_no"), bool(ready),
-              "app.api.v1.ls" in sys.modules, any(m.startswith("app.api") for m in sys.modules))
+              any(m.startswith("app.api") for m in sys.modules))
     """ % HERE)
     r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=ROOT,
                        env={**os.environ, "PYTHONPATH": ROOT}, timeout=60)
     assert r.returncode == 0, r.stderr[-800:]
-    processed, status, task_no, ready, ls_loaded, any_api_loaded = r.stdout.split()
+    processed, status, task_no, ready, any_api_loaded = r.stdout.split()
     assert (processed, status, task_no, ready) == ("1", "done", "1000000000", "True")
-    assert ls_loaded == "False" and any_api_loaded == "False"
+    assert any_api_loaded == "False"
 
 
-# ── the Label Studio routes use the same code ───────────────────────────────────
-
-def test_the_label_studio_names_are_the_shared_functions_not_copies():
-    assert ls_api._apply_task_annotations is scoring.apply_task_annotations
-    assert ls_api._consensus is scoring.consensus
-    assert ls_api._parse_result is scoring.parse_result
-    assert ls_api._collapse_structured is scoring.collapse_structured
-    assert ls_api._primary_field is scoring.primary_field
-    assert ls_api._qa_from_ec is scoring.qa_from_ec
-    assert ls_api._project_ec is scoring.project_ec
-    assert ls_api._qa_settings is scoring.qa_settings
-    assert ls_api._reviewers_target is scoring.reviewers_target
-    assert ls_api._text_field_names is scoring.text_field_names
-    assert ls_api._ls_project_of is scoring.ls_project_of
-    assert ls_api._maybe_auto_deliver is delivery.maybe_auto_deliver
-
-
-def test_a_label_studio_task_is_still_scored_as_label_studio_work():
-    db = N._db(store="label_studio", answers=N.AGREE)
-    ec = db.rows["project_submissions"][0]["eval_config"]
-    with patch("app.services.audit.record") as audited:
-        status = ls_api._apply_task_annotations(db, N._ls_task(N.AGREE), *scoring.qa_from_ec(ec)[:1], N.PID,
-                                                *scoring.qa_from_ec(ec)[1:], ec)
-    label = db.rows["project_items"][0]["label"]
-    assert status == "done" and label["_ls_task_id"] == 18193 and "_task_no" not in label
-    assert audited.call_args.kwargs["source"] == "label_studio"
-
-
-# ── native processing goes through the services ─────────────────────────────────
+# ── processing goes through the services ─────────────────────────────────
 
 def test_native_processing_scores_through_scoring_and_delivers_through_delivery():
     db = N._bound(N._db(answers=N.AGREE))
     N._event(db)
     with patch.object(delivery, "maybe_auto_deliver") as delivered, \
-            patch.object(ls_api, "_maybe_auto_deliver") as old_name, \
             patch("app.services.audit.record") as audited:
         assert tasks.process_events(db) == {"processed": 1, "failed": 0}
     delivered.assert_called_once_with(db, N.PID)
-    old_name.assert_not_called()
     label = db.rows["project_items"][0]["label"]
     assert db.rows["project_items"][0]["status"] == "done"
     assert label["_task_no"] == 1_000_000_000 and "_ls_task_id" not in label

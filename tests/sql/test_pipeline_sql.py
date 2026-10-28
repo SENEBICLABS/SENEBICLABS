@@ -7,21 +7,18 @@ One answer's whole journey, for every template, with the real code at each step:
   4. HEALTH's real parser, consensus, report and client delivery read it
 
 The only thing simulated is PostgREST: the drain reads rows that were first read out of
-Postgres, the way the API would return them. Every result is compared with what the Label
-Studio path makes of the same answers.
+Postgres, the way the API would return them.
 """
 import copy
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import patch
 
 import psycopg
 import pytest
 
 from _fakedb import FakeDB
 from conftest import WORKFORCE
-from app.api.v1 import ls as ls_api
 from app.api.v1 import project as proj
 from app.services import report as report_svc
 from app.services import tasks
@@ -87,7 +84,7 @@ READERS = 3
 
 def _expected_value(ftype, answer, finding=None):
     """What consensus makes of three identical answers, by HEALTH's existing rules
-    (ls._consensus): highlights are never voted, every reader's are kept, so three
+    (scoring.consensus): highlights are never voted, every reader's are kept, so three
     identical spans are a list of three; everything else is the agreed value."""
     if ftype == "spans":
         s = answer[0]
@@ -96,13 +93,6 @@ def _expected_value(ftype, answer, finding=None):
     if ftype == "structured":
         return {"present": answer == "Yes", "finding": finding}
     return answer
-
-
-def _without_store_keys(label):
-    out = {k: v for k, v in label.items() if k not in ("_ls_task_id", "_task_no")}
-    if "_annotations" in out:
-        out["_annotations"] = [{k: v for k, v in a.items() if k not in ("by", "at")} for a in out["_annotations"]]
-    return out
 
 
 @pytest.mark.parametrize("name,which", CASES)
@@ -133,31 +123,17 @@ def test_an_answer_survives_from_the_form_to_the_client(db, name, which):
     for field, ftype in case["visible"]:
         if field not in case["answers"]:
             if ftype == "structured":
-                # Left blank, the form records "No" (as on Label Studio), and consensus
+                # Left blank, the form records "No", and consensus
                 # makes a not-present answer's finding null.
                 assert label[field] == {"present": False, "finding": None}, field
             continue
         expected = _expected_value(ftype, case["answers"][field], case["answers"].get(f"{field}_finding"))
         assert label[field] == expected, field
 
-    # The Label Studio path, given the same answers, makes the same label, report and deliverable.
-    ls_db = FakeDB({"project_submissions": copy.deepcopy(native.rows["project_submissions"]),
-                    "project_items": [{**item, "label": None, "status": "queued"}],
-                    "pools": [], "review_items": [], "audit_events": []})
-    ls_task = {"id": 18193, "project": 3, "data": {"_item_id": item["id"]},
-               "annotations": [{"id": n, "result": case["result"], "created_at": "t",
-                                "completed_by": {"email": "service@ls"}} for n in range(3)]}
-    t, adj, txt, prim = ls_api._qa_from_ec(ec)
-    with patch("app.services.audit.record"):
-        ls_api._apply_task_annotations(ls_db, ls_task, t, pid, adj, txt, prim, ec)
-    ls_item = ls_db.rows["project_items"][0]
-    assert ls_item["status"] == item["status"]
-    assert _without_store_keys(ls_item["label"]) == _without_store_keys(label)
+    # The report reads it, and the client deliverable names no clinician.
     classes = (ec.get("schema") or {}).get("classes")
-    assert report_svc.compute_report([ls_item], classes) == report_svc.compute_report([item], classes)
-    for r in (item, ls_item):
-        r["labeled_at"] = "fixed"
-    assert proj._client_item(item) == proj._client_item(ls_item)
+    report_svc.compute_report([item], classes)
+    assert label["_task_no"] == task_no
     assert "doc0@x.com" not in json.dumps(proj._client_item(item))
 
 

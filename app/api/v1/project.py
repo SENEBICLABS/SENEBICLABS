@@ -27,6 +27,7 @@ from app.services import failure_library
 from app.services import eval_schema
 from app.services import items as items_svc
 from app.services import tasks
+from app.services import delivery
 from app.services.paging import fetch_all
 from app.services import storage
 from app.services.portal_tokens import make_token, make_api_key, verify_token
@@ -829,7 +830,7 @@ def api_ingest(
     # The data never flows through this API. We stream the manifest in the background and
     # ingest lightweight references — either a bounded random sample (mode "sample", to
     # evaluate) or every item (mode "all", to label everything). Either way the bytes stay
-    # in the client's bucket, and /sync-pending feeds Label Studio a bounded rolling window.
+    # in the client's bucket, and /sync-pending releases them to clinicians.
     if body.source and body.source.manifest_url:
         try:
             import httpx
@@ -967,93 +968,24 @@ def _finalize_manifest_job(db, project_id: str, key: str | None) -> None:
         logger.error("finalize manifest job failed for %s: %s", project_id, exc)
 
 
-@router.post("/sync-pending", response_model=SubmissionResponse, summary="Background: push pending items to Label Studio in chunks (internal)")
+@router.post("/sync-pending", response_model=SubmissionResponse, summary="Background: release pending items to clinicians (internal)")
 def sync_pending(project_id: str, x_admin_key: str | None = Header(default=None)):
-    """Push one chunk of a project's not-yet-synced ('pending') items into Label Studio,
-    mark them 'queued', and chain the next chunk. Self-triggered after ingest and by the
-    GET /results safety net — drains any backlog with no operator and no scheduler."""
+    """Release a project's pending items to clinicians. Self-triggered after ingest and by
+    the GET /results safety net, so a backlog drains with no operator and no scheduler.
+    The workforce app serves straight from project_items, so releasing is a status change,
+    with no copy to make and no window to respect."""
     _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    CHUNK = 500
-    sub = db.table("project_submissions").select("id,company,ls_project_id,eval_config").eq("id", project_id).limit(1).execute()
+    sub = db.table("project_submissions").select("id,eval_config").eq("id", project_id).limit(1).execute()
     if not sub.data:
         raise HTTPException(status_code=404, detail="Project not found.")
-    s = sub.data[0]
-    ec = s.get("eval_config")
-    if not ec:
-        return SubmissionResponse(ok=True, message="No config yet; nothing to sync.")
-
-    # The native store serves straight from project_items: releasing is a status change,
-    # with no copy to make and no window to respect.
-    if tasks.is_native(db, project_id):
-        n = tasks.release(db, project_id)
-        logger.info("sync-pending: released %d native tasks for %s", n, project_id)
-        return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
-
-    # A project still on Label Studio keeps using the Label Studio project it already has.
-    # None is ever created: new work belongs on the native store.
-    ls_pid = s.get("ls_project_id")
-    if not ls_pid:
-        raise HTTPException(status_code=409, detail=tasks.NO_NEW_LABEL_STUDIO)
-    try:
-        from app.services import labelstudio as ls
-        label_config = ls.build_label_config(ec)
-        reviewers = int(ec.get("reviewers_per_item") or 1)
-    except Exception as exc:
-        logger.error("sync-pending setup failed for %s: %s", project_id, exc)
-        raise HTTPException(status_code=502, detail="Sync setup failed; will retry.")
-
-    # Rolling window (backpressure): keep at most LS_ACTIVE_WINDOW tasks ACTIVE in Label
-    # Studio at once (status 'queued' or 'in_progress'). The full backlog lives in our DB;
-    # we only top LS up to the free capacity. When clinicians finish a task the webhook marks
-    # it 'done', a slot frees, and a refill kick tops the window back up — so LS load stays
-    # flat no matter how big the job is. This is what makes exhaustive bulk non-stressful.
-    active = (db.table("project_items").select("id", count="exact")
-              .eq("project_id", project_id).in_("status", ["queued", "in_progress"]).limit(1).execute()).count or 0
-    capacity = settings.LS_ACTIVE_WINDOW - active
-    if capacity <= 0:
-        logger.info("sync-pending: window full for %s (active=%d) — waiting for reviews to complete", project_id, active)
-        return SubmissionResponse(ok=True, message=f"Label Studio window full ({active} active); refills as reviews complete.")
-    take = min(CHUNK, capacity)
-
-    # Atomically CLAIM up to `take` pending items: read them, then transition only rows STILL
-    # 'pending' to 'queued'. Concurrent sync runs each claim a disjoint set (the status='pending'
-    # filter makes the row transition the lock), so items are never double-pushed to LS.
-    cand = (db.table("project_items").select("id,content")
-            .eq("project_id", project_id).eq("status", "pending").order("idx").limit(take).execute()).data or []
-    if not cand:
-        return SubmissionResponse(ok=True, message="Nothing pending to sync.")
-    claimed_ids = []
-    for i in range(0, len(cand), 100):
-        chunk_ids = [c["id"] for c in cand[i:i + 100]]
-        res = db.table("project_items").update({"status": "queued"}).in_("id", chunk_ids).eq("status", "pending").execute()
-        claimed_ids.extend(r["id"] for r in (res.data or []))
-    claimed = set(claimed_ids)
-    items = [c for c in cand if c["id"] in claimed]
-    if not items:
-        _kick_sync(project_id)     # a concurrent run took this chunk; keep draining
-        return SubmissionResponse(ok=True, message="Chunk already claimed by a concurrent sync.")
-
-    try:
-        ls.push_tasks(ls_pid, items)
-    except Exception as exc:
-        # Push failed — return the claimed items to 'pending' so they get re-synced.
-        for i in range(0, len(claimed_ids), 100):
-            db.table("project_items").update({"status": "pending"}).in_("id", claimed_ids[i:i + 100]).execute()
-        logger.error("sync-pending push failed for %s: %s", project_id, exc)
-        raise HTTPException(status_code=502, detail="Sync push failed; items returned to pending for retry.")
-
-    # Chain the next chunk only while the window still has room AND work is pending. Once the
-    # window is full we stop; completions (via the webhook refill kick) resume the draining.
-    remaining_capacity = capacity - len(items)
-    more = db.table("project_items").select("id").eq("project_id", project_id).eq("status", "pending").limit(1).execute()
-    if more.data and remaining_capacity > 0:
-        _kick_sync(project_id)
-    logger.info("sync-pending: pushed %d for %s (active_before=%d, window=%d, more_pending=%s)",
-                len(items), project_id, active, settings.LS_ACTIVE_WINDOW, bool(more.data))
-    return SubmissionResponse(ok=True, message=f"Synced {len(items)} items.")
+    if not sub.data[0].get("eval_config"):
+        return SubmissionResponse(ok=True, message="No config yet; nothing to release.")
+    n = tasks.release(db, project_id)
+    logger.info("sync-pending: released %d tasks for %s", n, project_id)
+    return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
 
 
 @router.post("/ingest-source", response_model=SubmissionResponse, summary="Background: stream a manifest, sample, and ingest references (internal)")
@@ -1061,7 +993,7 @@ def ingest_source(body: IngestSourceIn, x_admin_key: str | None = Header(default
     """Stream a JSONL manifest from the client's storage, reservoir-sample a bounded
     review set, and ingest those as pending items. The bulk data itself never flows
     through this API — only the manifest (references) is read here, then the sample is
-    pushed to Label Studio by the usual /sync-pending run. Each manifest line is one
+    released to clinicians by the usual /sync-pending run. Each manifest line is one
     item (a JSON object whose fields match the task config, e.g. {case_id, audio_url})."""
     _require_admin(x_admin_key)
     db = get_client()
@@ -1156,7 +1088,7 @@ def ingest_source(body: IngestSourceIn, x_admin_key: str | None = Header(default
         if inserted == 0:
             logger.warning("ingest-source (all): no usable items for %s (skipped %d)", body.project_id, skipped)
             return SubmissionResponse(ok=True, message=f"Manifest had no usable items (skipped {skipped}).")
-        _kick_sync(body.project_id)   # /sync-pending tops Label Studio up to the rolling window
+        _kick_sync(body.project_id)   # /sync-pending releases them to clinicians
         seen_note = f"{inserted}+ (line cap reached)" if capped else str(inserted)
         logger.info("ingest-source (all): ingested %s items for %s (skipped %d, capped=%s)", seen_note, body.project_id, skipped, capped)
         return SubmissionResponse(ok=True, message=f"Ingested all {seen_note} items from the manifest into review.")
@@ -1178,7 +1110,7 @@ def ingest_source(body: IngestSourceIn, x_admin_key: str | None = Header(default
     for i in range(0, len(rows), 500):
         db.table("project_items").insert(rows[i:i + 500]).execute()
 
-    # Success: record the key and clear the pending marker, then push the sample to LS.
+    # Success: record the key and clear the pending marker, then release the sample to clinicians.
     _finalize_manifest_job(db, body.project_id, body.key)
     _kick_sync(body.project_id)
     seen_note = f"{n_seen}+ (line cap reached)" if capped else str(n_seen)
@@ -1194,28 +1126,26 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    sub = db.table("project_submissions").select("id,email,company,stage,eval_config,ls_project_id").eq("id", project_id).limit(1).execute()
+    sub = db.table("project_submissions").select("id,email,company,stage,eval_config").eq("id", project_id).limit(1).execute()
     if not sub.data or sub.data[0].get("email") != email:
         raise HTTPException(status_code=403, detail="That project is not on this API key.")
     s = sub.data[0]
-    # Safety net: if anything is still waiting to reach Label Studio, nudge the background
-    # sync. Best-effort, so a poll never blocks — but it means a missed ingest-trigger
+    # Safety net: if anything is still waiting to be released, nudge the background
+    # release. Best-effort, so a poll never blocks — but it means a missed ingest-trigger
     # self-heals on the client's next poll.
     try:
         if db.table("project_items").select("id").eq("project_id", project_id).eq("status", "pending").limit(1).execute().data:
             _kick_sync(project_id)
     except Exception:
         pass
-    # Native store: answers whose scoring has not run yet (the platform's own nudge was
-    # lost, or a worker died) are picked up on the client's next poll.
-    native = tasks.is_native(db, project_id)
-    if native:
-        try:
-            if (db.table("answer_events").select("id").eq("project_id", project_id)
-                    .eq("status", "pending").limit(1).execute().data):
-                _kick_answers()
-        except Exception:
-            pass
+    # Answers whose scoring has not run yet (the platform's own nudge was lost, or a
+    # worker died) are picked up on the client's next poll.
+    try:
+        if (db.table("answer_events").select("id").eq("project_id", project_id)
+                .eq("status", "pending").limit(1).execute().data):
+            _kick_answers()
+    except Exception:
+        pass
     # Safety net for bulk: a manifest ingest whose background trigger was missed (or whose
     # worker died) leaves a pending marker that never clears. If it's gone stale, re-fire it
     # and bump the timestamp so we don't re-fire on every poll. This is what makes a lost
@@ -1249,8 +1179,7 @@ def api_results(project_id: str, authorization: str | None = Header(default=None
         # Authors draft on the clinician platform and nothing reaches us until a reader
         # approves, so look there for work under way.
         from app.services import second_reading
-        reviewing = (second_reading.drafting_started(db, None, project_id) if native
-                     else second_reading.drafting_started(db, s.get("ls_project_id")))
+        reviewing = second_reading.drafting_started(db, project_id)
     client_status = ("delivered" if stage == "delivered"
                      else "in_review" if (stage != "submitted" or reviewing)
                      else "received")
@@ -1692,8 +1621,8 @@ def _benchmark_groups(db, email: str, rows: list[dict], template_project_id: str
 
 def _fresh_run_config(ec: dict, model_version: str) -> dict:
     """A source project's task config without its operational state. Internal keys record
-    what happened to THAT project — its ingest keys, delivery sign-off, webhook outcome,
-    Label Studio companions — and copied onto a new run they would describe things that
+    what happened to THAT project — its ingest keys, delivery sign-off, webhook outcome —
+    and copied onto a new run they would describe things that
     never happened to it. The client's webhook endpoint and secret are kept: same client,
     same endpoint."""
     out = {k: v for k, v in (ec or {}).items() if not str(k).startswith("_")}
@@ -1948,10 +1877,12 @@ def admin_report(project_id: str, x_admin_key: str | None = Header(default=None)
         raise HTTPException(status_code=500, detail="Could not build the report.")
 
 
-@router.get("/admin/held/{ls_project_id}", summary="Held cases for a Label Studio project, for the clinician platform (admin)")
-def admin_held_for_pool(ls_project_id: int, x_admin_key: str | None = Header(default=None)):
-    """Cases waiting on a senior reviewer, addressed the way the clinician platform sees the
-    world: by Label Studio task id.
+@router.get("/admin/held/project/{project_id}",
+            summary="Held cases for a project, for the clinician platform (admin)")
+def admin_held_for_project(project_id: str, x_admin_key: str | None = Header(default=None)):
+    """Cases waiting on a senior reviewer. `ls_task_id` in each case carries the task
+    number: the platform's tables call every task id that, a name kept from before the
+    task store.
 
     A disagreement is a clinical question, so it belongs with a clinician rather than an
     operator. The platform offers these to a senior reviewer, and records their decision
@@ -1961,25 +1892,6 @@ def admin_held_for_pool(ls_project_id: int, x_admin_key: str | None = Header(def
     and why, never by whom — knowing which colleague wrote which answer is exactly the
     pressure independent review exists to remove.
     """
-    _require_admin(x_admin_key)
-    db = get_client()
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database unavailable.")
-    sub = (db.table("project_submissions").select("id,eval_config")
-           .eq("ls_project_id", ls_project_id).limit(1).execute()).data
-    if not sub:
-        raise HTTPException(status_code=404, detail="No project uses that Label Studio project.")
-    held = _held_cases(db, sub[0]["id"], sub[0].get("eval_config") or {})
-    return {"ok": True, "ls_project_id": ls_project_id, "project_id": sub[0]["id"],
-            "count": len(held), "held": held}
-
-
-@router.get("/admin/held/project/{project_id}",
-            summary="Held cases for a project on the native task store, for the clinician platform (admin)")
-def admin_held_for_project(project_id: str, x_admin_key: str | None = Header(default=None)):
-    """The same held cases as /admin/held/{ls_project_id}, addressed by HEALTH project, for
-    pools on the native task store. `ls_task_id` in each case carries the native task number:
-    the platform's tables call every task id that, whichever store issued it."""
     _require_admin(x_admin_key)
     db = get_client()
     if db is None:
@@ -2085,8 +1997,7 @@ def admin_adjudicate(body: AdjudicateIn, x_admin_key: str | None = Header(defaul
     except Exception:
         pass
     try:
-        from app.api.v1.ls import _maybe_auto_deliver    # lazy: avoid circular import
-        _maybe_auto_deliver(db, body.project_id)
+        delivery.maybe_auto_deliver(db, body.project_id)
     except Exception:
         pass
     return SubmissionResponse(ok=True, message=f"Item {body.idx} adjudicated and marked done.")
@@ -2104,20 +2015,13 @@ def admin_reviewer_quality(project_id: str, x_admin_key: str | None = Header(def
     rows = fetch_all(lambda: db.table("project_items")
                      .select("idx,content,label,status,labeled_by")
                      .eq("project_id", project_id))
-    # Real per-clinician attribution comes from the workforce system of record: the LS
-    # annotations all carry one service user, so who-reviewed-what lives in task_completions.
-    # Bridge project -> LS project -> pool(s) -> completions, keyed by the item's _ls_task_id.
+    # Per-clinician attribution comes from the workforce system of record: who reviewed
+    # what lives in task_completions. Bridge project -> pool(s) -> completions, keyed by the
+    # item's task number (tasks.task_ref).
     completions_by_task: dict = {}
     clinician_names: dict = {}
     try:
-        sub = db.table("project_submissions").select("ls_project_id").eq("id", project_id).limit(1).execute()
-        ls_pid = sub.data[0].get("ls_project_id") if sub.data else None
-        if tasks.is_native(db, project_id):
-            pools = db.table("pools").select("id").eq("project_id", project_id).execute().data or []
-        elif ls_pid:
-            pools = db.table("pools").select("id").eq("ls_project_id", int(ls_pid)).execute().data or []
-        else:
-            pools = []
+        pools = db.table("pools").select("id").eq("project_id", project_id).execute().data or []
         if pools:
             pool_ids = [p["id"] for p in pools]
             if pool_ids:
@@ -2272,20 +2176,13 @@ def admin_set_reviewers(body: ReviewersIn, x_admin_key: str | None = Header(defa
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     n = max(1, int(body.reviewers_per_item))
-    sub = db.table("project_submissions").select("eval_config,ls_project_id").eq("id", body.project_id).limit(1).execute()
+    sub = db.table("project_submissions").select("eval_config").eq("id", body.project_id).limit(1).execute()
     if not sub.data:
         raise HTTPException(status_code=404, detail="Project not found.")
     ec = sub.data[0].get("eval_config") or {}
     ec["reviewers_per_item"] = n
+    # The clinician platform reads the count from this config; there is no copy to update.
     db.table("project_submissions").update({"eval_config": ec}).eq("id", body.project_id).execute()
-    # Apply to the live Label Studio project immediately if it exists (best-effort).
-    ls_pid = sub.data[0].get("ls_project_id")
-    if ls_pid:
-        try:
-            from app.services import labelstudio as ls
-            ls.update_project_config(ls_pid, ls.build_label_config(ec), reviewers=n)
-        except Exception as exc:
-            logger.warning("Reviewers set to %d for %s but LS update deferred: %s", n, body.project_id, exc)
     _admin_audit(db, op, body.project_id, "reviewers", {"reviewers_per_item": n})
     return SubmissionResponse(ok=True, message=f"Set to {n} reviewer(s) per item.")
 
@@ -2337,30 +2234,8 @@ def admin_set_eval_config(body: EvalConfigIn, x_admin_key: str | None = Header(d
     _admin_audit(db, op, body.project_id, "eval_config",
                  {"grading_changed": grading_changed, "forced": bool(grading_changed and body.force)})
     msg = "Config saved." + (" Guideline-lock overridden." if (grading_changed and body.force) else "")
-    # Push the new form to the live Label Studio project. Without this the operator is told
-    # the config is saved while clinicians keep answering the OLD form, and their answers
-    # are then read against the new schema — a divergence nothing would surface.
-    ls_pid = None
-    try:
-        row = (db.table("project_submissions").select("ls_project_id")
-               .eq("id", body.project_id).limit(1).execute()).data
-        ls_pid = row[0].get("ls_project_id") if row else None
-    except Exception:
-        ls_pid = None
-    if tasks.is_native(db, body.project_id):
-        # The clinician platform reads this config directly; there is no copy to update.
-        msg += " The clinicians' form now reads this config."
-    elif ls_pid:
-        try:
-            from app.services import labelstudio as ls
-            ls.update_project_config(ls_pid, ls.build_label_config(new_ec),
-                                     reviewers=int(new_ec.get("reviewers_per_item") or 1))
-            msg += " The clinicians' form was updated."
-        except Exception as exc:
-            logger.error("eval_config saved for %s but Label Studio update failed: %s",
-                         body.project_id, exc)
-            msg += (" WARNING: saved here, but Label Studio still shows the previous form — "
-                    "clinicians would answer the old questions. Retry before any more work is done.")
+    # The clinician platform reads this config directly; there is no copy to update.
+    msg += " The clinicians' form now reads this config."
     return SubmissionResponse(ok=True, message=msg)
 
 
@@ -2387,70 +2262,44 @@ def admin_api_key(body: ApiKeyIn, x_admin_key: str | None = Header(default=None)
     return {"ok": True, "api_key": key, "email": email, "project_id": body.project_id}
 
 
-# ── Native task store ───────────────────────────────────────────────────────────
-# Operator controls for projects on Senebiclabs' own task store (services/tasks.py).
+# ── Task store ──────────────────────────────────────────────────────────────────
+# Operator controls for Senebiclabs' own task store (services/tasks.py).
 # Every route here is admin-only; the drain is also called by the clinician platform,
 # which holds the same admin key it uses for /admin/adjudicate.
-
-class TaskStoreIn(BaseModel):
-    project_id: str
-    store: str
-
 
 class ProjectIdIn(BaseModel):
     project_id: str
 
 
-def _native_project_or_409(db, project_id: str) -> None:
+def _project_or_404(db, project_id: str) -> None:
     if not (db.table("project_submissions").select("id").eq("id", project_id).limit(1).execute()).data:
         raise HTTPException(status_code=404, detail="Project not found.")
-    if not tasks.is_native(db, project_id):
-        raise HTTPException(status_code=409, detail="This project is on Label Studio, not the native task store.")
-
-
-@router.post("/admin/task-store", response_model=SubmissionResponse,
-             summary="Move a project between Label Studio and the native task store (admin)")
-def admin_set_task_store(body: TaskStoreIn, x_admin_key: str | None = Header(default=None)):
-    op = _require_admin(x_admin_key)
-    db = get_client()
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database unavailable.")
-    try:
-        tasks.set_store(db, body.project_id, body.store)
-    except tasks.StoreChangeRefused as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    _admin_audit(db, op, body.project_id, "task_store", {"store": body.store})
-    note = ""
-    if body.store == tasks.NATIVE:
-        note = (" Create its clinician pool with project_id set to this project; the pool then "
-                "reads this project's config and reviewer count directly.")
-    return SubmissionResponse(ok=True, message=f"Project now uses the {body.store} task store.{note}")
 
 
 @router.post("/admin/release", response_model=SubmissionResponse,
-             summary="Release a native project's pending items to clinicians (admin)")
+             summary="Release a project's pending items to clinicians (admin)")
 def admin_release(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
     op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    _native_project_or_409(db, body.project_id)
+    _project_or_404(db, body.project_id)
     n = tasks.release(db, body.project_id)
     _admin_audit(db, op, body.project_id, "release", {"released": n})
     return SubmissionResponse(ok=True, message=f"Released {n} items to clinicians.")
 
 
 @router.post("/admin/rebuild", response_model=SubmissionResponse,
-             summary="Re-score every released task of a native project from its stored answers (admin)")
+             summary="Re-score every released task of a project from its stored answers (admin)")
 def admin_rebuild(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
-    """The native counterpart of /ls/pull: queue every released task to be scored again
-    from the answers held in our own database. A senior's settled decision is never undone
-    by it (ls._apply_task_annotations keeps an adjudicated label as final)."""
+    """Queue every released task to be scored again from the stored answers. A senior's
+    settled decision is never undone by it (scoring.apply_task_annotations keeps an
+    adjudicated label as final)."""
     op = _require_admin(x_admin_key)
     db = get_client()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
-    _native_project_or_409(db, body.project_id)
+    _project_or_404(db, body.project_id)
     n = db.rpc("request_rebuild", {"p_project": body.project_id}).execute().data
     _admin_audit(db, op, body.project_id, "rebuild", {"queued": n})
     _kick_answers()
@@ -2458,7 +2307,7 @@ def admin_rebuild(body: ProjectIdIn, x_admin_key: str | None = Header(default=No
 
 
 @router.get("/admin/answer-events/{project_id}",
-            summary="Answer events not yet done for a native project: pending, processing, failed (admin)")
+            summary="Answer events not yet done for a project: pending, processing, failed (admin)")
 def admin_answer_events(project_id: str, status: str | None = None,
                         x_admin_key: str | None = Header(default=None)):
     _require_admin(x_admin_key)
@@ -2475,7 +2324,7 @@ def admin_answer_events(project_id: str, status: str | None = None,
 
 
 @router.post("/admin/answer-events/retry", response_model=SubmissionResponse,
-             summary="Put a native project's failed answer events back in the queue (admin)")
+             summary="Put a project's failed answer events back in the queue (admin)")
 def admin_retry_answer_events(body: ProjectIdIn, x_admin_key: str | None = Header(default=None)):
     op = _require_admin(x_admin_key)
     db = get_client()
@@ -2503,7 +2352,7 @@ def admin_ops_health(x_admin_key: str | None = Header(default=None)):
 
 
 @router.post("/internal/process-answers",
-             summary="Background: score answers recorded on the native task store (internal)")
+             summary="Background: score answers recorded on the task store (internal)")
 def internal_process_answers(x_admin_key: str | None = Header(default=None)):
     """Drain the answer outbox. Called by the clinician platform after each answer, by
     /results as a safety net, and after a rebuild or retry. Several calls at once are safe:
@@ -2895,7 +2744,7 @@ def work_home(x_work_code: str | None = Header(default=None)):
     }
 
 
-@router.get("/work/brief", summary="Project brief + Label Studio link for a clinician")
+@router.get("/work/brief", summary="Project brief for a clinician")
 def work_brief(project_id: str, x_work_code: str | None = Header(default=None)):
     db = get_client()
     if db is None:
@@ -2907,23 +2756,20 @@ def work_brief(project_id: str, x_work_code: str | None = Header(default=None)):
         raise HTTPException(status_code=403, detail="You are not assigned to this project.")
 
     try:
-        sub = db.table("project_submissions").select("id,company,task_type,ls_project_id,rate_per_item").eq("id", project_id).limit(1).execute()
+        sub = db.table("project_submissions").select("id,company,task_type,rate_per_item").eq("id", project_id).limit(1).execute()
     except Exception:
         # rate_per_item not migrated yet — fetch without it.
-        sub = db.table("project_submissions").select("id,company,task_type,ls_project_id").eq("id", project_id).limit(1).execute()
+        sub = db.table("project_submissions").select("id,company,task_type").eq("id", project_id).limit(1).execute()
     if not sub.data:
         raise HTTPException(status_code=404, detail="Project not found.")
     s = sub.data[0]
     total, done = _progress(db, project_id)
     pending = total - done
-    ls_pid = s.get("ls_project_id")
-    ls_link = f"{settings.LS_URL.rstrip('/')}/projects/{ls_pid}/data" if (ls_pid and settings.LS_URL) else None
     rate = s.get("rate_per_item")
     return {
         "ok": True,
         "company": s.get("company") or "Project",
         "task_type": s.get("task_type"),
-        "ls_link": ls_link,
         "total": total,
         "done": done,
         "pending": pending,

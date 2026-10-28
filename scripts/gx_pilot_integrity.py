@@ -3,7 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import great_expectations as gx
 import pandas as pd
 from app.services.supabase_client import get_client
-from app.services.labelstudio import required_data_keys
+from app.services.eval_schema import required_data_keys
 
 db = get_client()
 

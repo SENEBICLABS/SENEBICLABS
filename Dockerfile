@@ -1,5 +1,5 @@
-# The API is a stateless container: it talks to Supabase, Resend, Label Studio and
-# Anthropic over HTTPS and keeps nothing locally. It therefore runs anywhere that
+# The API is a stateless container: it talks to Supabase, Resend and Anthropic over
+# HTTPS and keeps nothing locally. It therefore runs anywhere that
 # runs a container, which is the point — no host can hold the platform hostage.
 #
 # The previous image installed build-essential, gfortran and OpenBLAS, then

@@ -17,9 +17,9 @@ them by hand for the first client before automating anything.
 | 2 | Operator | Scope the deal, advance the stage, set the project's `eval_config` (label set + fields + conditionals) | `POST /project/admin/advance`, set `eval_config` |
 | 3 | Operator | Ingest the client's images: private per-client storage, de-identified keys, signed URLs | `scripts/ingest_xray.py` → `project_items` |
 | 4 | Operator | Create reviewers and **assign** them to the project | `POST /project/admin/clinicians` + `project_clinicians` |
-| 5 | Operator | Generate the LS config and push tasks | `POST /ls/sync` → Label Studio |
-| 6 | Reviewers | Annotate (X-ray: in Label Studio; other types: in-app `/work/*` queue) | LS UI / `/work/next` + `/work/label` |
-| 7 | Operator | Pull annotations back; structured fields collapse; every write is audited | `POST /ls/pull` (or `/ls/webhook`) → `project_items.label` + `audit_events` |
+| 5 | Operator | Create the project's pool and release items to clinicians | `pools.project_id`, `POST /project/admin/release` (also automatic after ingest) |
+| 6 | Reviewers | Answer in the clinician workspace (the workforce app) | `task_answers` + `answer_events` |
+| 7 | HEALTH | Score each answer; structured fields collapse; every write is audited | answer drain → `project_items.label` + `audit_events` |
 | 8 | Operator | QA: progress, export, and the audit trail (who labeled/reviewed, when) | `/project/admin/progress`, `/admin/export`, `/admin/audit/{id}` |
 | 9 | **Customer** | Once stage is `delivered`, sign in and download results | `/portal/request` → `/portal/projects` → `GET /project/portal/results` |
 
@@ -29,8 +29,8 @@ them by hand for the first client before automating anything.
 /evaluate -> /submit -> project_submissions
    -> (operator: eval_config; ingest_xray.py -> private storage -> project_items)
    -> (operator: clinicians + project_clinicians assignment)
-   -> /ls/sync -> Label Studio  <- reviewers annotate
-   -> /ls/pull (+ collapse structured) -> project_items.label + audit_events
+   -> release -> clinician workspace  <- reviewers answer
+   -> answer drain (+ collapse structured) -> project_items.label + audit_events
    -> operator QA via /admin/audit, /admin/export
    -> stage=delivered -> /portal/results -> customer downloads
 ```
@@ -90,7 +90,7 @@ When clinicians split on a case it is held out of the results. The clinical ques
 belongs with a clinician, so the clinician platform offers held cases to a senior reviewer
 and records their decision:
 
-- `GET /project/admin/held/{ls_project_id}` — held cases for that pool, with every earlier
+- `GET /project/admin/held/project/{project_id}` — held cases for that project, with every earlier
   answer **and no authors**. A senior sees what was decided and why, never by whom.
 - `POST /project/admin/adjudicate` — the senior's answer, with `decided_by` naming the
   clinician and their credentials. Internal: no name reaches the client.
@@ -153,7 +153,7 @@ python scripts/ingest_xray.py \
 
 `preds.csv` has a header `filename,prediction`. Images upload to a **private** bucket under
 a per-client prefix (derived from `--email`) with de-identified (hashed) keys, and are
-served to Label Studio via time-limited signed URLs.
+served to clinicians via time-limited signed URLs.
 
 > **Do not ingest real client X-rays until the isolation gate is green** (see §5). Demo /
 > public PNGs only until then.
@@ -176,15 +176,18 @@ An unassigned work code gets `403` from every work endpoint.
 
 ---
 
-## 5. Send to Label Studio, reviewers annotate, then pull results
+## 5. Release to clinicians, reviewers answer, HEALTH scores
 
-- **Send:** `/admin` → select the project → *Send to Label Studio* (`POST /ls/sync`). Creates
-  the LS project from the generated config and pushes pending items as tasks.
-- **Annotate:** reviewers label in Label Studio (X-ray) or the in-app `/work/*` queue (other
-  task types). The brief + LS link come from `GET /project/work/brief`.
-- **Pull:** `POST /ls/pull` (or the LS webhook) writes annotations back to `project_items`;
-  structured fields (e.g. `critical_miss`) collapse into one object, and every write records
-  an `audit_events` row (actor, source, value snapshot).
+- **Release:** items are released automatically after ingest; `/admin` → *Release to
+  clinicians* (`POST /project/admin/release`) does it by hand. The project's pool
+  ([native-task-store.md](native-task-store.md#starting-a-project)) is what makes them
+  reachable.
+- **Answer:** reviewers answer in the clinician workspace (the workforce app), which renders
+  the form from the project's `eval_config`.
+- **Score:** each answer is scored from the database as it arrives; structured fields (e.g.
+  `critical_miss`) collapse into one object, and every write records an `audit_events` row
+  (actor, source, value snapshot). `/admin` → *Re-score* (`POST /project/admin/rebuild`)
+  scores every task again from its stored answers.
 
 ---
 
@@ -199,7 +202,7 @@ An unassigned work code gets `403` from every work endpoint.
   accuracy, per-class precision/recall/F1, confusion matrix, the critical-miss list, named
   failure cases, and an explicit exclusion/caveat section. Writes `.json` (full), `.md`
   (hand to the client), and `_cases.csv` (every case). Same data is available at
-  `GET /project/admin/report/{project_id}`. Run `/ls/pull` first so verdicts are in the DB.
+  `GET /project/admin/report/{project_id}`. Check `GET /project/admin/answer-events/{project_id}` shows nothing waiting first, so every verdict is in the DB.
   Note: ground truth = the model's prediction on Correct cases, the corrected label on
   wrong cases; cannot-assess/unlabeled/incomplete cases are excluded and stated, not guessed.
 - **Deliver:** advance the project to stage `delivered` (`POST /project/admin/advance`). The
@@ -228,7 +231,7 @@ Both must pass. If either is hard to make pass, stop — do not weaken the test.
 
 - **Signed-URL TTL:** default **7 days** (`storage.DEFAULT_SIGNED_URL_TTL`, override with
   `--ttl-days`). URLs **do not auto-refresh** — if a radiologist stays on a case past the
-  TTL the image link expires; re-run *Send to Label Studio* to regenerate fresh URLs.
+  TTL the image link expires, and the item needs a fresh URL before the case is reviewed.
 - **De-identification scope:** covers **object keys / filenames only** (hashed). It does
   **not** strip DICOM headers or burned-in pixel PHI — out of scope until we add DICOM
   ingest. Only send data that is already free of burned-in identifiers.
@@ -369,10 +372,9 @@ Turn both on for a real paying client. Leave them off for low-stakes internal ru
 
 - `GET /project/admin/reviewers/{project_id}` — each reviewer's **consensus agreement** and
   **gold accuracy**, with anyone under `REVIEWER_AGREEMENT_FLOOR` (0.7) flagged `below_floor`.
-  Reviewers are keyed by their real identity: the workforce app writes every Label Studio
-  annotation under one service user, so attribution is joined from `task_completions`
-  (who-reviewed-what, the system of record) via each item's stored `_ls_task_id`. Projects
-  reviewed before this join was in place fall back to the Label Studio-derived attribution.
+  Reviewers are keyed by their real identity, joined from `task_completions`
+  (who-reviewed-what, the system of record) via each item's task number. Projects reviewed
+  before this join was in place fall back to the attribution stored on the label.
 - **Gold items:** seed known-answer items into the stream with `content._gold_expected`
   (a `{field: expected_value}` map). They are scored per reviewer automatically. Serving gold
   invisibly into the clinician stream is the workforce platform's job.

@@ -14,6 +14,8 @@ Steps, in release order (see docs/release-runbook.md):
     health_006      versioned items
     health_007      api_keys declared
     workforce_022   agreement_acceptances and hashed invite tokens declared
+    health_008      Label Studio removed: task_store native-only, ls_task_map and
+                    project_submissions.ls_project_id dropped (a removal: "applied" means gone)
 
 --require STEP exits 1 unless STEP and every step before it are fully present, and every
 integrity check that would make the NEXT step fail is clear.
@@ -24,14 +26,13 @@ import sys
 
 import psycopg
 
-STEPS = ["workforce_021", "health_005", "health_006", "health_007", "workforce_022"]
+STEPS = ["workforce_021", "health_005", "health_006", "health_007", "workforce_022", "health_008"]
 
 COLUMNS = {
     "workforce_021": {"pools": ["project_id", "eval_config", "maximum_annotations"]},
     "health_005": {"project_items": ["task_no"], "project_submissions": ["task_store"],
                    "task_answers": ["id", "task_no", "result", "answers", "clinician_id", "withdrawn_at"],
-                   "answer_events": ["id", "task_no", "status", "attempts", "locked_at"],
-                   "ls_task_map": ["item_id", "ls_instance", "ls_task_id"]},
+                   "answer_events": ["id", "task_no", "status", "attempts", "locked_at"]},
     "health_006": {"project_items": ["content_hash", "version", "supersedes", "superseded_at"]},
     "health_007": {"api_keys": ["email", "key_hash", "last4", "label", "revoked", "last_used_at"]},
     "workforce_022": {"agreement_acceptances": ["clinician_id", "version", "accepted_at", "ip"],
@@ -49,8 +50,12 @@ INDEXES = {
     "health_006": ["project_items_one_current_per_idx"],
     "workforce_022": ["invites_token_hash_key"],
 }
-# What the applications read today, before any of the steps: the baseline the release starts from.
-BASELINE = {"project_submissions": ["id", "eval_config", "ls_project_id", "stage"],
+# What a step takes away. 005 also created ls_task_map; 008 drops it again.
+REMOVED = {
+    "health_008": {"project_submissions": ["ls_project_id"], "ls_task_map": ["item_id"]},
+}
+# What the applications read, before and after every step: the baseline a release starts from.
+BASELINE = {"project_submissions": ["id", "eval_config", "stage"],
             "project_items": ["id", "project_id", "idx", "content", "label", "status"],
             "pools": ["id", "ls_project_id"], "pool_eligibility": ["clinician_id", "pool_id", "eligible", "senior"],
             "task_completions": ["clinician_id", "pool_id", "ls_task_id", "kind"],
@@ -75,11 +80,23 @@ def inspect(c) -> dict:
     def missing(spec):
         return [f"{t}.{x}" for t, xs in spec.items() for x in xs if x not in cols.get(t, set())]
 
+    def present(spec):
+        return [f"{t}.{x} still present" for t, xs in spec.items() for x in xs if x in cols.get(t, set())]
+
+    task_store_default = _one(c, "select column_default from information_schema.columns where table_schema = 'public' "
+                                 "and table_name = 'project_submissions' and column_name = 'task_store'") \
+        if "task_store" in cols.get("project_submissions", set()) else None
+
     steps = {}
     for s in STEPS:
         gaps = missing(COLUMNS.get(s, {})) + [f"function {f}" for f in FUNCTIONS.get(s, []) if f not in funcs] \
-            + [f"index {i}" for i in INDEXES.get(s, []) if i not in idx]
-        expected = sum(len(v) for v in COLUMNS.get(s, {}).values()) + len(FUNCTIONS.get(s, [])) + len(INDEXES.get(s, []))
+            + [f"index {i}" for i in INDEXES.get(s, []) if i not in idx] + present(REMOVED.get(s, {}))
+        expected = sum(len(v) for v in COLUMNS.get(s, {}).values()) + len(FUNCTIONS.get(s, [])) + len(INDEXES.get(s, [])) \
+            + sum(len(v) for v in REMOVED.get(s, {}).values())
+        if s == "health_008":
+            expected += 1
+            if "'native'" not in str(task_store_default or ""):
+                gaps.append("project_submissions.task_store does not default to 'native'")
         steps[s] = {"state": "applied" if not gaps else "absent" if len(gaps) == expected else "partial",
                     "missing": gaps}
 
@@ -101,6 +118,9 @@ def inspect(c) -> dict:
             c, "select count(*) from pools p join project_submissions s on s.id = p.project_id "
                "where s.task_store <> 'native'")
         checks["scoring_events_failed"] = _one(c, "select count(*) from answer_events where status = 'failed'")
+        checks["label_studio_projects"] = _one(
+            c, "select count(*) from project_submissions where task_store <> 'native'")
+        checks["label_studio_pools"] = _one(c, "select count(*) from pools where project_id is null")
         checks["anon_can_call_store"] = bool(_one(
             c, "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
                "where n.nspname = 'public' and p.proname in ('native_submit_judgement', 'claim_answer_events') "
@@ -120,6 +140,11 @@ def gate(report: dict, require: str) -> list[str]:
     if nxt == "health_006" and report["checks"]["duplicate_current_idx"]:
         reasons.append(f"{report['checks']['duplicate_current_idx']} (project, idx) pairs have more than one item; "
                        "migration 006's unique index would fail. Resolve them first")
+    if nxt == "health_008":
+        left = (report["checks"].get("label_studio_projects") or 0) + (report["checks"].get("label_studio_pools") or 0)
+        if left:
+            reasons.append(f"{left} Label Studio projects or pools remain; migration 008 would refuse. "
+                           "Run scripts/sql/delete_label_studio_test_data.sql first")
     if report["checks"].get("anon_can_call_store"):
         reasons.append("the anon role can execute native store functions")
     return reasons

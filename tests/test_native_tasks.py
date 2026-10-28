@@ -1,11 +1,9 @@
 """
 The native task store, from HEALTH's side (services/tasks.py and the routes over it).
 
-The core claim is that the scoring path cannot tell which store an answer came from: the
-same answers produce the same label, the same status, the same report and the same client
-deliverable. Only the task reference (`_task_no` for `_ls_task_id`) and who an answer is
-attributed to (the clinician, where Label Studio could only name its service account)
-differ, and those are internal keys a client never receives.
+Answers recorded by the clinician platform are scored through the outbox into the same
+label a direct scoring of the task gives, attributed to the clinicians who gave them, held
+for a senior on a split, and delivered without any clinician identity.
 
 The SQL functions themselves are tested against real Postgres in tests/sql.
 """
@@ -15,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from _fakedb import FakeDB
-from app.api.v1 import ls as ls_api
+from app.services import scoring
 from app.api.v1 import project as proj
 from app.services import report as report_svc
 from app.services import tasks
@@ -49,14 +47,13 @@ def _verdict(v, correct=None, cm=None, notes=None):
 def _db(ec=None, store="native", answers=(), status="queued", items=1):
     rows = {
         "project_submissions": [{"id": PID, "email": "c@x.com", "company": "Co", "stage": "submitted",
-                                 "eval_config": ec or _ec(), "task_store": store,
-                                 "ls_project_id": None}],
+                                 "eval_config": ec or _ec(), "task_store": store}],
         "project_items": [{"id": f"item-{i}", "project_id": PID, "idx": i, "task_no": 1_000_000_000 + i,
                            "status": status, "content": {"prompt": "chest pain", "prediction": "Normal",
                                                          "case_id": f"C{i}", "_gold_expected": {"verdict": "Correct"}}}
                           for i in range(items)],
         "clinicians": [{"id": k, "email": v} for k, v in DOCS.items()],
-        "pools": [{"id": POOL, "project_id": PID, "ls_project_id": 0}],
+        "pools": [{"id": POOL, "project_id": PID}],
         "task_answers": [],
         "answer_events": [],
         "review_items": [],
@@ -129,19 +126,11 @@ def _event(db, task_no=1_000_000_000, eid=None):
                                      "kind": "answer_recorded", "status": "pending", "attempts": 0})
 
 
-def _ls_task(answers):
-    """The same answers as Label Studio would hand them over: one service user for all."""
-    return {"id": 18193, "project": 3, "data": {"_item_id": "item-0"},
-            "annotations": [{"id": n, "result": r, "created_at": f"2026-10-24T10:0{n}:00Z",
-                             "completed_by": {"email": "service@senebiclabs.com"}}
-                            for n, (_, r) in enumerate(answers, 1)]}
-
-
 def _apply(db, task):
     ec = db.rows["project_submissions"][0]["eval_config"]
-    t, adj, txt, prim = ls_api._qa_from_ec(ec)
+    t, adj, txt, prim = scoring.qa_from_ec(ec)
     with patch("app.services.audit.record"):
-        return ls_api._apply_task_annotations(db, task, t, PID, adj, txt, prim, ec)
+        return scoring.apply_task_annotations(db, task, t, PID, adj, txt, prim, ec)
 
 
 SPLIT = [("d1", _verdict("Correct")), ("d2", _verdict("Incorrect", "Abnormal", ("Yes", "Pneumothorax"))),
@@ -151,45 +140,30 @@ AGREE = [("d1", _verdict("Incorrect", "Abnormal", ("Yes", "Pneumothorax"), "rib"
          ("d3", _verdict("Incorrect", "Abnormal", ("No", None), "other words"))]
 
 
-# ── parity with the Label Studio path ───────────────────────────────────────────
-
-def _strip_store_keys(label):
-    out = {k: v for k, v in label.items() if k not in ("_ls_task_id", "_task_no")}
-    if "_annotations" in out:
-        out["_annotations"] = [{k: v for k, v in a.items() if k != "by"} for a in out["_annotations"]]
-    return out
-
+# ── scoring ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("answers", [SPLIT, AGREE, AGREE[:1]], ids=["split", "agree", "single"])
-def test_the_same_answers_give_the_same_label_from_either_store(answers):
-    native_db = _bound(_db(answers=answers))
-    _event(native_db)
-    tasks.process_events(native_db)
-    native_item = native_db.rows["project_items"][0]
-
-    ls_db = _db(store="label_studio")
-    _apply(ls_db, _ls_task(answers))
-    ls_item = ls_db.rows["project_items"][0]
-
-    assert native_item["status"] == ls_item["status"]
-    assert _strip_store_keys(native_item["label"]) == _strip_store_keys(ls_item["label"])
-    assert native_item["label"]["_task_no"] == 1_000_000_000 and "_ls_task_id" not in native_item["label"]
+def test_the_outbox_scores_a_task_exactly_as_scoring_it_directly(answers):
+    drained = _bound(_db(answers=answers))
+    _event(drained)
+    tasks.process_events(drained)
+    direct = _db(answers=answers)
+    _apply(direct, tasks.native_task(direct, direct.rows["project_items"][0]))
+    a, b = drained.rows["project_items"][0], direct.rows["project_items"][0]
+    assert a["status"] == b["status"] and a["label"] == b["label"]
+    assert a["label"]["_task_no"] == 1_000_000_000 and "_ls_task_id" not in a["label"]
 
 
-def test_the_client_deliverable_and_report_are_identical(answers=AGREE):
-    native_db = _bound(_db(answers=answers))
-    _event(native_db)
-    tasks.process_events(native_db)
-    ls_db = _db(store="label_studio")
-    _apply(ls_db, _ls_task(answers))
-    for db in (native_db, ls_db):
-        db.rows["project_items"][0]["labeled_at"] = "fixed"
-    assert ([proj._client_item(r) for r in native_db.rows["project_items"]]
-            == [proj._client_item(r) for r in ls_db.rows["project_items"]])
-    ec = native_db.rows["project_submissions"][0]["eval_config"]
-    classes = ec["schema"]["classes"]
-    assert (report_svc.compute_report(native_db.rows["project_items"], classes)
-            == report_svc.compute_report(ls_db.rows["project_items"], classes))
+def test_the_client_deliverable_carries_no_clinician_or_task_reference(answers=AGREE):
+    db = _bound(_db(answers=answers))
+    _event(db)
+    tasks.process_events(db)
+    item = db.rows["project_items"][0]
+    assert item["status"] == "done"
+    delivered = [proj._client_item(r) for r in db.rows["project_items"]]
+    assert "@" not in str(delivered) and "_task_no" not in str(delivered)
+    for email in DOCS.values():
+        assert email not in str(delivered)
 
 
 def test_answers_are_attributed_to_the_clinicians_who_gave_them():
@@ -329,34 +303,7 @@ def test_authored_work_with_no_reading_goes_to_a_senior():
     assert db.rows["project_items"][0]["status"] == "needs_adjudication"
 
 
-# ── switching store, releasing, routes ──────────────────────────────────────────
-
-def test_a_project_already_on_label_studio_cannot_be_switched_by_hand():
-    db = _db(store="label_studio", status="pending")
-    db.rows["project_submissions"][0]["ls_project_id"] = 3
-    with pytest.raises(tasks.StoreChangeRefused, match="migration script"):
-        tasks.set_store(db, PID, "native")
-
-
-def test_a_project_with_work_sent_out_cannot_be_switched():
-    db = _db(store="label_studio", status="queued")
-    with pytest.raises(tasks.StoreChangeRefused, match="already been sent"):
-        tasks.set_store(db, PID, "native")
-
-
-def test_a_fresh_project_switches_and_back_while_nothing_is_answered():
-    db = _db(store="label_studio", status="pending")
-    tasks.set_store(db, PID, "native")
-    assert tasks.store_of(db, PID) == "native"
-    tasks.set_store(db, PID, "label_studio")
-    assert tasks.store_of(db, PID) == "label_studio"
-
-
-def test_once_answered_natively_a_project_cannot_go_back():
-    db = _db(answers=AGREE[:1])
-    with pytest.raises(tasks.StoreChangeRefused, match="strand"):
-        tasks.set_store(db, PID, "label_studio")
-
+# ── releasing, routes ──────────────────────────────────────────
 
 def test_release_queues_only_pending_items_once():
     db = _db(status="pending", items=3)
@@ -366,30 +313,15 @@ def test_release_queues_only_pending_items_once():
     assert [i["status"] for i in db.rows["project_items"]] == ["queued", "queued", "done"]
 
 
-def test_sync_pending_releases_natively_without_calling_label_studio():
+def test_sync_pending_releases_without_any_outbound_call():
     db = _db(status="pending", items=2)
     with patch.object(proj, "get_client", return_value=db), \
             patch.object(proj, "_require_admin", return_value={"name": "op"}), \
-            patch("app.services.labelstudio.create_project") as created, \
-            patch("app.services.labelstudio.push_tasks") as pushed:
+            patch("httpx.post") as posted, patch("httpx.get") as got:
         res = proj.sync_pending(PID, x_admin_key="k")
     assert res.ok and "Released 2" in res.message
-    created.assert_not_called()
-    pushed.assert_not_called()
-
-
-@pytest.mark.parametrize("route", ["sync", "pull"])
-def test_label_studio_routes_refuse_a_native_project(route):
-    db = _db()
-    with patch.object(ls_api, "get_client", return_value=db), \
-            patch.object(ls_api, "_require_admin", return_value={"name": "op"}), \
-            patch("app.services.labelstudio.is_configured", return_value=True):
-        with pytest.raises(HTTPException) as e:
-            if route == "sync":
-                ls_api.ls_sync(ls_api.SyncIn(project_id=PID), x_admin_key="k")
-            else:
-                ls_api.ls_pull(ls_api.PullIn(project_id=PID), x_admin_key="k")
-    assert e.value.status_code == 409 and "own task store" in e.value.detail
+    posted.assert_not_called()
+    got.assert_not_called()
 
 
 def test_held_cases_by_project_carry_the_task_number_and_no_authors():
@@ -416,14 +348,19 @@ def test_reviewer_quality_joins_completions_by_task_number():
     assert all(r["items_reviewed"] == 1 for r in out["reviewers"].values())
 
 
-def test_store_of_treats_a_missing_column_as_label_studio_and_anything_else_as_an_error():
-    class Broken:
-        def __init__(self, msg):
-            self.msg = msg
+def test_release_rebuild_and_the_background_release_need_only_the_project():
+    db = _bound(_db(status="pending", items=2))
+    with patch.object(proj, "get_client", return_value=db), \
+            patch.object(proj, "_require_admin", return_value={"id": "op", "name": "op"}), \
+            patch.object(proj, "_kick_answers"):
+        assert "Released 2" in proj.admin_release(proj.ProjectIdIn(project_id=PID), x_admin_key="k").message
+        assert "Queued 2" in proj.admin_rebuild(proj.ProjectIdIn(project_id=PID), x_admin_key="k").message
+        with pytest.raises(HTTPException) as e:
+            proj.admin_release(proj.ProjectIdIn(project_id="no-such-project"), x_admin_key="k")
+    assert e.value.status_code == 404
 
-        def table(self, _):
-            raise RuntimeError(self.msg)
 
-    assert tasks.store_of(Broken('column project_submissions.task_store does not exist (42703)'), PID) == "label_studio"
-    with pytest.raises(RuntimeError):
-        tasks.store_of(Broken("connection reset"), PID)
+def test_a_label_is_read_back_by_its_task_number_only():
+    assert tasks.task_ref({"_task_no": 1_000_000_007}) == 1_000_000_007
+    assert tasks.task_ref({"_ls_task_id": 18193}) is None
+    assert tasks.task_ref(None) is None

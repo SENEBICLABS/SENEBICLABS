@@ -1,9 +1,8 @@
 """
-New work runs on the native task store. Every new project is created native, and no new
-Label Studio project is ever created: a project still on Label Studio without one is refused
-with the way forward. A project that already has a Label Studio project keeps syncing there
-until it is retired, so existing work is not broken.
+The task store is the only store. Every new project is created on it, and nothing in
+HEALTH talks to Label Studio or keeps a path for it.
 """
+import importlib
 import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from fastapi import HTTPException
 from _fakedb import FakeDB
 
 import test_native_tasks as N
-from app.api.v1 import ls as ls_api
 from app.api.v1 import project as proj
 from app.services import tasks
 
@@ -48,61 +46,35 @@ def test_every_project_insert_in_the_api_sets_the_native_store():
         assert '"task_store": tasks.NATIVE' in call, src[at:at + 200]
 
 
-# ── no new Label Studio project is created ───────────────────────────────────────
+# ── Label Studio is gone ─────────────────────────────────────────────────────────
 
-def _ls_db(ls_project_id):
-    from app.services import labelstudio
-    db = N._db(store="label_studio", status="pending", items=2)
-    db.rows["project_submissions"][0]["ls_project_id"] = ls_project_id
-    for key in labelstudio.required_data_keys(db.rows["project_submissions"][0]["eval_config"]):
-        for item in db.rows["project_items"]:
-            item["content"].setdefault(key, f"{key} text")
-    db.rows["pools"] = [{"id": "pool-1", "name": "Pool", "ls_project_id": ls_project_id}]
-    return db
+@pytest.mark.parametrize("module", ["app.services.labelstudio", "app.api.v1.ls"])
+def test_the_label_studio_modules_are_gone(module):
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module)
 
 
-def test_ingest_sync_refuses_to_create_a_label_studio_project():
-    db = _ls_db(None)
+def test_no_route_reaches_label_studio():
+    from app.main import app
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert not [p for p in paths if p.startswith("/api/v1/ls")]
+    assert "/api/v1/project/admin/task-store" not in paths
+    assert "/api/v1/project/admin/held/{ls_project_id}" not in paths
+    assert "/api/v1/project/admin/held/project/{project_id}" in paths
+
+
+def test_no_application_code_keeps_a_label_studio_path():
+    for path in (ROOT / "app").rglob("*.py"):
+        src = path.read_text()
+        assert not re.search(r"labelstudio|label_studio|LS_URL|LS_TOKEN|LS_WEBHOOK_SECRET|/ls/|"
+                             r"ls_project_id|_ls_task_id|is_native|LEGACY_PROJECT", src), path
+
+
+def test_the_work_brief_carries_no_label_studio_link():
+    db = FakeDB({"project_submissions": [{"id": "p", "company": "Co", "task_type": None, "rate_per_item": None}],
+                 "project_items": []})
     with patch.object(proj, "get_client", return_value=db), \
-            patch.object(proj, "_require_admin", return_value={"name": "op"}), \
-            patch("app.services.labelstudio.create_project") as created, \
-            patch("app.services.labelstudio.push_tasks") as pushed:
-        with pytest.raises(HTTPException) as e:
-            proj.sync_pending(N.PID, x_admin_key="k")
-    assert e.value.status_code == 409 and e.value.detail == tasks.NO_NEW_LABEL_STUDIO
-    created.assert_not_called()
-    pushed.assert_not_called()
-    assert db.rows["project_submissions"][0]["ls_project_id"] is None
-
-
-def test_the_label_studio_sync_route_refuses_to_create_a_project():
-    db = _ls_db(None)
-    with patch.object(ls_api, "get_client", return_value=db), \
-            patch.object(ls_api, "_require_admin", return_value={"name": "op"}), \
-            patch("app.services.labelstudio.is_configured", return_value=True), \
-            patch("app.services.labelstudio.create_project") as created, \
-            patch("app.services.labelstudio.push_tasks") as pushed:
-        with pytest.raises(HTTPException) as e:
-            ls_api.ls_sync(ls_api.SyncIn(project_id=N.PID), x_admin_key="k")
-    assert e.value.status_code == 409 and e.value.detail == tasks.NO_NEW_LABEL_STUDIO
-    created.assert_not_called()
-    pushed.assert_not_called()
-
-
-# ── existing Label Studio projects keep working ──────────────────────────────────
-
-def test_a_project_with_a_label_studio_project_still_syncs_there():
-    db = _ls_db(5)
-    with patch.object(ls_api, "get_client", return_value=db), \
-            patch.object(ls_api, "_require_admin", return_value={"name": "op"}), \
-            patch("app.services.labelstudio.is_configured", return_value=True), \
-            patch("app.services.labelstudio.create_project") as created, \
-            patch("app.services.labelstudio.update_project_config") as updated, \
-            patch("app.services.labelstudio.push_tasks", return_value=2) as pushed:
-        ls_api.ls_sync(ls_api.SyncIn(project_id=N.PID), x_admin_key="k")
-    created.assert_not_called()
-    assert updated.call_args[0][0] == 5 and pushed.call_args[0][0] == 5
-
-
-def test_the_unused_label_studio_auto_push_is_gone():
-    assert not hasattr(ls_api, "push_new_items")
+            patch.object(proj, "_resolve_labeler", return_value={"id": "l", "name": "L"}), \
+            patch.object(proj, "_labeler_can_access", return_value=True):
+        out = proj.work_brief("p", x_work_code="c")
+    assert "ls_link" not in out and out["company"] == "Co"

@@ -51,8 +51,8 @@ Two repositories over one shared database:
 - **HEALTH** (this repo) — the system of record: project creation, ingestion, consensus,
   adjudication, aggregation, and delivery. FastAPI on Cloud Run.
 - **workforce** — the clinician-serving application (task UI, auth, pools). Next.js on Vercel.
-- **Label Studio** — the shared annotation store.
-- **Supabase (Postgres)** — the shared system of record.
+- **Supabase (Postgres)** — the shared system of record, including the task store that
+  holds every task and clinician answer.
 
 ---
 
@@ -75,7 +75,7 @@ Two repositories over one shared database:
 |---|---|
 | API | FastAPI + uvicorn, Pydantic v2 |
 | Database | Supabase (Postgres) |
-| Annotation store | Label Studio |
+| Task store | Supabase (Postgres), `services/tasks.py` |
 | Frontend | Next.js 14 |
 | Data quality | Great Expectations (offline / CI) |
 | Deploy | Cloud Run + Vercel |
@@ -87,7 +87,7 @@ Two repositories over one shared database:
 ```
 app/            FastAPI backend
   api/v1/       API routes — project intake, ingestion, consensus, delivery
-  services/     scoring/report, Label Studio integration, task templates
+  services/     task store, scoring/report, task templates
 ui/             Next.js frontend — public site + client portal
 scripts/        data-quality validators + ops tooling
 tests/          unit + numeric (numpy oracle) + browser (Playwright)
@@ -102,7 +102,7 @@ python3.10 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 
-# The suite is hermetic: no database, no Label Studio, no network, no credentials.
+# The suite is hermetic: no database, no network, no credentials.
 PYTHONPATH=. pytest -q tests --ignore=tests/e2e
 
 uvicorn app.main:app --reload --port 8000     # http://localhost:8000/docs

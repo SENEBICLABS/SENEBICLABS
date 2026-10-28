@@ -1,10 +1,9 @@
 """
-A cutover rehearsal on the native task store: the real HEALTH API, the real workforce app,
-real Postgres behind PostgREST (as Supabase serves it), driven over HTTP the way a client,
-clinicians, a senior and an operator would. Label Studio is pointed at a closed port, so
-any call to it on this path fails instead of passing unnoticed.
+A rehearsal on the task store: the real HEALTH API, the real workforce app, real Postgres
+behind PostgREST (as Supabase serves it), driven over HTTP the way a client, clinicians, a
+senior and an operator would.
 
-It needs a throwaway stack (docs/native-task-store.md, "Rehearsing a cutover") and skips
+It needs a throwaway stack (docs/native-task-store.md, "Rehearsing end to end") and skips
 without one:
 
     NATIVE_E2E_API=http://127.0.0.1:8765  NATIVE_E2E_APP=http://127.0.0.1:3765 \\
@@ -92,7 +91,6 @@ def _project(client, template, classes=None, **ec_overrides):
     if ec_overrides:
         ec = _admin("GET", "/admin/submissions")    # just to prove the route works with the store
         assert ec["ok"]
-    _admin("POST", "/admin/task-store", json={"project_id": pid, "store": "native"})
     return pid
 
 
@@ -136,7 +134,7 @@ def test_evaluation_from_ingest_to_delivery_with_a_senior_settling_a_split(db, c
     pool = _pool(db, pid, [d1, d2, d3, senior], seniors=[senior])
     items = [{"case_id": f"CASE-{n}", "scenario": f"Patient message {n}", "prediction": "Normal"} for n in range(3)]
     assert client.post("/ingest", json={"project_id": pid, "items": items}).status_code == 200
-    # Released automatically by the ingest's own background sync, with no Label Studio.
+    # Released automatically by the ingest's own background release.
     _wait(lambda: db.execute("select count(*) from project_items where project_id = %s and status = 'queued'",
                              (pid,)).fetchone()[0] == 3, "release")
 
@@ -236,7 +234,6 @@ def test_a_number_and_highlights_survive_to_the_delivered_result(db, client):
 def test_second_reading_on_the_native_store(db, client):
     author, reader = Clinician(db, "author"), Clinician(db, "reader")
     pid = client.post("/projects", json={"name": "E2E gold", "template": "gold_answers"}).json()["project_id"]
-    _admin("POST", "/admin/task-store", json={"project_id": pid, "store": "native"})
     pool = _pool(db, pid, [author, reader])
     client.post("/ingest", json={"project_id": pid, "items": [{"case_id": "G-1", "prompt": "What is first-line for X?"}]})
     _wait(lambda: author.next(pool).status_code == 200, "release")
@@ -266,7 +263,6 @@ def test_images_are_shown_through_the_gate_and_never_as_a_url(db, client):
         "schema": {"input": "image", "classes": ["Normal", "Abnormal"],
                    "fields": {"verdict": {"type": "single", "options": ["Correct", "Incorrect"], "required": True}}}}}
     ).json()["project_id"]
-    _admin("POST", "/admin/task-store", json={"project_id": pid, "store": "native"})
     _admin("POST", "/admin/reviewers", json={"project_id": pid, "reviewers_per_item": 1})
     pool = _pool(db, pid, [doc])
     url = "https://images.example.org/scan-1.png?X-Amz-Signature=abc"
@@ -310,7 +306,6 @@ import threading  # noqa: E402
 from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
 
 STACK = os.environ.get("NATIVE_E2E_STACK")
-LS = os.environ.get("NATIVE_E2E_LS")
 
 
 def _single_reader_project(db, client, template="data_labeling", classes=("A", "B")):
@@ -368,7 +363,6 @@ def test_a_failed_client_delivery_is_retried_once_due_with_the_same_event_id(db,
                                               "classes": ["A", "B"],
                                               "webhook_url": f"http://127.0.0.1:{server.server_port}/hook"}).json()
         pid, secret = made["project_id"], made["webhook_secret"]
-        _admin("POST", "/admin/task-store", json={"project_id": pid, "store": "native"})
         _admin("POST", "/admin/reviewers", json={"project_id": pid, "reviewers_per_item": 1})
         pool = _pool(db, pid, [doc])
         client.post("/ingest", json={"project_id": pid, "items": [{"text": "x"}]})
@@ -447,59 +441,3 @@ def test_invalid_answers_are_refused_and_nothing_is_stored(db, client):
         assert r.status_code == 422, (bad, r.text)
     assert doc.submit(999_999_999, {"ai_effect": "Improved"}).status_code in (403, 502)
     assert db.execute("select count(*) from task_answers where project_id = %s", (pid,)).fetchone()[0] == 0
-
-
-@pytest.mark.skipif(not LS, reason="needs the stack started with --with-label-studio")
-def test_a_label_studio_project_keeps_working_during_the_transition(db, client):
-    doc = Clinician(db, "ls-reader")
-    pid = _project_ls(client)
-    _admin("POST", "/admin/reviewers", json={"project_id": pid, "reviewers_per_item": 1})
-    client.post("/ingest", json={"project_id": pid, "items": [{"text": "On Label Studio"}]})
-    ls_pid = _wait(lambda: db.execute("select ls_project_id from project_submissions where id = %s",
-                                      (pid,)).fetchone()[0], "the Label Studio project", timeout=60)
-    pool = str(uuid.uuid4())
-    db.execute("insert into pools (id, name, ls_project_id, calibration_items, eval_config, maximum_annotations)"
-               " select %s, 'LS pool', %s, '[]', eval_config, 1 from project_submissions where id = %s",
-               (pool, ls_pid, pid))
-    db.execute("insert into pool_eligibility (clinician_id, pool_id, eligible) values (%s, %s, true)", (doc.id, pool))
-    task = _wait(lambda: (lambda r: r.json() if r.status_code == 200 else None)(doc.next(pool)), "an LS task", 60)
-    assert task["task_id"] < 1_000_000_000                      # a Label Studio id, served from Label Studio
-    assert doc.submit(task["task_id"], {"label": "A"}).status_code == 200
-    # Label Studio's webhook reaches HEALTH, which scores it the way it always has.
-    _wait(lambda: db.execute("select status from project_items where project_id = %s", (pid,)).fetchone()[0] == "done",
-          "the Label Studio webhook", timeout=60)
-    label = db.execute("select label from project_items where project_id = %s", (pid,)).fetchone()[0]
-    assert label["label"] == "A" and label["_ls_task_id"] == task["task_id"]
-    if SCHEMA != "before":                       # no native store at all before the release
-        assert db.execute("select count(*) from task_answers where project_id = %s", (pid,)).fetchone()[0] == 0
-
-
-def _project_ls(client):
-    """A project left on Label Studio, the default for every project today."""
-    return client.post("/projects", json={"name": "E2E on Label Studio", "template": "data_labeling",
-                                          "classes": ["A", "B"]}).json()["project_id"]
-
-
-SCHEMA = os.environ.get("NATIVE_E2E_SCHEMA", "current")
-
-
-@pytest.fixture(autouse=True)
-def _only_what_the_schema_supports(request):
-    """Against the schema as it is BEFORE this release, native work cannot exist; what must
-    still hold is that the new code serves Label Studio projects exactly as before."""
-    if SCHEMA == "before" and not any(k in request.node.name for k in ("label_studio_project", "pre_release_schema")):
-        pytest.skip("native store migrations not applied in this stack (--schema before)")
-
-
-@pytest.mark.skipif(SCHEMA != "before" or not LS, reason="the pre-release schema stack only")
-def test_new_code_on_the_pre_release_schema_has_no_native_store(db, client):
-    # Uploads pause rather than fall back to the old destructive replace.
-    cols = {r[0] for r in db.execute("select column_name from information_schema.columns "
-                                      "where table_name = 'project_submissions'")}
-    assert "task_store" not in cols
-    refused = _admin_raw("POST", "/admin/task-store", json={"project_id": str(uuid.uuid4()), "store": "native"})
-    assert refused.status_code in (404, 409, 500)
-
-
-def _admin_raw(method, path, **kw):
-    return httpx.request(method, f"{P}{path}", headers={"X-Admin-Key": ADMIN}, timeout=60, **kw)

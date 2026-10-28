@@ -1,13 +1,9 @@
 """
 Scoring: turn a task's annotations into its item's label and status.
 
-Shared by every task store. A Label Studio task (the manual pull and the live webhook in
-api/v1/ls.py) and a native task (services/tasks.py) arrive in the same shape, with the
-answers in Label Studio's result format, so parsing, consensus, adjudication holds,
-second reading and the audit record are identical for both. Only where the pool is found,
-and what the task id is called, differ.
-
-Nothing here talks to Label Studio.
+A task (services/tasks.py: native_task) carries its answers as result arrays, one entry
+per field. This module parses them, takes the consensus, holds splits for adjudication,
+bridges second reading and records the audit trail.
 """
 from collections import Counter
 
@@ -17,7 +13,7 @@ from app.services import second_reading
 
 
 def collapse_structured(label: dict) -> dict:
-    """Collapse a 'structured' field's two Label Studio controls into one object.
+    """Collapse a 'structured' field's two result entries into one object.
 
     build_label_config renders a structured field (e.g. critical_miss) as a Yes/No flag
     plus a '<name>_finding' picker. Those arrive as two flat sibling keys; here we merge
@@ -35,7 +31,7 @@ def collapse_structured(label: dict) -> dict:
 
 
 def parse_result(result: list) -> dict:
-    """Flatten a Label Studio annotation result into a label dict (any task type)."""
+    """Flatten an answer's result array into a label dict (any task type)."""
     label: dict = {"_result": result}
     for r in result:
         fn = r.get("from_name")
@@ -164,15 +160,6 @@ def consensus(labels: list[dict], text_fields: set | None = None,
 
 # ── a project's scoring configuration ────────────────────────────────────────────
 
-def ls_project_of(db, project_id: str) -> int | None:
-    try:
-        r = (db.table("project_submissions").select("ls_project_id").eq("id", project_id)
-             .limit(1).execute()).data
-        return r[0].get("ls_project_id") if r else None
-    except Exception:
-        return None
-
-
 def text_field_names(ec: dict | None) -> set:
     """Names of the free-text fields in a config's schema. These are surfaced per-reviewer in
     the consensus, never majority-voted — written prose can't be merged by string match."""
@@ -218,15 +205,13 @@ def qa_from_ec(ec: dict) -> tuple[int, bool, set, str]:
 
 def apply_task_annotations(db, task: dict, reviewers_target: int, project_id: str | None,
                            adjudicate: bool = False, text_fields: set | None = None,
-                           primary: str = "verdict", ec: dict | None = None,
-                           sr_wait: float = 0.0) -> str | None:
+                           primary: str = "verdict", ec: dict | None = None) -> str | None:
     """Write a task's annotations to its item: for one reviewer the label is stored
     as-is; for many, a majority consensus + agreement is stored. The item is `done` only
     once `reviewers_target` reviewers are in. When `adjudicate` is set and the reviewers
     disagreed (no majority), the item is held as `needs_adjudication` instead of `done`, so
     an unresolved split is never shipped as a majority-vote answer. Returns the new status
-    string ('done' / 'needs_adjudication' / 'in_progress'), or None if skipped. Shared by the
-    Label Studio pull and webhook and by the native store, so all handle overlap identically."""
+    string ('done' / 'needs_adjudication' / 'in_progress'), or None if skipped."""
     item_id = (task.get("data") or {}).get("_item_id")
     anns = task.get("annotations") or []
     if not item_id or not anns:
@@ -242,7 +227,7 @@ def apply_task_annotations(db, task: dict, reviewers_target: int, project_id: st
     # A superseded version is history: its content was replaced after work began. Answers
     # given before that still belong to it and are scored onto it (so the record shows what
     # they concluded), but its status stays superseded and it is never delivered. An answer
-    # given after it was replaced (Label Studio may still hold the old task) is ignored.
+    # given after it was replaced is ignored.
     superseded = current.get("status") == items_svc.SUPERSEDED
     if superseded:
         cut = (db.table("project_items").select("superseded_at").eq("id", item_id)
@@ -250,21 +235,12 @@ def apply_task_annotations(db, task: dict, reviewers_target: int, project_id: st
         anns = items_svc.given_before(anns, (cut[0] if cut else {}).get("superseded_at"))
         if not anns:
             return items_svc.SUPERSEDED
-    # A task from the native store (services/tasks.py) arrives in this same shape, with the
-    # answers in the same result format, so everything below is indifferent to which store
-    # it came from. Only where the pool is found, and what the task id is called, differ.
-    native = bool(task.get("_native"))
     # Authored work under second reading counts only once the clinician platform records
     # that a different clinician approved it, and only the approved annotation is the
     # answer (services/second_reading.py).
     sr = project_id and second_reading.enabled(ec)
     if sr:
-        if native:
-            sr_status, sr_record, sr_row = second_reading.decide(
-                db, None, task.get("id"), sr_wait, project_id=project_id)
-        else:
-            sr_status, sr_record, sr_row = second_reading.decide(
-                db, task.get("project") or ls_project_of(db, project_id), task.get("id"), sr_wait)
+        sr_status, sr_record, sr_row = second_reading.decide(db, project_id, task.get("id"))
         anns = second_reading.approved_annotations(anns, sr_row)
     parsed = []
     for a in anns:
@@ -288,13 +264,8 @@ def apply_task_annotations(db, task: dict, reviewers_target: int, project_id: st
                              for p in parsed],
         }
     # Bridge to the workforce system of record, whose task_completions are keyed by this
-    # task id: the native task number, or the Label Studio task id for work done there
-    # (where every annotation carries the one LS service user, so this join is the only
-    # per-clinician attribution). Read back through tasks.task_ref.
-    if native:
-        label["_task_no"] = task.get("id")
-    else:
-        label["_ls_task_id"] = task.get("id")
+    # task number. Read back through tasks.task_ref.
+    label["_task_no"] = task.get("id")
     reached = len(parsed) >= reviewers_target
     disagreed = isinstance(label, dict) and label.get("_disagreed")
     if reached and adjudicate and len(parsed) > 1 and disagreed:
@@ -316,5 +287,5 @@ def apply_task_annotations(db, task: dict, reviewers_target: int, project_id: st
     db.table("project_items").update(update).eq("id", item_id).execute()
     audit.record(db, item_id=item_id, project_id=project_id, action=audit.LABEL,
                  actor_id=parsed[-1]["by"], actor_name=parsed[-1]["by"],
-                 source="native" if native else "label_studio", value=label)
+                 source="native", value=label)
     return status

@@ -92,7 +92,7 @@ def _print(report, title=""):
 if __name__ == "__main__":
     import pandas as pd
     from app.services.supabase_client import get_client
-    from app.services.labelstudio import required_data_keys
+    from app.services.eval_schema import required_data_keys
     db = get_client()
     q = db.table("project_submissions").select("id,company,eval_config")
     subs = (q.eq("id", sys.argv[1]).execute().data if len(sys.argv) > 1 else q.execute().data)

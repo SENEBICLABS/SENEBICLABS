@@ -1,129 +1,46 @@
 """
-The native task store: Senebiclabs' own tasks, answers, and the events that get answers
-scored. It replaces Label Studio, which held a copy of each item, the clinicians' answers
-and a per-task count, and told us by webhook when an answer arrived.
+The task store: Senebiclabs' own tasks, answers, and the events that get answers scored.
 
 What lives where (schema in migrations/005_native_task_store.sql):
 
   project_items.task_no   the task's number. An item IS the task; the number exists so
                           the workforce tables keep their integer task columns
-  task_answers            the answer of record, in the Label Studio result-array format
+  task_answers            the answer of record, as a result array (one entry per field)
   answer_events           written in the same transaction as each answer; drained here
 
-A project is on one store at a time (project_submissions.task_store). A native project
-never calls Label Studio, and nothing here falls back to it.
+native_task() returns a task as {id, data, annotations}, the shape
+scoring.apply_task_annotations parses, votes, holds splits for adjudication and bridges
+second reading from. Each answer is attributed to the clinician who gave it.
 
-The scoring path is unchanged. native_task() returns a task in the same shape as Label
-Studio's GET /api/tasks/{id}, so scoring.apply_task_annotations parses, votes, holds splits for
-adjudication and bridges second reading exactly as it always has. The one thing that
-changes is who an answer is attributed to: the clinician who gave it, where Label Studio
-could only say "the service account".
+Every project is on it: project_submissions.task_store is always 'native' (migration
+008 enforces it; the workforce app still reads the column).
 """
 import logging
 import time
 
 from app.services import delivery, scoring
 from app.services.paging import fetch_all
+from app.services.render import render_content
 
 logger = logging.getLogger(__name__)
 
 NATIVE = "native"
-LABEL_STUDIO = "label_studio"
-STORES = (NATIVE, LABEL_STUDIO)
-
-# New projects are created on the native store, and no new Label Studio project is ever
-# created. A project that already has one keeps working there until it is retired.
-NO_NEW_LABEL_STUDIO = (
-    "No Label Studio project exists for this project, and new Label Studio projects "
-    "are no longer created. Use the native task store and release items through "
-    "POST /project/admin/release."
-)
-
-# Native task numbers start here (see the migration); Label Studio's ids sit below it.
-NATIVE_TASK_FLOOR = 1_000_000_000
 
 # A processing event older than this is taken to belong to a worker that died.
 STALE_SECONDS = 300
 
 
-def _missing_column(exc: Exception) -> bool:
-    text = str(exc)
-    return "task_store" in text and ("42703" in text or "does not exist" in text or "column" in text)
-
-
-def store_of(db, project_id: str | None) -> str:
-    """Which store a project uses. Before migration 005 is applied the column does not exist
-    and every project is on Label Studio, which is the one case answered without asking.
-    Any other failure is raised: guessing 'label_studio' for a native project would send
-    its work to the wrong place silently."""
-    if not project_id:
-        return LABEL_STUDIO
-    try:
-        rows = (db.table("project_submissions").select("task_store")
-                .eq("id", project_id).limit(1).execute()).data
-    except Exception as exc:
-        if _missing_column(exc):
-            return LABEL_STUDIO
-        raise
-    return ((rows[0].get("task_store") if rows else None) or LABEL_STUDIO)
-
-
-def is_native(db, project_id: str | None) -> bool:
-    return store_of(db, project_id) == NATIVE
-
-
 def task_ref(label: dict | None):
-    """The task an item's label was built from: its native number, or for work done on
-    Label Studio, the Label Studio task id. Consumers that join to the workforce tables
-    (whose ls_task_id column holds either) read it through here."""
-    label = label or {}
-    return label.get("_task_no") if label.get("_task_no") is not None else label.get("_ls_task_id")
-
-
-# ── switching a project's store ──────────────────────────────────────────────────
-
-class StoreChangeRefused(ValueError):
-    pass
-
-
-def set_store(db, project_id: str, store: str) -> None:
-    """Move a project between stores, only while that cannot strand any work.
-
-    To native: nothing may have reached Label Studio yet (no LS project, no item past
-    'pending'). To Label Studio: no answer may exist in the native store. The second is the
-    rollback path for a project switched by mistake before clinicians start."""
-    if store not in STORES:
-        raise StoreChangeRefused(f"store must be one of: {', '.join(STORES)}")
-    sub = (db.table("project_submissions").select("id,ls_project_id")
-           .eq("id", project_id).limit(1).execute()).data
-    if not sub:
-        raise StoreChangeRefused("Project not found.")
-    if store == NATIVE:
-        if sub[0].get("ls_project_id"):
-            raise StoreChangeRefused(
-                "This project already has tasks in Label Studio. Move it with the migration "
-                "script (scripts/migrate_ls_project.py), which carries its history across.")
-        moved = (db.table("project_items").select("id").eq("project_id", project_id)
-                 .in_("status", ["queued", "in_progress", "second_reading", "needs_adjudication", "done"])
-                 .limit(1).execute()).data
-        if moved:
-            raise StoreChangeRefused("Items in this project have already been sent for review.")
-    else:
-        answered = (db.table("task_answers").select("id").eq("project_id", project_id)
-                    .limit(1).execute()).data
-        if answered:
-            raise StoreChangeRefused(
-                "Clinicians have already answered on the native store; moving back would "
-                "strand their answers.")
-    db.table("project_submissions").update({"task_store": store}).eq("id", project_id).execute()
+    """The task number an item's label was built from. Consumers that join to the workforce
+    tables (whose column for it is still named ls_task_id) read it through here."""
+    return (label or {}).get("_task_no")
 
 
 # ── releasing tasks to clinicians ────────────────────────────────────────────────
 
 def release(db, project_id: str) -> int:
-    """Make every pending item servable. On the native store this is the whole of what
-    'sync' used to mean: no copy is made and there is no window to respect, because the
-    workforce app serves straight from project_items. The status filter on the update is
+    """Make every pending item servable. No copy is made and there is no window to
+    respect: the workforce app serves straight from project_items. The status filter on the update is
     the lock, so two concurrent releases never double-count."""
     rows = fetch_all(lambda: db.table("project_items").select("id")
                      .eq("project_id", project_id).eq("status", "pending"))
@@ -139,11 +56,9 @@ def release(db, project_id: str) -> int:
 # ── reading a task the way the scoring path expects ──────────────────────────────
 
 def native_task(db, item: dict) -> dict:
-    """An item and its answers, shaped like Label Studio's task payload: {id, data,
-    annotations: [{id, result, created_at, completed_by: {email}}]}. Withdrawn answers are
-    left out. Answers come back oldest first, the order Label Studio returned them in."""
-    from app.services import labelstudio as ls
-
+    """An item and its answers: {id, data, annotations: [{id, result, created_at,
+    completed_by: {email}}]}. Withdrawn answers are left out. Answers come back oldest
+    first."""
     task_no = item.get("task_no")
     answers = fetch_all(lambda: db.table("task_answers")
                         .select("id,clinician_id,result,created_at,kind")
@@ -154,12 +69,10 @@ def native_task(db, item: dict) -> dict:
         for c in (db.table("clinicians").select("id,email")
                   .in_("id", ids[i:i + 100]).execute().data or []):
             emails[c["id"]] = c.get("email")
-    content = item.get("content") or {}
-    data = {k: ls.render_value(v) for k, v in content.items() if not str(k).startswith("_")}
+    data = render_content(item.get("content"))
     data["_item_id"] = item.get("id")
     return {
         "id": task_no,
-        "_native": True,
         "data": data,
         "annotations": [{
             "id": a["id"],

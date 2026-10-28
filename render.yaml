@@ -1,7 +1,7 @@
 # Render deployment for the API.
 #
-# The service is stateless. Supabase holds the record, Label Studio holds the
-# annotations, and nothing is written to the container's disk, so it can be
+# The service is stateless. Supabase holds the record, including the clinicians'
+# answers, and nothing is written to the container's disk, so it can be
 # rebuilt or moved at any time. That property is the point: no host can take the
 # platform down for reasons of their own.
 #
@@ -55,15 +55,6 @@ services:
       - key: PORTAL_SECRET
         generateValue: true
 
-      # Label Studio. Leave unset until it has a home again; the API starts
-      # without it and only the annotation routes need it.
-      - key: LS_URL
-        sync: false
-      - key: LS_TOKEN
-        sync: false
-      - key: LS_WEBHOOK_SECRET
-        sync: false
-
       # ---- plain configuration ------------------------------------------------
       - key: ADMIN_EMAIL
         value: support@senebiclabs.com
@@ -83,12 +74,3 @@ services:
       # service and bulk ingest stops triggering with no error anywhere.
       - key: SELF_URL
         sync: false
-
-      # Where Label Studio sends annotations. Pinned to the custom domain on purpose.
-      # Label Studio already has webhooks registered at this exact URL for projects
-      # 191 and 192, so keeping it stable means Label Studio needs no change at all;
-      # it would otherwise re-register against whatever SELF_URL happens to be and
-      # leave two webhooks behind. Webhooks missed during the DNS cutover are
-      # recovered by POST /ls/pull, which is what that endpoint is for.
-      - key: LS_CALLBACK_URL
-        value: https://api.senebiclabs.com/api/v1/ls/webhook

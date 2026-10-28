@@ -3,10 +3,9 @@ Second reading (services/second_reading.py): authored work counts only once the 
 platform records that a DIFFERENT clinician approved it.
 
 The platform (the workforce app) runs the author -> reviewer flow and enforces that the
-reviewer is not the author; it keeps its state in `review_items` and publishes an answer to
-Label Studio only on approval. These tests drive the real annotation path
-(ls._apply_task_annotations, shared by the webhook and the pull) against an in-memory
-database holding those platform tables.
+reviewer is not the author; it keeps its state in `review_items` and records an answer only
+on approval. These tests drive the real scoring path (scoring.apply_task_annotations)
+against an in-memory database holding those platform tables.
 
 Run: PYTHONPATH=. pytest tests/test_second_reading.py
 """
@@ -15,13 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from _fakedb import FakeDB
-from app.api.v1 import ls as ls_api
+from app.services import scoring
 from app.api.v1 import project as proj
-from app.services import labelstudio as ls
 from app.services import second_reading as sr
 from app.services import templates as T
 
-PID, IID, LS_PROJECT, TASK, POOL = "proj-1", "item-1", 40, 101, "pool-1"
+PID, IID, TASK, POOL = "proj-1", "item-1", 1_000_000_101, "pool-1"
 
 
 def _ec():
@@ -33,11 +31,13 @@ def _ec():
 def _db(review=None, status="queued"):
     rows = {
         "project_submissions": [{"id": PID, "email": "c@x.com", "stage": "submitted",
-                                 "ls_project_id": LS_PROJECT, "eval_config": _ec()}],
-        "project_items": [{"id": IID, "project_id": PID, "idx": 0, "status": status,
+                                 "task_store": "native", "eval_config": _ec()}],
+        "project_items": [{"id": IID, "project_id": PID, "idx": 0, "status": status, "task_no": TASK,
                            "content": {"case_id": "CARD-Q1", "topic": "Cardiology"}}],
-        "pools": [{"id": POOL, "ls_project_id": LS_PROJECT}],
+        "pools": [{"id": POOL, "project_id": PID}],
         "review_items": [],
+        "task_answers": [],
+        "clinicians": [],
     }
     if review:
         rows["review_items"].append({"pool_id": POOL, "ls_task_id": TASK, **review})
@@ -51,14 +51,22 @@ def _ann(ann_id, answer):
 
 
 def _task(*anns):
-    return {"id": TASK, "project": LS_PROJECT, "data": {"_item_id": IID}, "annotations": list(anns)}
+    return {"id": TASK, "data": {"_item_id": IID}, "annotations": list(anns)}
 
 
-def _apply(db, task, wait=0.0):
+def _stored(db, *anns):
+    """The answers as the platform records them, so reconcile can read the task back."""
+    for a in anns:
+        db.rows["task_answers"].append({"task_no": TASK, "project_id": PID, "clinician_id": None,
+                                        "kind": "judgement", "withdrawn_at": None, **a})
+    return _task(*anns)
+
+
+def _apply(db, task):
     ec = db.rows["project_submissions"][0]["eval_config"]
-    t, adj, txt, prim = ls_api._qa_from_ec(ec)
+    t, adj, txt, prim = scoring.qa_from_ec(ec)
     with patch("app.services.audit.record"):
-        return ls_api._apply_task_annotations(db, task, t, PID, adj, txt, prim, ec, sr_wait=wait)
+        return scoring.apply_task_annotations(db, task, t, PID, adj, txt, prim, ec)
 
 
 def _item(db):
@@ -93,7 +101,7 @@ def test_sent_back_then_edited_and_approved_is_recorded_as_such():
 
 
 def test_an_answer_that_was_never_read_is_held_for_a_senior_reviewer():
-    # Annotated straight in Label Studio, or a pool without review_required: no review row.
+    # Recorded outside the review flow, or a pool without review_required: no review row.
     db = _db(None)
     assert _apply(db, _task(_ann(7, "Unread."))) == "needs_adjudication"
     rec = _item(db)["label"]["_second_reading"]
@@ -104,7 +112,7 @@ def test_a_senior_reviewer_can_approve_an_unread_answer_and_a_pull_keeps_it():
     db = _db(None)
     _apply(db, _task(_ann(7, "Unread.")))
     with patch.object(proj, "get_client", return_value=db), patch("app.services.audit.record"), \
-         patch("app.api.v1.ls._maybe_auto_deliver"), patch.object(proj.settings, "ADMIN_API_KEY", "k"):
+         patch("app.services.delivery.maybe_auto_deliver"), patch.object(proj.settings, "ADMIN_API_KEY", "k"):
         proj.admin_adjudicate(proj.AdjudicateIn(project_id=PID, idx=0, final_label={}), x_admin_key="k")
     it = _item(db)
     assert it["status"] == "done"
@@ -113,36 +121,23 @@ def test_a_senior_reviewer_can_approve_an_unread_answer_and_a_pull_keeps_it():
     assert _apply(db, _task(_ann(7, "Unread."))) == "done"      # a later pull changes nothing
 
 
-def test_the_webhook_waits_for_an_approval_that_lands_a_moment_later():
-    # The platform publishes the annotation, THEN records the approval.
-    db = _db({"state": "needs_review", "revision": 0})
-    ticks = {"n": 0}
-
-    def _sleep(_s):
-        ticks["n"] += 1
-        db.rows["review_items"][0].update(APPROVED)
-    with patch("app.services.second_reading.time.sleep", _sleep):
-        assert _apply(db, _task(_ann(7, "Gold.")), wait=5.0) == "done"
-    assert ticks["n"] >= 1
-
-
 def test_an_approval_after_the_event_is_settled_by_reconcile():
     db = _db({"state": "needs_review", "revision": 0})
-    task = _task(_ann(7, "Gold."))
+    task = _stored(db, _ann(7, "Gold."))
     assert _apply(db, task) == sr.STATUS                       # approval not recorded yet
     db.rows["review_items"][0].update(APPROVED)
-    with patch.object(ls, "get_task", return_value=task), patch("app.services.audit.record"):
+    with patch("app.services.audit.record"):
         assert sr.reconcile(db, PID, _ec()) == 1
     assert _item(db)["status"] == "done"
 
 
 def test_results_poll_and_delivery_settle_waiting_readings():
     db = _db({"state": "needs_review", "revision": 0})
-    task = _task(_ann(7, "Gold."))
+    task = _stored(db, _ann(7, "Gold."))
     _apply(db, task)
     with patch.object(proj, "get_client", return_value=db), \
          patch.object(proj, "_api_client_email", return_value="c@x.com"), \
-         patch.object(proj, "_kick_sync"), patch.object(ls, "get_task", return_value=task), \
+         patch.object(proj, "_kick_sync"), patch.object(proj, "_kick_answers"), \
          patch("app.services.audit.record"):
         r = proj.api_results(PID, authorization="k")
         assert r["done"] == 0 and r["status"] == "in_review"
@@ -152,10 +147,10 @@ def test_results_poll_and_delivery_settle_waiting_readings():
 
 def test_an_unread_project_cannot_be_delivered():
     db = _db({"state": "needs_review", "revision": 0})
-    task = _task(_ann(7, "Gold."))
+    task = _stored(db, _ann(7, "Gold."))
     _apply(db, task)
     with patch.object(proj, "get_client", return_value=db), \
-         patch.object(ls, "get_task", return_value=task), patch("app.services.audit.record"), \
+         patch("app.services.audit.record"), \
          patch.object(proj, "_fire_webhook"), patch.object(proj.settings, "ADMIN_API_KEY", "k"):
         with pytest.raises(proj.HTTPException) as e:
             proj.admin_advance(proj.AdminAdvance(submission_id=PID, stage="delivered"), x_admin_key="k")
@@ -226,7 +221,7 @@ def test_an_adjudicated_item_survives_a_later_pull():
         {"result": [{"from_name": "verdict", "value": {"choices": [v]}}]}
         for v in ("Correct", "Incorrect", "Partial")]}
     with patch("app.services.audit.record"):
-        assert ls_api._apply_task_annotations(db, split, 3, PID, True) == "done"
+        assert scoring.apply_task_annotations(db, split, 3, PID, True) == "done"
     assert _item(db)["label"] == {"verdict": "Correct", "_adjudicated": True}
 
 
@@ -236,7 +231,7 @@ def test_status_is_in_review_while_authors_draft_on_the_platform():
     db = _db(None)
     with patch.object(proj, "get_client", return_value=db), \
          patch.object(proj, "_api_client_email", return_value="c@x.com"), \
-         patch.object(proj, "_kick_sync"):
+         patch.object(proj, "_kick_sync"), patch.object(proj, "_kick_answers"):
         assert proj.api_results(PID, authorization="k")["status"] == "received"
         db.rows["review_items"].append({"pool_id": POOL, "ls_task_id": TASK, "state": "needs_review"})
         assert proj.api_results(PID, authorization="k")["status"] == "in_review"

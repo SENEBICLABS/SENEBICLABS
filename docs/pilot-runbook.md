@@ -21,7 +21,7 @@ Two projects run in a pilot like this:
 - [ ] Clinical lead + reviewers contracted: confidentiality flowing down from the NDA,
       work assigned to the company, independence from the client declared, rate in writing
 - [ ] `migrations/004_operators.sql` applied; each operator has their own key
-- [ ] Supabase backups on; Label Studio snapshot verified
+- [ ] Supabase backups on and a backup verified ([operations.md](operations.md#backups))
 - [ ] You have personally worked one full loop (judge → adjudicate → deliver → read report)
 
 Scope, in writing, before anything else: how many cases, what the deliverables are, the
@@ -49,8 +49,8 @@ curl -X POST "$API/projects" -H "Authorization: Bearer $KEY" -H "Content-Type: a
        "model_version": "v1"}'
 ```
 
-Keep the **name short**: the Label Studio title is built from it and is capped at 50
-characters. Long names are truncated, never rejected, but short names read better.
+Keep the **name short**: clinicians see it in their workspace, and short names read
+better.
 
 Then ingest the topics (authoring) or the cases (grading):
 
@@ -65,7 +65,7 @@ interpretation), `triage` (the model's urgency), `expected_triage`, `clinical_do
 `case_type`.
 
 Wait until `GET /results?project_id=…` shows `total` equal to the number of items. That
-means the cases reached Label Studio.
+means the cases are stored and released to clinicians.
 
 ---
 
@@ -73,14 +73,12 @@ means the cases reached Label Studio.
 
 Pools are created by hand, in Supabase, one per project. **Closed by default.**
 
-For a project on the native task store, create the pool as in [native-task-store.md](native-task-store.md) instead: it takes `project_id` and no copy of the config.
+The pool takes `project_id` and no copy of the config: it reads the project's
+`eval_config` and reviewer count directly ([native-task-store.md](native-task-store.md#starting-a-project)).
 
 ```sql
-insert into pools (name, ls_project_id, calibration_items, eval_config,
-                   maximum_annotations, open_access)
-select '<Client> — <module>', s.ls_project_id, '[]'::jsonb, s.eval_config,
-       coalesce((s.eval_config->>'reviewers_per_item')::int, 3), false
-from project_submissions s where s.id = '<project_id>';
+insert into pools (name, ls_project_id, calibration_items, project_id, open_access)
+values ('<Client> — <module>', 0, '[]'::jsonb, '<project_id>', false);
 
 -- then, per clinician assigned to this pool:
 insert into pool_eligibility (clinician_id, pool_id, eligible)
@@ -137,14 +135,16 @@ Then put the generalised version of that reasoning into the rubric.
 **Weekly, to the client:** cases done of total, how many needed panel review, anything you
 need from them. Three lines. Never send findings before delivery.
 
-**If annotations stop arriving** (progress frozen while clinicians say they are working):
+**If answers stop being scored** (progress frozen while clinicians say they are working):
 
 ```bash
-curl -X POST "$API/ls/pull" -H "X-Admin-Key: $ADMIN" -H "Content-Type: application/json" \
+curl "$API/admin/answer-events/<project_id>" -H "X-Admin-Key: $ADMIN"
+curl -X POST "$API/admin/rebuild" -H "X-Admin-Key: $ADMIN" -H "Content-Type: application/json" \
   -d '{"project_id":"…"}'
 ```
 
-That pulls everything from Label Studio directly and settles any second readings waiting.
+The first shows answers waiting or failed, with the error. The second scores every task
+again from its stored answers; a senior's settled decision is never undone by it.
 
 ---
 
@@ -206,9 +206,9 @@ These set the next quote, so keep them in one sheet:
 
 | Problem | What to do |
 |---|---|
-| Cases never appear for clinicians | `GET /results` re-triggers the sync. If still empty, check the project has a pool and the clinician is eligible |
+| Cases never appear for clinicians | `GET /results` re-triggers the release. If still empty, check the project has a pool with `project_id` set and the clinician is eligible |
 | A clinician goes quiet | Reassign: the queue offers their unfinished cases to others automatically. Chase separately |
 | The rubric needs changing mid-run | `POST /admin/eval-config`, confirm the form was updated, tell the panel what changed, and note it — cases judged before the change were judged under the old wording |
-| Label Studio is unreachable | Work stops; nothing is lost. The VM has daily snapshots and a tested restore |
+| Answers are not being scored | `GET /admin/answer-events/<project_id>` shows the error; fix it, then `POST /admin/answer-events/retry`. Nothing is lost: answers wait in the database |
 | A client asks for findings early | Don't. Findings before the panel has finished are half-formed and will be quoted back at you |
 | The deadline is slipping | Tell the client in week two, not week four, and offer a reduced case count rather than a late delivery |
