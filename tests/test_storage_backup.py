@@ -4,19 +4,36 @@ is new, never writes to Storage, and verifies every copy (size against the sourc
 bytes against a content-addressed name, decodes as an image), reporting what it cannot.
 """
 import hashlib
-import io
 import json
+import struct
+import sys
+import types
+import zlib
+from unittest.mock import patch
 
 import pytest
-from PIL import Image
 
 from scripts import storage_backup as S
 
 
 def _png(shade):
-    buf = io.BytesIO()
-    Image.new("RGB", (4, 4), (shade, shade, shade)).save(buf, format="PNG")
-    return buf.getvalue()
+    """A valid 4x4 grey PNG, built without Pillow (the 3.10 CI job has none)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    raw = b"".join(b"\x00" + bytes([shade, shade, shade]) * 4 for _ in range(4))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def _safe_pillow():
+    try:
+        import PIL
+        return int(PIL.__version__.split(".")[0]) >= S.MIN_PILLOW
+    except Exception:
+        return False
+
+
+needs_safe_pillow = pytest.mark.skipif(not _safe_pillow(), reason="needs Pillow 13 or later (Python 3.11 or later)")
 
 
 class _Bucket:
@@ -58,23 +75,25 @@ def _key(prefix, data):
     return f"{prefix}/{hashlib.sha256(data).hexdigest()[:32]}.png"
 
 
+@needs_safe_pillow
 def test_copies_once_verifies_and_never_writes(tmp_path):
     a, b = _png(10), _png(200)
     bucket = _Bucket({_key("c1", a): a, _key("c2", b): b})
-    first = S.backup(_Client(bucket), tmp_path)
+    first = S.backup(_Client(bucket), tmp_path, margin=0)   # the disk guard has its own test
     assert (first["objects"], first["copied"], first["failed"], first["key_verified"]) == (2, 2, [], 2)
-    again = S.backup(_Client(bucket), tmp_path)
+    again = S.backup(_Client(bucket), tmp_path, margin=0)   # the disk guard has its own test
     assert (again["copied"], again["already_held"], again["failed"]) == (0, 2, [])
     assert bucket.downloads == 2 and bucket.writes == 0
 
 
+@needs_safe_pillow
 def test_every_unverifiable_object_is_reported(tmp_path):
     good, corrupt = _png(1), b"\x89PNG not really"
     sized = _png(2)
     bucket = _Bucket({_key("c", good): good, "c/legacyname0000000000000000000000.png": corrupt,
                       _key("c", sized): sized, "c/broken.png": b"y"},
                      broken={"c/broken.png"}, sizes={_key("c", sized): len(sized) + 7})
-    out = S.backup(_Client(bucket), tmp_path)
+    out = S.backup(_Client(bucket), tmp_path, margin=0)   # the disk guard has its own test
     errors = {f["path"]: f["error"] for f in out["failed"]}
     assert errors["c/broken.png"] == "ConnectionError"
     assert errors["c/legacyname0000000000000000000000.png"].startswith("not a readable image")
@@ -123,3 +142,29 @@ def test_a_verified_database_report_yields_its_references(tmp_path):
     # Reports written before the status field existed still count when verified.
     f.write_text(json.dumps({"verified": True, "image_references": []}))
     assert S.expected_references(f) == []
+
+
+def _fake_pillow(version):
+    pil = types.ModuleType("PIL"); pil.__version__ = version
+    image = types.ModuleType("PIL.Image")
+    image.open = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("a vulnerable Pillow must never decode"))
+    pil.Image = image
+    return {"PIL": pil, "PIL.Image": image}
+
+
+@pytest.mark.parametrize("version", ["12.2.0", "12.3.0", "9.5.0"])
+def test_a_vulnerable_pillow_never_decodes_a_client_image(version):
+    with patch.dict(sys.modules, _fake_pillow(version)):
+        why = S._readable(_png(10))
+    assert why and "known vulnerabilities" in why and "Pillow 13" in why
+
+
+def test_without_pillow_the_object_is_reported_unchecked():
+    with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
+        assert S._readable(_png(10)) == "Pillow not installed: cannot check"
+
+
+@needs_safe_pillow
+def test_a_safe_pillow_decodes_a_real_png_and_rejects_junk():
+    assert S._readable(_png(10)) is None
+    assert "not a readable image" in S._readable(b"not an image")
