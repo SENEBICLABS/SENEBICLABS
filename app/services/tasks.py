@@ -31,6 +31,14 @@ NATIVE = "native"
 LABEL_STUDIO = "label_studio"
 STORES = (NATIVE, LABEL_STUDIO)
 
+# New projects are created on the native store, and no new Label Studio project is ever
+# created. A project that already has one keeps working there until it is retired.
+NO_NEW_LABEL_STUDIO = (
+    "No Label Studio project exists for this project, and new Label Studio projects "
+    "are no longer created. Use the native task store and release items through "
+    "POST /project/admin/release."
+)
+
 # Native task numbers start here (see the migration); Label Studio's ids sit below it.
 NATIVE_TASK_FLOOR = 1_000_000_000
 

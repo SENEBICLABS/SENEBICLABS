@@ -38,7 +38,10 @@ internal: `_client_item` strips it from everything a client receives.
    project on `label_studio`.
 3. Deploy HEALTH, then the workforce app.
 
-For a **new** project, before any item has been released:
+Every **new** project is created on the native store, so there is nothing to switch. No
+new Label Studio project is ever created: ingest and `/ls/sync` refuse a project still on
+Label Studio that has none, and say to switch it. To switch one, before any item has been
+released:
 
 ```bash
 curl -X POST "$API/project/admin/task-store" -H "X-Admin-Key: $ADMIN" \

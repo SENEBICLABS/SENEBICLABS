@@ -155,8 +155,8 @@ Use an internal account and synthetic cases. Do **not** migrate the old rehearsa
 projects. Use a text template. An image pilot waits until the portal upload and the
 clinician's image view have been checked against real Storage, which no test has done yet.
 
-1. `POST /project/projects` from a template, then
-   `POST /project/admin/task-store {"store": "native"}` **before** any ingest.
+1. `POST /project/projects` from a template. New projects are created on the native
+   store; confirm `task_store` is `native` before any ingest.
 2. Create its pool with `project_id` set
    ([native-task-store.md](native-task-store.md#turning-it-on)), then grant the internal
    clinicians who will test it, including a senior reviewer.
@@ -186,8 +186,9 @@ delivery given up.
 
 ## 8. Transition away from Label Studio [approval per project]
 
-- **New client projects go native** from now on (step 6's two calls). Making `native` the
-  database default is a later one-line change, once you decide it.
+- **New client projects go native:** the application creates every new project on the
+  native store, and never creates a new Label Studio project. The database column default
+  is still `label_studio`; changing it would be a separate migration, and is not needed.
 - **Existing Label Studio projects** keep working until delivered, then retire with Label
   Studio.
 - The old **rehearsal and demo** projects are internal test work and disposable. Recreate
