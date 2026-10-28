@@ -10,7 +10,7 @@ and are now declared (`health 007`, `workforce 022`).
 
 | Owner | Tables |
 |---|---|
-| HEALTH (`supabase_schema.sql`, `migrations/`) | `project_submissions`, `project_items`, `audit_events`, `operators`, `api_keys`, `clinical_failures`, `expert_applications`, `waitlist`, `project_clinicians`, legacy `clinicians` columns, and the native task store: `task_answers`, `answer_events`, `ls_task_map` |
+| HEALTH (`supabase_schema.sql`, `migrations/`) | `project_submissions`, `project_items`, `audit_events`, `operators`, `api_keys`, `clinical_failures`, `expert_applications`, `waitlist`, `project_clinicians`, legacy `clinicians` columns, and the native task store: `task_answers`, `answer_events` (`ls_task_map` was dropped by migration 008) |
 | workforce (`database.sql`, `migrations/`) | `clinicians`, `pools`, `pool_eligibility`, `task_completions`, `task_flags`, `review_items`, `sessions`, `sign_in_tokens`, `invites`, `access_requests`, `agreement_acceptances`, `calibration_attempts` |
 
 ## Order

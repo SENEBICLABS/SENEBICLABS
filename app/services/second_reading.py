@@ -5,75 +5,67 @@ The reading itself runs on the clinician platform (the workforce app), which is 
 side that knows who is who, and so the only side that can guarantee the reader is not the
 author. There, a pool whose config has `review_required: true` works in two phases: one
 clinician authors, a DIFFERENT clinician approves, edits-and-approves, or sends it back
-with a reason. Drafts stay in its `review_items` table; Label Studio receives an answer
-only when it is approved. Author ≠ reader is enforced in that app's serving query and
-again when a review is submitted.
+with a reason. Drafts stay in its `review_items` table; an answer is recorded only when it
+is approved. Author ≠ reader is enforced in that app's serving query and again when a
+review is submitted.
 
-This module is the bridge. When an authored answer reaches us from Label Studio, it counts
-as done only once the platform's `review_items` row for that task says it was approved,
-and only that approved annotation is taken as the answer. Everything else is held:
+This module is the bridge. An authored answer counts as done only once the platform's
+`review_items` row for that task says it was approved, and only that approved answer is
+taken. Everything else is held:
 
   approved                   -> done, with {approved, rounds, edited} recorded
-  review row still settling  -> `second_reading` (the platform writes the annotation a
-                                moment before it records the approval; see wait below)
-  no review row at all       -> `needs_adjudication`: the answer reached Label Studio
-                                without being read (annotated directly, or the pool is
-                                not set to review_required). A senior reviewer decides.
+  review row not approved    -> `second_reading`: the reading is under way
+  no review row at all       -> `needs_adjudication`: the answer was recorded without
+                                being read (the pool is not set to review_required).
+                                A senior reviewer decides.
 
 Items left in `second_reading` are re-checked by `reconcile`, which runs on a results
-poll, a pull, and before delivery — so nothing waits on an event that already passed.
+poll and before delivery, so nothing waits on an event that already passed.
 """
 import logging
-import time
-
-from app.services import labelstudio as ls
 
 logger = logging.getLogger(__name__)
 
 STATUS = "second_reading"
 
-NOT_READ = ("This answer reached Label Studio without a second reading — it was not "
-            "submitted through the clinician platform's review flow, or the project's pool "
-            "is not set to review_required. A senior reviewer must approve it.")
+NOT_READ = ("This answer was recorded without a second reading: it was not submitted "
+            "through the clinician platform's review flow, or the project's pool is not set "
+            "to review_required. A senior reviewer must approve it.")
 
 
 def enabled(ec: dict | None) -> bool:
     return bool((ec or {}).get("second_reading"))
 
 
-def _pools(db, ls_project_id: int | None = None, project_id: str | None = None) -> list[dict]:
-    """The platform's pools for a project: by HEALTH project on the native store (one pool
-    per project, enforced there), by Label Studio project otherwise."""
-    if project_id:
-        return (db.table("pools").select("id").eq("project_id", project_id).execute()).data or []
-    if ls_project_id:
-        return (db.table("pools").select("id").eq("ls_project_id", ls_project_id).execute()).data or []
-    return []
+def _pools(db, project_id: str | None) -> list[dict]:
+    """The platform's pools for a project (one per project, enforced there)."""
+    if not project_id:
+        return []
+    return (db.table("pools").select("id").eq("project_id", project_id).execute()).data or []
 
 
-def review_row(db, ls_project_id: int | None, ls_task_id: int | None,
-               project_id: str | None = None) -> dict | None:
+def review_row(db, project_id: str | None, task_no: int | None) -> dict | None:
     """The platform's review record for one task, or None. The workforce table calls the
-    task id ls_task_id whichever store issued it."""
-    if not ls_task_id:
+    task number ls_task_id, a name kept from before the task store."""
+    if not task_no:
         return None
-    pools = _pools(db, ls_project_id, project_id)
+    pools = _pools(db, project_id)
     if not pools:
         return None
     rows = (db.table("review_items").select("*")
-            .in_("pool_id", [p["id"] for p in pools]).eq("ls_task_id", ls_task_id)
+            .in_("pool_id", [p["id"] for p in pools]).eq("ls_task_id", task_no)
             .execute()).data or []
     return rows[0] if rows else None
 
 
-def drafting_started(db, ls_project_id: int | None, project_id: str | None = None) -> bool:
+def drafting_started(db, project_id: str | None) -> bool:
     """Whether any clinician has started on this project on the platform. Drafts stay there
     until approved, so nothing reaches us while authors write; the platform's review rows
     are the only sign that work is under way."""
-    if not ls_project_id and not project_id:
+    if not project_id:
         return False
     try:
-        pools = _pools(db, ls_project_id, project_id)
+        pools = _pools(db, project_id)
         if not pools:
             return False
         return bool((db.table("review_items").select("id")
@@ -83,45 +75,36 @@ def drafting_started(db, ls_project_id: int | None, project_id: str | None = Non
 
 
 def approved_annotations(anns: list[dict], row: dict | None) -> list[dict]:
-    """Only the annotation the platform approved. Two reviewers racing can briefly leave
-    the loser's annotation on the task before it is withdrawn; it must not be counted."""
+    """Only the answer the platform approved. Two reviewers racing can briefly leave the
+    loser's answer on the task before it is withdrawn; it must not be counted."""
     if not row or row.get("state") != "approved" or not row.get("ls_annotation_id"):
         return anns
     keep = [a for a in anns if a.get("id") == row["ls_annotation_id"]]
     return keep or anns
 
 
-def decide(db, ls_project_id, ls_task_id, wait_s: float = 0.0,
-           project_id: str | None = None) -> tuple[str, dict | None, dict | None]:
+def decide(db, project_id: str | None, task_no) -> tuple[str, dict | None, dict | None]:
     """(status, second_reading record for the label, review row) for an authored answer.
-
-    `wait_s`: on Label Studio the platform publishes the annotation first and records the
-    approval right after, so a webhook can arrive in between. The webhook waits briefly for
-    the approval rather than parking the item; anything later is caught by `reconcile`. On
-    the native store the two are one transaction, so there is never anything to wait for."""
-    deadline = time.monotonic() + wait_s
-    while True:
-        row = review_row(db, ls_project_id, ls_task_id, project_id)
-        if row and row.get("state") == "approved":
-            return "done", {
-                "approved": True,
-                "rounds": int(row.get("revision") or 0) + 1,
-                "edited": row.get("review_action") == "edited",
-                "at": row.get("reviewed_at"),
-            }, row
-        if row is None:
-            if time.monotonic() >= deadline:
-                return "needs_adjudication", {"approved": False, "reason": NOT_READ}, None
-        elif time.monotonic() >= deadline:
-            return STATUS, None, row                # review is under way on the platform
-        time.sleep(0.5)
+    The platform records the answer and its approval in one transaction, so there is never
+    anything to wait for."""
+    row = review_row(db, project_id, task_no)
+    if row and row.get("state") == "approved":
+        return "done", {
+            "approved": True,
+            "rounds": int(row.get("revision") or 0) + 1,
+            "edited": row.get("review_action") == "edited",
+            "at": row.get("reviewed_at"),
+        }, row
+    if row is None:
+        return "needs_adjudication", {"approved": False, "reason": NOT_READ}, None
+    return STATUS, None, row                        # review is under way on the platform
 
 
 def reconcile(db, project_id: str, ec: dict) -> int:
     """Re-check items waiting on a second reading. Returns how many settled.
 
-    Re-reads each task from Label Studio and re-applies it through the normal path, so the
-    label is rebuilt from the approved annotation alone."""
+    Re-reads each task and re-applies it through the normal path, so the label is rebuilt
+    from the approved answer alone."""
     if not enabled(ec):
         return 0
     waiting = (db.table("project_items").select("id,label")
@@ -129,22 +112,20 @@ def reconcile(db, project_id: str, ec: dict) -> int:
     if not waiting:
         return 0
     # lazy: scoring imports this module
-    from app.services.scoring import apply_task_annotations as _apply_task_annotations, qa_from_ec as _qa_from_ec
+    from app.services.scoring import apply_task_annotations, qa_from_ec
     from app.services import tasks
-    target, adjudicate, text_fields, primary = _qa_from_ec(ec)
-    native = tasks.is_native(db, project_id)
+    target, adjudicate, text_fields, primary = qa_from_ec(ec)
     settled = 0
     for it in waiting:
-        label = it.get("label") or {}
-        task_id = label.get("_task_no") if native else label.get("_ls_task_id")
-        if not task_id:
+        task_no = (it.get("label") or {}).get("_task_no")
+        if not task_no:
             continue
         try:
-            task = tasks.native_task_by_number(db, task_id) if native else ls.get_task(task_id)
+            task = tasks.native_task_by_number(db, task_no)
             if task is None:
                 continue
-            status = _apply_task_annotations(db, task, target, project_id, adjudicate,
-                                             text_fields, primary, ec)
+            status = apply_task_annotations(db, task, target, project_id, adjudicate,
+                                            text_fields, primary, ec)
             if status != STATUS:
                 settled += 1
         except Exception as exc:

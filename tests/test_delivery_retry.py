@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from _fakedb import FakeDB
-from app.api.v1 import ls as ls_api
+from app.services import delivery
 from app.api.v1 import project as proj
 
 PID = "proj-d"
@@ -32,8 +32,8 @@ class _Resp:
 def test_two_finishers_deliver_once():
     db = _db()
     with patch.object(proj, "_fire_webhook") as fired:
-        ls_api._maybe_auto_deliver(db, PID)
-        ls_api._maybe_auto_deliver(db, PID)
+        delivery.maybe_auto_deliver(db, PID)
+        delivery.maybe_auto_deliver(db, PID)
     assert fired.call_count == 1
     assert db.rows["project_submissions"][0]["stage"] == "delivered"
 
@@ -59,7 +59,7 @@ def test_a_lost_race_sends_nothing():
         return q
     db.table = table
     with patch.object(proj, "_fire_webhook") as fired:
-        ls_api._maybe_auto_deliver(db, PID)
+        delivery.maybe_auto_deliver(db, PID)
     assert calls["n"] == 1 and fired.call_count == 0
 
 

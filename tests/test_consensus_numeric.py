@@ -1,5 +1,5 @@
 """
-Numeric verification of consensus (app/api/v1/ls.py :: _consensus) with numpy as
+Numeric verification of consensus (app/services/scoring.py :: consensus) with numpy as
 an independent oracle. This is the OTHER computation that decides what ships: the
 majority verdict across reviewers, the agreement fraction, whether they disagreed
 (which gates adjudication), and structured-field (present/finding) majority.
@@ -13,7 +13,7 @@ import random
 
 import numpy as np
 
-from app.api.v1.ls import _consensus
+from app.services.scoring import consensus as _consensus
 
 VERDICTS = ["accurate", "inaccurate", "partial"]
 
@@ -111,7 +111,7 @@ def test_absent_primary_field_does_not_manufacture_a_disagreement():
 
 
 def test_every_adjudicating_template_resolves_a_primary_field_it_collects():
-    from app.api.v1.ls import _primary_field
+    from app.services.scoring import primary_field as _primary_field
     from app.services.templates import TEMPLATES
     for name, t in TEMPLATES.items():
         ec = t["eval_config"]
@@ -120,3 +120,28 @@ def test_every_adjudicating_template_resolves_a_primary_field_it_collects():
         fields = ec["schema"]["fields"]
         assert _primary_field(ec) in fields, (
             f"{name}: adjudicate=True but its primary field is not one of {list(fields)}")
+
+
+def test_one_reviewer_in_three_cannot_set_a_critical_miss():
+    """A structured field only becomes a dict when the reviewer picked a finding, so
+    a reviewer answering "No" leaves a bare string. That mixture used to skip the
+    majority rule and fall through to a string vote, where a one-to-one tie went to
+    whichever answer was read first. One clinician in three could therefore put
+    `critical_miss: present` on a delivered result."""
+    from app.services.scoring import consensus as _consensus, collapse_structured as _collapse_structured
+
+    def ans(**kw):
+        return _collapse_structured(dict(kw))
+
+    yes = ans(verdict="Incorrect", critical_miss="Yes", critical_miss_finding="effusion")
+    no = ans(verdict="Partial", critical_miss="No")
+    silent = ans(verdict="Correct")
+
+    cons, _, _ = _consensus([yes, no, silent], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is False, "one of three is not a majority"
+
+    cons, _, _ = _consensus([yes, yes, no], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is True, "two of three is a majority"
+
+    cons, _, _ = _consensus([yes, no, no], text_fields=set(), primary="verdict")
+    assert cons["critical_miss"]["present"] is False, "one of three is not a majority"

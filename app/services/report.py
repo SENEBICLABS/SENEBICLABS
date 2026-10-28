@@ -2,7 +2,7 @@
 Model-performance report (the client deliverable).
 
 Turns the pulled, structured radiologist verdicts on a project (already in
-project_items.label after /ls/pull) into "your model is X% accurate, here are the misses".
+project_items.label once scored) into "your model is X% accurate, here are the misses".
 
 Ground truth is radiologist-adjudicated:
   - verdict == Correct              -> ground truth = the model's own prediction
@@ -183,7 +183,7 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
             observed.add(truth)
         cm =(label or {}).get("critical_miss")
         # A reviewer who ticks the flag but leaves the finding blank leaves this as
-        # the bare string "Yes", because the collapse in ls.py keys off the finding
+        # the bare string "Yes", because scoring.collapse_structured keys off the finding
         # control. Treating only the dict form as present dropped those cases out of
         # the report silently, which is the opposite of what this report is for.
         # Accepting the string can only surface a miss a clinician declared; it can
@@ -378,7 +378,7 @@ def _matches_gold(reviewer_label: dict, gold: dict) -> bool:
 def _label_from_annotation_data(ad) -> dict:
     """A single clinician's raw workforce submission, as a {field: value} label.
 
-    task_completions.annotation_data is either the Label Studio result array (the direct
+    task_completions.annotation_data is either a result array (the direct
     review path) or an already-flat answers map (the author→reviewer path). Normalise both
     to the same {field: value} shape reviewer_quality scores against."""
     if isinstance(ad, dict):
@@ -409,11 +409,11 @@ def reviewer_quality(items: list[dict], completions_by_task: dict | None = None,
       - gold: accuracy on known-answer items (content._gold_expected), if any were served
       - flag: 'below_floor' when either metric drops under REVIEWER_AGREEMENT_FLOOR
 
-    Attribution: the workforce app writes every Label Studio annotation under one service
-    user, so real per-clinician identity lives in task_completions. When those are supplied
-    (`completions_by_task` keyed by the item's `_ls_task_id`, with `clinician_names` mapping
-    clinician_id -> display name), each item is scored per real clinician. Without them it
-    falls back to the LS-derived `_annotations`/`labeled_by`, so older data still reports."""
+    Attribution: per-clinician identity lives in the workforce app's task_completions. When
+    those are supplied (`completions_by_task` keyed by the item's task reference, see
+    tasks.task_ref, with `clinician_names` mapping clinician_id -> display name), each item
+    is scored per real clinician. Without them it falls back to the label's own
+    `_annotations`/`labeled_by`, so older data still reports."""
     completions_by_task = completions_by_task or {}
     clinician_names = clinician_names or {}
     stats: dict = defaultdict(lambda: {"items_reviewed": 0, "matched_consensus": 0,
@@ -438,7 +438,7 @@ def reviewer_quality(items: list[dict], completions_by_task: dict | None = None,
                     s["gold_seen"] += 1
                     if _matches_gold(alabel, gold):
                         s["gold_correct"] += 1
-        elif anns:                                      # multi-reviewed, LS-derived (fallback)
+        elif anns:                                      # multi-reviewed, from the label (fallback)
             for a in anns:
                 who = a.get("by") or "unknown"
                 alabel = a.get("label") or {}

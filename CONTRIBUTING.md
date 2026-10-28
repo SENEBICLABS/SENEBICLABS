@@ -12,7 +12,7 @@ what the system does; this is how to work on it.
 | **HEALTH** (this one) | The system of record. Project creation, ingestion, consensus, adjudication, scoring, delivery. FastAPI. | Cloud Run |
 | **workforce** | The clinician-facing application. Task UI, auth, pools, second reading. Next.js. | Vercel |
 
-They share one Supabase database and one Label Studio instance. Neither calls the other's
+They share one Supabase database, which also holds every task and answer. Neither calls the other's
 internals; they meet at the database and at a small number of HTTP endpoints.
 
 **The rule that keeps them apart:** the clinician experience belongs to `workforce`, and the
@@ -37,8 +37,8 @@ cp .env.example .env
 
 ### Run the tests first
 
-Do this before anything else. The suite is hermetic: no database, no Label Studio, no
-network, no credentials.
+Do this before anything else. The suite is hermetic: no database, no network, no
+credentials.
 
 ```bash
 PYTHONPATH=. pytest -q tests --ignore=tests/e2e
@@ -76,8 +76,6 @@ cd ui && npm install && npm run dev
 | Key | Needed for | Where it comes from |
 |---|---|---|
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Everything that reads or writes the record | Supabase project settings |
-| `LS_URL`, `LS_TOKEN` | Pushing tasks to clinicians, pulling their answers | Label Studio account page |
-| `LS_WEBHOOK_SECRET` | Verifying the callback Label Studio makes to us | Shared secret, set on both sides |
 | `ADMIN_API_KEY` | Admin and operator endpoints | Chosen by us; operator keys are issued from it |
 | `RESEND_API_KEY`, `FROM_EMAIL`, `ADMIN_EMAIL` | Enquiry and delivery email | Resend dashboard |
 
@@ -91,11 +89,12 @@ Ask for credentials rather than creating your own against production.
 app/
   api/v1/
     project.py      Project intake, ingestion, results, admin, operators. The big one.
-    ls.py           Label Studio webhook and pull. How clinician answers get in.
     system.py       Health check.
   services/
+    tasks.py        The task store: release, the answer drain. How clinician answers get in.
+    scoring.py      An answer set into a label: parsing, consensus, adjudication holds.
     report.py       Scoring. Accuracy, per-class metrics, critical misses, assurance.
-    labelstudio.py  Form generation and the Label Studio API.
+    eval_schema.py  What a valid eval_config is, and what each item must carry.
     templates.py    The 17 outcome templates clients pick from.
     second_reading.py  Bridge to the workforce platform. It owns the loop; we only ask.
     operators.py    Per-operator admin keys and the audit trail.
@@ -152,12 +151,9 @@ gaps with NULL instead of defaults.
 **Config is stored as JSON, which does not preserve key order.** That is what `field_order`
 exists for. Without it a clinician can be asked for a rationale before the verdict it explains.
 
-**Label Studio is stopped between client projects** to save money, so
-`annotate.senebiclabs.com` being down is usually expected rather than broken. Ask before
-assuming an outage.
-
-**The Label Studio UI returns 404 on purpose.** Caddy serves `/api/*` only. Clinicians work
-through the workforce platform; nobody uses the Label Studio interface.
+**Label Studio is gone.** HEALTH no longer calls it; tasks and answers live in the
+database ([docs/native-task-store.md](docs/native-task-store.md)). Columns still named
+`ls_*` in the workforce tables hold task numbers; the names are kept from it.
 
 ---
 

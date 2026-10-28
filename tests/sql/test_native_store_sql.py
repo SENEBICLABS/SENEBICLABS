@@ -79,7 +79,7 @@ def test_existing_items_are_numbered_once_each_when_the_store_is_added(dsn_befor
         # Re-running the migration renumbers nothing.
         apply_native(c)
         assert sorted(r[0] for r in c.execute("select task_no from project_items").fetchall()) == sorted(numbers)
-        # Existing projects stay on Label Studio until someone switches them.
+        # Migration 005 leaves projects that existed before it marked label_studio.
         assert _count(c, "select count(*) from project_submissions where task_store = 'label_studio'") == 1
 
 
@@ -91,21 +91,6 @@ def test_new_items_get_a_number_and_a_label_studio_sized_one_is_refused(db):
         db.execute("insert into project_items (project_id, task_no) values (%s, 18193)", (pid,))
     with pytest.raises(psycopg.errors.UniqueViolation):
         db.execute("insert into project_items (project_id, task_no) values (%s, %s)", (pid, a["task_no"]))
-
-
-def test_label_studio_history_is_keyed_by_instance_not_by_bare_id(db):
-    pid = _project(db)
-    it = _item(db, pid)
-    db.execute("insert into ls_task_map (item_id, ls_instance, ls_project_id, ls_task_id, evidence)"
-               " values (%s, 'gcp-2026', 191, 18193, 'f'), (%s, 'azure-2026', 3, 1, 'f')",
-               (it["id"], it["id"]))
-    # The same small id in another instance is a different task, never assumed to match.
-    other = _item(db, pid, idx=1)
-    db.execute("insert into ls_task_map (item_id, ls_instance, ls_project_id, ls_task_id, evidence)"
-               " values (%s, 'gcp-2026', 191, 1, 'f')", (other["id"],))
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        db.execute("insert into ls_task_map (item_id, ls_instance, ls_project_id, ls_task_id, evidence)"
-                   " values (%s, 'azure-2026', 3, 1, 'f')", (other["id"],))
 
 
 # ── submitting a judgement ──────────────────────────────────────────────────────
@@ -127,13 +112,12 @@ def test_a_judgement_writes_answer_completion_and_event_together(db):
 
 @pytest.mark.parametrize("case,expected", [
     ("unreleased", "unavailable"), ("ineligible", "not_found"), ("other_project", "not_found"),
-    ("label_studio_project", "not_found"), ("closed", "closed"), ("settled", "settled"),
+    ("closed", "closed"), ("settled", "settled"),
     ("review_required", "wrong_phase"), ("empty_result", "invalid"), ("no_such_task", "not_found"),
 ])
 def test_refusals_write_nothing(db, case, expected):
-    store = "label_studio" if case == "label_studio_project" else "native"
     extra = {"review_required": True} if case == "review_required" else {}
-    pid = _project(db, store=store, **extra)
+    pid = _project(db, **extra)
     t = _item(db, pid, status="pending" if case == "unreleased" else "queued")
     doc = _clinician(db)
     if case == "ineligible":

@@ -1,8 +1,8 @@
 """
 Delivery: decide what happens when every item in a project is done.
 
-Shared by every task store: the Label Studio routes (api/v1/ls.py), the operator routes
-(api/v1/project.py) and the native store's scoring (services/tasks.py) all end here.
+Shared by the operator routes (api/v1/project.py) and the task store's scoring
+(services/tasks.py), which both end here.
 """
 import logging
 from datetime import datetime, timezone

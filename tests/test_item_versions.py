@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException, UploadFile
 
 from _fakedb import FakeDB
-from app.api.v1 import ls as ls_api
+from app.services import scoring
 from app.api.v1 import project as proj
 from app.services import items
 from app.services import report as report_svc
@@ -134,7 +134,7 @@ def test_a_late_answer_does_not_rewrite_a_superseded_version():
             "annotations": [{"id": 1, "result": [{"from_name": "verdict", "value": {"choices": ["Partial"]}}],
                              "completed_by": {"email": "x"}}]}
     with patch("app.services.audit.record"):
-        assert ls_api._apply_task_annotations(db, task, 1, PID) == "superseded"
+        assert scoring.apply_task_annotations(db, task, 1, PID) == "superseded"
     assert db.rows["project_items"][0]["label"] == {"verdict": "Correct"}
 
 
@@ -148,7 +148,7 @@ def test_answers_given_before_supersession_are_still_scored_onto_the_old_version
              "result": [{"from_name": "verdict", "value": {"choices": ["Incorrect"]}}]}
     task = {"id": 5, "project": 3, "data": {"_item_id": "old"}, "annotations": [before, after]}
     with patch("app.services.audit.record"):
-        status = ls_api._apply_task_annotations(db, task, 1, PID)
+        status = scoring.apply_task_annotations(db, task, 1, PID)
     assert status == "superseded" and old["status"] == "superseded"
     assert old["label"]["verdict"] == "Correct"          # the answer given before, not the one after
 

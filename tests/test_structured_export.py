@@ -3,7 +3,7 @@ Slice #2b test: a 'structured' field (e.g. critical_miss) exports as ONE structu
 object, not two disconnected keys. Run: PYTHONPATH=. python3 tests/test_structured_export.py
 (pytest is not installed in this env, so this is self-running.)
 """
-from app.api.v1.ls import _parse_result
+from app.services.scoring import parse_result as _parse_result
 
 
 def _choice(from_name, value):

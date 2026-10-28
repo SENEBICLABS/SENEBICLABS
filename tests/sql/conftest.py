@@ -35,7 +35,8 @@ WORKFORCE = Path(os.environ.get(
     HEALTH.parent / "workforce" / "senebiclabs-workforce-platform"))
 
 TEMPLATE_BEFORE = "senebi_tpl_before_native"   # everything except the native store
-TEMPLATE = "senebi_tpl_native"                 # everything, including it
+TEMPLATE_BEFORE_008 = "senebi_tpl_before_008"   # the native store, Label Studio not yet removed
+TEMPLATE = "senebi_tpl_native"                 # everything
 
 if not DSN:
     pytest.skip("SQLTEST_DSN not set: these tests need a disposable Postgres", allow_module_level=True)
@@ -49,7 +50,7 @@ do $$ begin create role authenticated; exception when duplicate_object then null
 """
 
 
-def _schema_files(native: bool) -> list[Path]:
+def _schema_files(native: bool, upto: str | None = None) -> list[Path]:
     files = [HEALTH / "supabase_schema.sql"]
     files += sorted((HEALTH / "migrations").glob("00[2-4]_*.sql"))
     files += [WORKFORCE / "database.sql"]
@@ -58,7 +59,8 @@ def _schema_files(native: bool) -> list[Path]:
         files = [f for f in files if f.name != "021_pool_project.sql"]
     else:
         # Every HEALTH migration from the native store on, in order.
-        files += sorted(f for f in (HEALTH / "migrations").glob("*.sql") if f.name >= "005")
+        files += sorted(f for f in (HEALTH / "migrations").glob("*.sql")
+                        if f.name >= "005" and (upto is None or f.name < upto))
     return files
 
 
@@ -70,13 +72,13 @@ def _admin():
     return psycopg.connect(DSN, autocommit=True)
 
 
-def _build(name: str, native: bool) -> None:
+def _build(name: str, native: bool, upto: str | None = None) -> None:
     with _admin() as a:
         a.execute(f'drop database if exists "{name}"')
         a.execute(f'create database "{name}"')
     with psycopg.connect(_dsn_for(name), autocommit=True) as c:
         c.execute(_SUPABASE_STUBS)
-        for f in _schema_files(native):
+        for f in _schema_files(native, upto):
             c.execute(f.read_text())
 
 
@@ -85,10 +87,11 @@ def templates():
     if not (WORKFORCE / "database.sql").exists():
         pytest.skip(f"workforce repo not found at {WORKFORCE}")
     _build(TEMPLATE_BEFORE, native=False)
+    _build(TEMPLATE_BEFORE_008, native=True, upto="008")
     _build(TEMPLATE, native=True)
     yield
     with _admin() as a:
-        for t in (TEMPLATE, TEMPLATE_BEFORE):
+        for t in (TEMPLATE, TEMPLATE_BEFORE_008, TEMPLATE_BEFORE):
             a.execute(f'drop database if exists "{t}"')
 
 
@@ -121,13 +124,22 @@ def dsn_before_native(templates):
 
 
 @pytest.fixture
+def dsn_before_008(templates):
+    """A fresh database with the native store, where Label Studio work can still exist."""
+    name = _clone(TEMPLATE_BEFORE_008)
+    yield _dsn_for(name)
+    _drop(name)
+
+
+@pytest.fixture
 def db(dsn):
     with psycopg.connect(dsn, autocommit=True) as c:
         yield c
 
 
 def apply_native(conn) -> None:
+    """The native-pilot release's migrations: workforce 021, then HEALTH 005 to 007."""
     conn.execute((WORKFORCE / "migrations" / "021_pool_project.sql").read_text())
     for f in sorted((HEALTH / "migrations").glob("*.sql")):
-        if f.name >= "005":
+        if "005" <= f.name < "008":
             conn.execute(f.read_text())

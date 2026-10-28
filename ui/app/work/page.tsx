@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 const CODE_KEY = 'senebiclabs_work_code'
 
 type Brief = {
-  company: string; task_type: string | null; ls_link: string | null
+  company: string; task_type: string | null
   total: number; done: number; pending: number; labeler: string
   rate_per_item: number | null; payout: number | null
 }
@@ -94,18 +94,12 @@ export default function WorkPage() {
               <ol className="cx-brief-list">
                 {GUIDELINES.map((g, i) => <li key={i}>{g}</li>)}
               </ol>
-              <p className="cx-brief-note">Full task instructions and examples are inside Label Studio, on the Instructions tab.</p>
+              <p className="cx-brief-note">Full task instructions and examples are shown with each case in the clinician workspace.</p>
             </div>
 
-            {brief.ls_link ? (
-              <a className="cx-btn cx-btn-lg cx-brief-cta" href={brief.ls_link} target="_blank" rel="noopener noreferrer">
-                Open in Label Studio →
-              </a>
-            ) : (
-              <div className="cx-brief-pending">
-                This project isn&rsquo;t ready for labeling yet. Your tasks are being prepared, check back shortly.
-              </div>
-            )}
+            <div className="cx-brief-pending">
+              Your cases are served in the Senebiclabs clinician workspace. Sign in there with your clinician account to start.
+            </div>
           </div>
         )}
       </div>

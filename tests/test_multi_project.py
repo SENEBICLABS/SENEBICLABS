@@ -18,7 +18,8 @@ from fastapi import HTTPException
 from _fakedb import FakeDB
 from app.api.v1 import project as proj
 from app.services import clinical_analytics as ca
-from app.services import labelstudio as ls
+from app.services import render
+from app.services.scoring import parse_result as _parse_result
 from app.services import templates as T
 
 EMAIL = "c@x.com"
@@ -162,26 +163,18 @@ def test_a_trace_sent_as_steps_is_shown_as_numbered_text():
     trace = [{"type": "tool_call", "tool": "search", "args": {"q": "dose"}},
              {"type": "observation", "text": "Adult guideline"},
              "Final: give 500mg"]
-    shown = ls.render_value(trace)
+    shown = render.render_value(trace)
     assert shown.startswith("Step 1\n   type: tool_call\n   tool: search\n   args: {\"q\": \"dose\"}")
     assert "Step 2\n   type: observation" in shown and shown.endswith("Step 3: Final: give 500mg")
     # The database reorders JSON keys; what a step is still leads what it contains.
     stored = [{"text": "Adult guideline", "type": "observation"}]
-    assert ls.render_value(stored) == "Step 1\n   type: observation\n   text: Adult guideline"
-    # The stored content keeps the client's structure; only the task is rendered.
-    task = ls._task_for({"id": "i", "content": {"trace": trace, "case_id": "A-1"}})
-    assert task["data"]["trace"] == shown and task["data"]["case_id"] == "A-1"
-
-
-def test_agent_trace_template_renders_its_step_field():
-    xml = ls.build_label_config(T.config_from_template("agent_trace_eval"))
-    assert '<Number name="first_failed_step" toName="image" min="1"' in xml
-    assert '<Labels name="step_errors" toName="image"' in xml
-    assert 'value="$trace"' in xml
+    assert render.render_value(stored) == "Step 1\n   type: observation\n   text: Adult guideline"
+    # The stored content keeps the client's structure; only what is shown is rendered.
+    data = render.render_content({"trace": trace, "case_id": "A-1", "_gold_expected": "x"})
+    assert data == {"trace": shown, "case_id": "A-1"}
 
 
 def test_a_number_answer_is_parsed():
-    from app.api.v1.ls import _parse_result
     assert _parse_result([{"from_name": "first_failed_step", "value": {"number": 2}}])["first_failed_step"] == 2
 
 
@@ -196,9 +189,8 @@ def test_step_summary_reports_where_trajectories_first_break():
 
 
 def test_a_highlighted_span_keeps_its_tag_and_position():
-    # Label Studio sends a span with the highlighted `text` alongside its `labels`. It was
+    # A span arrives with the highlighted `text` alongside its `labels`. It was
     # read as a plain text answer, dropping the tag and position of every highlight.
-    from app.api.v1.ls import _parse_result
     span = {"from_name": "error_spans",
             "value": {"start": 10, "end": 16, "text": "3 days", "labels": ["Wrong dose / guideline"]}}
     got = _parse_result([span])["error_spans"]
@@ -207,77 +199,8 @@ def test_a_highlighted_span_keeps_its_tag_and_position():
     assert _parse_result([{"from_name": "fix", "value": {"text": ["Use 5 days"]}}])["fix"] == "Use 5 days"
 
 
-def test_the_pull_reads_label_studio_page_by_page():
-    # One-shot export took 56s for 3,000 tasks, so a big project outran the timeout.
-    # Paged, every request stays small; the loop stops on a short page or at `total`.
-    pages = {1: list(range(500)), 2: list(range(500, 1000)), 3: list(range(1000, 1203))}
-    calls = []
-
-    class _R:
-        def __init__(self, page):
-            self.status_code = 200 if page in pages else 404
-            self._page = page
-
-        def raise_for_status(self):
-            if self.status_code >= 400:
-                raise AssertionError("unexpected error page")
-
-        def json(self):
-            return {"tasks": [{"id": i} for i in pages[self._page]], "total": 1203}
-
-    def _get(url, params=None, **_k):
-        calls.append(params["page"])
-        return _R(params["page"])
-
-    with patch("httpx.get", side_effect=_get):
-        got = ls.export_tasks(7)
-    assert [t["id"] for t in got] == list(range(1203)) and calls == [1, 2, 3]
-
-    pages[3] = list(range(1000, 1500))              # an exactly full last page
-    calls.clear()
-
-    def _get_full(url, params=None, **_k):
-        calls.append(params["page"])
-        r = _R(params["page"])
-        r.json = lambda p=params["page"]: {"tasks": [{"id": i} for i in pages[p]], "total": 1500}
-        return r
-
-    with patch("httpx.get", side_effect=_get_full):
-        assert len(ls.export_tasks(7)) == 1500 and calls == [1, 2, 3]   # stops at total
-
-
-def test_a_long_project_name_still_reaches_label_studio():
-    # Label Studio rejects a title over 50 characters with a 400. Titles are built from the
-    # client's own project name, so a long name failed the sync invisibly: the worker
-    # retried while the client saw a project with no items and no error.
-    sent = {}
-
-    class _R:
-        status_code = 201
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"id": 7}
-
-    def _post(url, headers=None, json=None, **_k):
-        sent.update(json or {})
-        return _R()
-
-    long_name = "REHEARSAL — lab report interpretation (internal) — eval"
-    assert len(long_name) > ls.TITLE_MAX
-    with patch("httpx.post", side_effect=_post), patch.object(ls, "_register_webhook"):
-        assert ls.create_project(long_name, "<View></View>") == 7
-    assert len(sent["title"]) <= ls.TITLE_MAX and sent["title"].endswith("…")
-    # A short title is untouched.
-    with patch("httpx.post", side_effect=_post), patch.object(ls, "_register_webhook"):
-        ls.create_project("Radiology QA — Pilot — eval", "<View></View>")
-    assert sent["title"] == "Radiology QA — Pilot — eval"
-
-
-def _config_db(ls_project_id=191):
-    return FakeDB({"project_submissions": [{"id": "p1", "ls_project_id": ls_project_id,
+def _config_db():
+    return FakeDB({"project_submissions": [{"id": "p1", "task_store": "native",
                                             "eval_config": {"schema": {"fields": {}}}}],
                    "project_items": [], "audit_events": []})
 
@@ -299,60 +222,12 @@ def patch_ctx(db):
     return st
 
 
-def test_saving_a_config_updates_the_form_clinicians_answer():
-    # Saved here but not pushed, the operator is told it is saved while clinicians keep
-    # answering the old questions — and those answers are read against the new schema.
+def test_saving_a_config_is_what_the_clinicians_form_reads():
+    # The clinician platform renders the form from this config, so there is no copy to
+    # push and nothing that can be left showing the old questions.
     db = _config_db()
-    with patch.object(ls, "update_project_config") as push:
+    with patch("httpx.post") as called:
         out = _set_config(db)
-    assert push.called and push.call_args[0][0] == 191
-    assert "clinicians' form was updated" in out.message
-
-
-def test_a_failed_push_says_so_instead_of_reporting_success():
-    db = _config_db()
-    with patch.object(ls, "update_project_config", side_effect=RuntimeError("LS down")):
-        out = _set_config(db)
-    assert "WARNING" in out.message and "previous form" in out.message
-
-
-def test_a_project_not_yet_in_label_studio_just_saves():
-    db = _config_db(ls_project_id=None)
-    with patch.object(ls, "update_project_config") as push:
-        out = _set_config(db)
-    assert not push.called and out.message == "Config saved."
-
-
-def test_sync_says_when_no_clinician_can_reach_the_work():
-    """Tasks in Label Studio are not work a clinician can open. The clinician platform
-    serves from `pools`, and nothing in this repo creates one. A sync that reports a bare
-    ok:true let an operator finish every documented step and ship a job nobody could see."""
-    from tests._fakedb import FakeDB
-
-    db = FakeDB({
-        "project_submissions": [{"id": "p1", "company": "Acme", "ls_project_id": 7,
-                                 "eval_config": {}}],
-        "project_items": [{"id": "i0", "project_id": "p1", "status": "pending",
-                           "content": {"prompt": "x"}}],
-        "pools": [],          # nothing points at project 7
-    })
-    pools = (db.table("pools").select("id,name").eq("ls_project_id", 7).execute()).data or []
-    assert pools == [], "no pool exists for this project"
-
-    db2 = FakeDB({
-        "pools": [{"id": "pool-1", "name": "Acme batch 1", "ls_project_id": 7}],
-    })
-    pools2 = (db2.table("pools").select("id,name").eq("ls_project_id", 7).execute()).data or []
-    assert len(pools2) == 1, "a pool pointing at the project is what makes work reachable"
-
-
-def test_the_active_window_is_small_enough_for_several_clinicians():
-    """The window sets what every clinician pays to open their queue: the clinician
-    platform pages the whole Label Studio project at 200 tasks a request to work out what
-    is left. 1500 meant 8 sequential calls per queue view, on one Label Studio worker."""
-    from app.core.config import settings
-    pages_per_queue_view = -(-settings.LS_ACTIVE_WINDOW // 200)   # ceiling division
-    assert pages_per_queue_view <= 2, (
-        f"window {settings.LS_ACTIVE_WINDOW} costs {pages_per_queue_view} API pages per "
-        "clinician queue view; keep it at or under 2 so concurrent clinicians do not queue"
-    )
+    called.assert_not_called()
+    assert db.rows["project_submissions"][0]["eval_config"]["schema"]["context"] == [{"key": "q", "label": "Q"}]
+    assert out.message == "Config saved. The clinicians' form now reads this config."

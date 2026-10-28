@@ -5,20 +5,6 @@ import { parseDataset, type ParsedDataset } from '../lib/dataset'
 const STAGES = ['submitted', 'scoping', 'agreement', 'pilot', 'production', 'delivered']
 const STORAGE_KEY = 'senebiclabs_admin_key'
 const API_BASE = 'https://api.senebiclabs.com/api/v1/project'
-// value, label, required data columns
-const LS_TASK_TYPES: [string, string, string][] = [
-  ['eval_rating', 'Rate response (1-5)', 'prompt, output'],
-  ['rubric_eval', 'Rubric evaluation (multi-axis)', 'prompt, output'],
-  ['preference', 'Compare A / B', 'prompt, output_a, output_b'],
-  ['response_writing', 'Write ideal answer', 'prompt'],
-  ['safety_review', 'Safety review', 'prompt, output'],
-  ['error_annotation', 'Error annotation (highlight)', 'prompt, output'],
-  ['fact_verification', 'Fact verification (highlight)', 'prompt, output'],
-  ['de_identification', 'De-identify PHI (highlight)', 'text'],
-  ['clinical_extraction', 'Clinical extraction (NER)', 'text'],
-  ['classification', 'Classify text', 'text'],
-]
-const TASK_COLUMNS = Object.fromEntries(LS_TASK_TYPES.map(([v, , cols]) => [v, cols]))
 
 type Submission = {
   id: string
@@ -125,9 +111,8 @@ export default function AdminPage() {
   const [cMsg, setCMsg] = useState('')
   const [pickClin, setPickClin] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState<string | null>(null)
-  const [lsSyncing, setLsSyncing] = useState<string | null>(null)
-  const [lsMsg, setLsMsg] = useState<Record<string, string>>({})
-  const [lsType, setLsType] = useState<Record<string, string>>({})
+  const [taskBusy, setTaskBusy] = useState<string | null>(null)
+  const [taskMsg, setTaskMsg] = useState<Record<string, { text: string; ok: boolean }>>({})
   const [meta, setMeta] = useState<Record<string, { rate: string; difficulty: string }>>({})
   const [metaSaving, setMetaSaving] = useState<string | null>(null)
   const [metaMsg, setMetaMsg] = useState<Record<string, string>>({})
@@ -330,42 +315,25 @@ export default function AdminPage() {
     setTimeout(() => setCopied(c => (c === tag ? null : c)), 2000)
   }
 
-  const lsSync = async (id: string) => {
-    setLsSyncing(id)
-    setLsMsg(m => ({ ...m, [id]: '' }))
+  // Release pending items to clinicians, or re-score every released task from its stored
+  // answers. Both answer with { ok, message }.
+  const taskAction = async (id: string, action: 'release' | 'rebuild') => {
+    setTaskBusy(id)
+    setTaskMsg(m => ({ ...m, [id]: { text: '', ok: true } }))
     try {
-      const res = await fetch('/api/admin/ls-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
-        body: JSON.stringify({ project_id: id, task_type: lsType[id] || 'eval_rating' }),
-      })
-      const data = await res.json()
-      if (!data.ok) throw new Error(data.message ?? 'Sync failed.')
-      setLsMsg(m => ({ ...m, [id]: `Sent ${data.pushed} tasks to Label Studio` }))
-    } catch (err: unknown) {
-      setLsMsg(m => ({ ...m, [id]: err instanceof Error ? err.message : 'Sync failed.' }))
-    } finally {
-      setLsSyncing(null)
-    }
-  }
-
-  const lsPull = async (id: string) => {
-    setLsSyncing(id)
-    setLsMsg(m => ({ ...m, [id]: '' }))
-    try {
-      const res = await fetch('/api/admin/ls-pull', {
+      const res = await fetch(`/api/admin/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
         body: JSON.stringify({ project_id: id }),
       })
       const data = await res.json()
-      if (!data.ok) throw new Error(data.message ?? 'Pull failed.')
-      setLsMsg(m => ({ ...m, [id]: `Pulled ${data.pulled} labeled items back` }))
+      if (!data.ok) throw new Error(data.message ?? 'Failed.')
+      setTaskMsg(m => ({ ...m, [id]: { text: data.message, ok: true } }))
       load(key)
     } catch (err: unknown) {
-      setLsMsg(m => ({ ...m, [id]: err instanceof Error ? err.message : 'Pull failed.' }))
+      setTaskMsg(m => ({ ...m, [id]: { text: err instanceof Error ? err.message : 'Failed.', ok: false } }))
     } finally {
-      setLsSyncing(null)
+      setTaskBusy(null)
     }
   }
 
@@ -601,25 +569,17 @@ export default function AdminPage() {
               <button onClick={() => genApiKey(s.id)} disabled={apiKeyLoading === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
                 {apiKeyLoading === s.id ? 'Generating…' : 'API key ⚙'}
               </button>
-              {p.total > 0 && (
-                <select value={lsType[s.id] ?? 'eval_rating'} onChange={e => setLsType(t => ({ ...t, [s.id]: e.target.value }))} style={{ ...input, padding: '6px 8px', fontSize: 12, cursor: 'pointer' }}>
-                  {LS_TASK_TYPES.map(([v, lbl]) => <option key={v} value={v} style={{ background: '#fff' }}>{lbl}</option>)}
-                </select>
-              )}
-              {p.total > 0 && (
-                <span style={{ fontSize: 11.5, color: '#94a3b8' }}>needs: {TASK_COLUMNS[lsType[s.id] ?? 'eval_rating']}</span>
-              )}
-              <button onClick={() => lsSync(s.id)} disabled={lsSyncing === s.id || p.total === 0} style={{ ...label, background: 'none', border: 'none', cursor: p.total === 0 ? 'not-allowed' : 'pointer', color: '#2563EB' }}>
-                {lsSyncing === s.id ? 'Sending…' : 'Send to Label Studio ↗'}
+              <button onClick={() => taskAction(s.id, 'release')} disabled={taskBusy === s.id || p.total === 0} style={{ ...label, background: 'none', border: 'none', cursor: p.total === 0 ? 'not-allowed' : 'pointer', color: '#2563EB' }}>
+                {taskBusy === s.id ? 'Working…' : 'Release to clinicians ↗'}
               </button>
-              <button onClick={() => lsPull(s.id)} disabled={lsSyncing === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
-                Pull results ↓
+              <button onClick={() => taskAction(s.id, 'rebuild')} disabled={taskBusy === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
+                Re-score ↻
               </button>
               <button onClick={() => viewReport(s.id)} disabled={reportLoading === s.id} style={{ ...label, background: 'none', border: 'none', cursor: 'pointer', color: '#2563EB' }}>
                 {reportLoading === s.id ? 'Building…' : 'View report ↧'}
               </button>
               {p.total > 0 && <span style={label}>{p.done}/{p.total} labeled</span>}
-              {lsMsg[s.id] && <span style={{ ...label, color: lsMsg[s.id].startsWith('Sent') ? '#15a34a' : '#dc2626' }}>{lsMsg[s.id]}</span>}
+              {taskMsg[s.id]?.text && <span style={{ ...label, color: taskMsg[s.id].ok ? '#15a34a' : '#dc2626' }}>{taskMsg[s.id].text}</span>}
               {clinicians.length > 0 && (
                 <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginLeft: 'auto' }}>
                   <select

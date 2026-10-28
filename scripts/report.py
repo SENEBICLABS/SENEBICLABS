@@ -9,7 +9,7 @@ Writes three files (same manual-first posture as ingest):
   report_<id>.md          readable summary to hand to the client
   report_<id>_cases.csv   per-case table (every case, its disposition, verdict, ground truth)
 
-Reads the pulled verdicts already in project_items.label (run /ls/pull first).
+Reads the scored verdicts already in project_items.label.
 """
 import argparse
 import json

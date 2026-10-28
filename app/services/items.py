@@ -46,7 +46,7 @@ def record(db, project_id: str, idx: int, content: dict) -> dict:
 
 
 def parse_ts(stamp):
-    """An aware datetime from either store's timestamp (Label Studio's "…Z", Postgres's
+    """An aware datetime from a timestamp in either form ("…Z", or Postgres's
     "…+00:00", trailing fractional zeros trimmed), or None."""
     import re
     from datetime import datetime, timezone
