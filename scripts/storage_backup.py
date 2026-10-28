@@ -74,15 +74,30 @@ def _matches_key(path: str, data: bytes) -> bool | None:
     return None
 
 
+# The copies are client uploads, so decoding them is parsing untrusted input. Every Pillow
+# before 13 has published decoder vulnerabilities, and 13 needs Python 3.11 or later.
+MIN_PILLOW = 13
+
+
 def _readable(data: bytes) -> str | None:
-    """None if the bytes decode as an image, else why not."""
+    """None if the bytes decode as an image, else why not. Never decodes with a Pillow that
+    has known vulnerabilities: such an object is reported as not checked."""
     try:
+        import PIL
         from PIL import Image
+    except ImportError:
+        return "Pillow not installed: cannot check"
+    try:
+        major = int(str(PIL.__version__).split(".")[0])
+    except ValueError:
+        major = 0
+    if major < MIN_PILLOW:
+        return (f"Pillow {PIL.__version__} has known vulnerabilities, so this was not decoded: "
+                f"install Pillow {MIN_PILLOW} or later (needs Python 3.11 or later)")
+    try:
         with Image.open(io.BytesIO(data)) as im:
             im.verify()
         return None
-    except ImportError:
-        return "Pillow not installed: cannot check"
     except Exception as exc:
         return f"not a readable image ({type(exc).__name__})"
 

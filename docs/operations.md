@@ -58,6 +58,11 @@ pointed at it with the admin key header raises the same alarm without parsing th
 | Images (`client-images`) | `scripts/storage_backup.py --out <private folder> --expect <db report>` | Each copy is checked against the source's recorded size and must decode as an image; content-addressed keys are also checked against the bytes. Every image the database refers to must be present. Refuses to start if the copy would not fit on disk; reruns copy only new objects |
 | Label Studio (while it exists) | `~/senebiclabs-backups/backup.sh` | Task and annotation counts per project |
 
+The image check decodes client uploads, so it runs only with Pillow 13 or later, the first
+release without known decoder vulnerabilities, which needs Python 3.11 or later. With an older
+Pillow, or none, every object is reported as not checked and the run exits 1. Run it from a
+Python 3.11 environment with `pip install "Pillow>=13" supabase`.
+
 Run all three before every release and before every client project. The dumps hold client
 and clinician data: keep them in a private folder (the scripts set owner-only permissions)
 and under your retention policy. Never commit them, attach them to a ticket, or upload them
