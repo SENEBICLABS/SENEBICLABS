@@ -13,4 +13,4 @@ python-multipart==0.0.32
 resend==2.30.1
 # The backup scripts' tests import them: backup_verify needs psycopg, storage_backup Pillow.
 psycopg[binary]==3.2.3
-Pillow==12.2.0
+Pillow==13.0.0
