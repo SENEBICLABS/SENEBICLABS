@@ -22,11 +22,21 @@ SIGN_OFF_WAITING_WARN = timedelta(hours=48)
 DB_SLOW_WARN_MS = 2000
 MAX_IDS = 20
 
-# Leases (migration 009). A case is leased for an hour when it is served and may be
-# renewed up to four times, so eight hours is the longest a lease can legitimately live.
-# These thresholds sit clear of that, so a clinician taking a long time over a hard case
-# is never an alarm; only a lease that has outlived the rules is.
-LEASE_MAX_LIFE = timedelta(hours=8)
+# Leases (migration 009), with the longest legitimate life derived rather than quoted.
+#
+# `renew_reservation` has three bounds and only two of them bind at the defaults. A renewal
+# is refused once the lease has expired, so each one can add at most one lease length to
+# the expiry it found: four renewals reach 60 x 5 = 300 minutes and stop there. The
+# function's 480 minute absolute cap is never reached, and a threshold set to that figure
+# would let a lease run three hours past anything the rules allow before saying so.
+# tests/sql/test_item_reservations_sql.py measures both bounds against Postgres.
+LEASE_MINUTES = 60                              # reserve_next_item / renew_reservation default
+LEASE_MAX_RENEWALS = 4                          # renew_reservation default
+LEASE_MAX_LIFE = timedelta(minutes=LEASE_MINUTES * (LEASE_MAX_RENEWALS + 1))
+# Clock skew between this process and the database, and the moment between a renewal being
+# decided and the row being written. A lease at its exact maximum is legitimate; this is
+# only so the alarm does not flutter around the boundary.
+LEASE_LIFE_GRACE = timedelta(minutes=15)
 LEASE_UNSWEPT_WARN = timedelta(minutes=15)      # expired but still marked active
 LEASE_STARVATION_ALERT = timedelta(minutes=90)  # a project blocked on leases this long
 
@@ -157,7 +167,7 @@ def reservations(db, now):
     unswept = [r for r in live
                if (_parse(r.get("expires_at")) or now) < now - LEASE_UNSWEPT_WARN]
     overlong = [r for r in live
-                if (_parse(r.get("created_at")) or now) < now - LEASE_MAX_LIFE
+                if (_parse(r.get("created_at")) or now) < now - LEASE_MAX_LIFE - LEASE_LIFE_GRACE
                 and (_parse(r.get("expires_at")) or now) > now]
 
     out = [
@@ -169,7 +179,8 @@ def reservations(db, now):
         _check("reservations_overlong", "alert" if overlong else "ok", len(overlong),
                [r["task_no"] for r in overlong],
                "A lease has been alive longer than any review may run and has not been retired. "
-               "renew_reservation bounds this, so these point at a write that went around it"),
+               "The renewal count bounds it at five hours, so these point at a write that went "
+               "around renew_reservation"),
     ]
 
     # Work that exists and cannot be served: every open case in the project is at its

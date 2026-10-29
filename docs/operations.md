@@ -41,7 +41,7 @@ pointed at it with the admin key header raises the same alarm without parsing th
 | `second_readings_waiting` | Warning: authored work unread for a day | Nudge the pool's readers |
 | `adjudication_waiting` | Warning: a split held for a day | Nudge the pool's seniors, or settle it via `/project/admin/adjudicate` |
 | `reservations_lapsed_unswept` | Warning: leases past expiry still marked active for over 15 minutes | Serving is unaffected: an expired lease stops counting by itself. It says the tidy-up is not running. `select expire_reservations()`, then check the scheduled job |
-| `reservations_overlong` | Alert | A lease has lived past the 8 hour bound without being retired. `renew_reservation` cannot do that, so something wrote to `item_reservations` around it. Find the writer |
+| `reservations_overlong` | Alert | A lease has lived past the longest a renewal can carry it, which is five hours: 60 minutes per renewal and four renewals, because a renewal is refused once the lease has expired. `renew_reservation` cannot produce that, so something wrote to `item_reservations` around it. Find the writer |
 | `reservations_starving_work` | Alert: a project's every open case held for over 90 minutes | Clinicians are being told there is no work while the work is there. Usually abandoned sessions. `select expire_reservations()` frees them; if it recurs, look for a client that reserves without submitting |
 | `reservations` | Warning | The lease table could not be read, so none of the above was checked. If migration 009 is not applied yet, that is why, and cases are being served without being held |
 | `deliveries_failing` | Warning | The client's webhook is failing. It is retried on a growing schedule with the same event id; nothing to do yet |

@@ -211,31 +211,59 @@ def test_the_starvation_check_reports_itself_when_it_cannot_run():
     assert "check itself failed" in c["reservations_starving_work"]["note"]
 
 
-def test_a_lease_near_its_bound_but_inside_it_is_not_an_alarm():
-    """The boundary, deliberately: 7h50m with every renewal spent is still legitimate.
+def _lease(**over):
+    row = {"id": 1, "task_no": 1_000_000_010, "project_id": "p", "renewals": 4,
+           "status": "active", "expires_at": (NOW + timedelta(minutes=10)).isoformat()}
+    row.update(over)
+    return row
 
-    A monitor that fires just before a limit teaches an operator that the limit is the
-    alarm. The alarm is for a lease that has outlived the limit, which the renewal
-    function cannot produce.
+
+def test_the_longest_legitimate_lease_is_five_hours_not_eight():
+    """The bound is derived from the renewal rules, not quoted from the absolute cap.
+
+    `renew_reservation` refuses a lease that has already expired, so each renewal adds at
+    most one lease length to the expiry it found: four of them reach 60 x 5 = 300 minutes.
+    Its 480 minute cap is never reached at the defaults, and a threshold set there would
+    let a lease run three hours past the rules before anyone was told. Both bounds are
+    measured against Postgres in tests/sql/test_item_reservations_sql.py.
     """
-    out = ops_health.run(_db(item_reservations=[
-        {"id": 1, "task_no": 1_000_000_010, "project_id": "p", "renewals": 4,
-         "status": "active", "created_at": AGO(hours=7, minutes=50),
-         "expires_at": (NOW + timedelta(minutes=10)).isoformat()},
-    ]), NOW)
+    assert ops_health.LEASE_MAX_LIFE == timedelta(minutes=300)
+    assert ops_health.LEASE_MAX_LIFE == timedelta(
+        minutes=ops_health.LEASE_MINUTES * (ops_health.LEASE_MAX_RENEWALS + 1))
+
+
+def test_a_lease_at_its_contractual_maximum_is_not_an_alarm():
+    """Five hours with every renewal spent is the longest one case may legitimately be
+    held. A monitor that fires there teaches an operator that the limit is the alarm; the
+    alarm is for a lease that has outlived the limit."""
+    out = ops_health.run(_db(item_reservations=[_lease(created_at=AGO(hours=5))]), NOW)
     c = _by_name(out)
     assert c["reservations_overlong"]["status"] == "ok", c["reservations_overlong"]
     assert c["reservations_lapsed_unswept"]["status"] == "ok"
     assert out["status"] == "ok"
 
 
-def test_a_lease_just_past_its_bound_is_an_alarm():
-    """Ten minutes the other side of the same boundary."""
+def test_a_lease_inside_the_grace_past_the_maximum_is_not_an_alarm():
+    """The grace covers clock skew and the moment between deciding a renewal and writing
+    the row, so the alarm does not flutter around the boundary."""
     out = ops_health.run(_db(item_reservations=[
-        {"id": 1, "task_no": 1_000_000_011, "project_id": "p", "renewals": 4,
-         "status": "active", "created_at": AGO(hours=8, minutes=10),
-         "expires_at": (NOW + timedelta(minutes=10)).isoformat()},
-    ]), NOW)
+        _lease(created_at=AGO(hours=5, minutes=10))]), NOW)
+    assert _by_name(out)["reservations_overlong"]["status"] == "ok"
+
+
+def test_a_lease_past_the_maximum_and_its_grace_is_an_alarm():
+    """Five and a half hours: beyond anything the renewal rules can carry a lease to."""
+    out = ops_health.run(_db(item_reservations=[
+        _lease(created_at=AGO(hours=5, minutes=30))]), NOW)
+    c = _by_name(out)
+    assert c["reservations_overlong"]["status"] == "alert", c["reservations_overlong"]
+    assert out["status"] == "alert"
+    assert "five hours" in c["reservations_overlong"]["note"]
+
+
+def test_a_six_hour_lease_was_missed_by_the_eight_hour_figure():
+    """The regression this fix is for: six hours is anomalous and used to read as ok."""
+    out = ops_health.run(_db(item_reservations=[_lease(created_at=AGO(hours=6))]), NOW)
     assert _by_name(out)["reservations_overlong"]["status"] == "alert"
 
 

@@ -800,3 +800,71 @@ def test_the_migration_is_safe_to_run_twice(db):
                       " 'reserve_adjudication(uuid,uuid,integer)', 'execute')").fetchone()[0]
     assert [r[0] for r in db.execute("select pronargs from pg_proc"
                                      " where proname = 'renew_reservation'").fetchall()] == [5]
+
+
+def test_the_renewal_count_bounds_a_lease_to_five_hours_not_eight(db):
+    """What the longest legitimate lease actually is, measured rather than assumed.
+
+    Three bounds govern a lease: 60 minutes per renewal, four renewals, and an absolute
+    480 minutes. Only two of them can bind at once, and with the defaults it is the first
+    two: a renewal is refused once the lease has expired, so each one can add at most one
+    lease length to the expiry it found. Four of them therefore reach 60 x 5 = 300 minutes
+    and stop, and the 480 minute cap is never reached.
+
+    This matters because a monitor set to the 480 figure would let a lease run three hours
+    past anything the rules allow before saying so.
+
+    Renewing "at the last moment" is simulated by moving the row back in time rather than
+    waiting: each step places the lease about to expire, k hours after it was created.
+    """
+    pid = _project(db, reviewers=1)
+    (task,) = _items(db, pid, 1)
+    doc = _clinician(db)
+    pool = _pool(db, pid, doc)
+    _reserve(db, doc, pool)
+
+    lives = []
+    for k in range(1, 5):
+        # The lease was created k hours ago and has a minute left on it.
+        db.execute("update item_reservations set created_at = now() - make_interval(mins => %s),"
+                   " expires_at = now() + interval '1 minute' where task_no = %s",
+                   (k * 60 - 1, task))
+        assert _renew(db, doc, task) == "renewed", f"renewal {k} was refused"
+        lives.append(db.execute(
+            "select round(extract(epoch from (expires_at - created_at)) / 60)::int"
+            " from item_reservations where task_no = %s", (task,)).fetchone()[0])
+
+    # The fifth is refused, so the fourth renewal's expiry is the furthest a lease reaches.
+    db.execute("update item_reservations set created_at = now() - interval '299 minutes',"
+               " expires_at = now() + interval '1 minute' where task_no = %s", (task,))
+    assert _renew(db, doc, task) == "limit_reached"
+
+    assert max(lives) <= 300, f"a lease reached {max(lives)} minutes; the cap is 300"
+    assert max(lives) >= 295, f"a lease only reached {max(lives)} minutes; expected close to 300"
+
+
+def test_the_absolute_cap_binds_only_when_more_renewals_are_allowed(db):
+    """The 480 minute bound is not dead code; it is simply not what binds by default.
+
+    Raise the renewal allowance and it becomes the thing that stops the lease, which is
+    what it is for: a client renewing more often than we expect cannot outlast it.
+    """
+    pid = _project(db, reviewers=1)
+    (task,) = _items(db, pid, 1)
+    doc = _clinician(db)
+    pool = _pool(db, pid, doc)
+    _reserve(db, doc, pool)
+
+    # Seven and a half hours old, a minute left, and renewals to spare.
+    db.execute("update item_reservations set created_at = now() - interval '450 minutes',"
+               " expires_at = now() + interval '1 minute', renewals = 0 where task_no = %s",
+               (task,))
+    assert _renew(db, doc, task, max_renewals=20, max_total=480) == "renewed"
+    life = db.execute("select round(extract(epoch from (expires_at - created_at)) / 60)::int"
+                      " from item_reservations where task_no = %s", (task,)).fetchone()[0]
+    assert life == 480, f"the absolute cap did not clip the expiry: {life} minutes"
+
+    # And once past it, the lease is retired rather than renewed again.
+    db.execute("update item_reservations set created_at = now() - interval '481 minutes',"
+               " expires_at = now() + interval '1 minute' where task_no = %s", (task,))
+    assert _renew(db, doc, task, max_renewals=20, max_total=480) == "too_old"
