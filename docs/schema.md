@@ -10,7 +10,7 @@ and are now declared (`health 007`, `workforce 022`).
 
 | Owner | Tables |
 |---|---|
-| HEALTH (`supabase_schema.sql`, `migrations/`) | `project_submissions`, `project_items`, `audit_events`, `operators`, `api_keys`, `clinical_failures`, `expert_applications`, `waitlist`, `project_clinicians`, legacy `clinicians` columns, and the native task store: `task_answers`, `answer_events` (`ls_task_map` was dropped by migration 008) |
+| HEALTH (`supabase_schema.sql`, `migrations/`) | `project_submissions`, `project_items`, `audit_events`, `operators`, `api_keys`, `clinical_failures`, `expert_applications`, `waitlist`, `project_clinicians`, legacy `clinicians` columns, and the native task store: `task_answers`, `answer_events`, `item_reservations` (`ls_task_map` was dropped by migration 008) |
 | workforce (`database.sql`, `migrations/`) | `clinicians`, `pools`, `pool_eligibility`, `task_completions`, `task_flags`, `review_items`, `sessions`, `sign_in_tokens`, `invites`, `access_requests`, `agreement_acceptances`, `calibration_attempts` |
 
 ## Order
@@ -33,6 +33,7 @@ A fresh database is built by applying, in order:
 | HEALTH `006_item_versions` | Item versions, one current item per index, answers outlive item deletion attempts | Yes | As above |
 | HEALTH `007_declare_api_keys` | Declares `api_keys` (already in production) | Yes | None needed |
 | workforce `022_declare_production_schema` | Declares `agreement_acceptances` and `invites.token_hash`, makes the unused plain `token` optional | Yes | None needed |
+| HEALTH `009_item_reservations` | `item_reservations`, and the functions that hold a case for the clinician it was served to | Yes | Drop the table and its functions; serving falls back to offering the lowest open case |
 
 Each runs in one transaction or is made only of `if not exists` statements, and each is
 safe to re-run.

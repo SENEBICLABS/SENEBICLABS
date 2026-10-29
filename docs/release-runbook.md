@@ -1,9 +1,28 @@
 # Release runbook: native task store
 
 Every production-changing step is marked **[approval]**: only the owner authorises it, and
-each one is a separate go. Commands use `$DB` for the database's **direct** connection
-string, `$API` for the API base URL, and `$ADMIN` for an operator key. Nothing here prints
-secrets or client data.
+each one is a separate go. Commands use `$API` for the API base URL and `$ADMIN` for an
+operator key. Nothing here prints secrets or client data.
+
+**The database's direct connection string is not in this repository and not in `.env`.**
+The applications never use one: they reach Supabase over HTTPS through PostgREST
+(`SUPABASE_URL` and the service key), and so does `backup.sh`. Only the preflight below
+needs a direct connection, and it is the owner's to supply, once, from Supabase:
+
+> Project Settings → Database → Connection string → URI.
+
+Put it in a file only you can read and point the preflight at the file, so the password is
+never in an argument (where `ps` shows it) or in shell history:
+
+```bash
+umask 077 && printf '%s' 'postgresql://...' > ~/.senebi-dsn   # paste it here, once
+chmod 600 ~/.senebi-dsn
+python scripts/schema_check.py --dsn-file ~/.senebi-dsn
+```
+
+`DATABASE_URL=... python scripts/schema_check.py` works too. An empty value is **refused**:
+`psycopg.connect("")` is read by libpq as "use the local defaults", so a blank variable
+used to report on whatever database was running on the laptop.
 
 Steps 1 to 5 were carried out for the native-pilot release in October 2026, when HEALTH
 still served Label Studio projects alongside the task store; the migrations they apply are
@@ -28,8 +47,8 @@ scripts/native_e2e_stack.sh up                                    # then the pri
 scripts/native_e2e_stack.sh down
 # workforce
 npx vitest run && npx tsc --noEmit && npx eslint . && npx next build
-# production, read-only
-python scripts/schema_check.py --dsn "$DB"                        # baseline_missing must be []
+# production, read-only (see the note at the top for where the connection string comes from)
+python scripts/schema_check.py --dsn-file ~/.senebi-dsn            # baseline_missing must be []
 ```
 
 **Pass:** every suite green; `schema_check` shows no missing baseline columns and
@@ -48,6 +67,7 @@ install -m 600 /dev/null ~/.config/senebiclabs/backup-db.url
 nano ~/.config/senebiclabs/backup-db.url          # paste the session pooler string, save
 
 D=~/senebiclabs-backups/<date>-release
+mkdir -p $D/db $D/images        # the preflight measures the output folder, so it must exist
 python scripts/backup_verify.py --out $D/db --preflight-only   # metadata only; dumps nothing
 python scripts/backup_verify.py --out $D/db       # reads the file above; refuses it if not mode 600
 python scripts/storage_backup.py --out $D/images --expect $D/db/db-<stamp>.json
@@ -104,6 +124,7 @@ In the Supabase SQL editor, in this order, checking after each:
 | 3 | HEALTH `migrations/006_item_versions.sql` | `--require health_006` |
 | 4 | HEALTH `migrations/007_declare_api_keys.sql` | `--require health_007` |
 | 5 | workforce `migrations/022_declare_production_schema.sql` | `--require workforce_022` |
+| 6 | HEALTH `migrations/009_item_reservations.sql` | `--require health_009` |
 
 Then `notify pgrst, 'reload schema';`. Check that the live apps are unaffected: the
 dashboard loads, a pool serves a case, and `/project/results` answers for an existing
@@ -112,6 +133,49 @@ project.
 Before the first, `schema_check` (step 1) shows which of these are already applied. 007
 and 022 only declare objects production already has. 022 changes `invites.token` only if
 that column exists.
+
+009 adds a table and functions and changes nothing that exists, so the live apps keep
+working after it exactly as before: serving only starts holding cases once the workforce
+app calls `reserve_next_item`, which is a separate deploy.
+
+### Rolling out reservations
+
+Two deploys with a gap, in this order, because the order is what makes it reversible.
+
+| Step | Do | Confirm before the next step |
+|---|---|---|
+| 1 | Apply `009` to Supabase, then `notify pgrst, 'reload schema';` | `schema_check --dsn-file ~/.senebi-dsn --require health_009` is READY. The platform behaves exactly as before: nothing calls the new functions yet |
+| 1a | Confirm PostgREST can see them: `select 1 from pg_proc where proname = 'reserve_adjudication'` returns, and a call through the API does not answer `PGRST202` | Without the reload the functions exist in the database and are invisible over the API. Serving then falls back to a 502 on every held case, which is how this was found rather than reasoned about |
+| 2 | Watch `GET /project/admin/ops-health` | `reservations` is no longer a warning, and the three lease checks read `ok` |
+| 3 | Deploy the clinician platform with the reservation changes | A clinician is served a case, and a row appears in `item_reservations` for it |
+| 4 | Watch for one working session | `reservations_starving_work` stays `ok`, and no clinician reports being told their answer could not be saved |
+
+**If step 3 goes wrong**, roll the clinician platform back to the previous deploy. That
+alone restores the old behaviour, because the old code never calls the reservation
+functions: cases go back to being served without being held, which is where we are today.
+Leave `009` in place. Nothing reads `item_reservations` except the code you just rolled
+back, and `item_slots_taken` is only consulted by functions that code calls.
+
+**Do not drop the table to recover.** A lease is not clinical evidence and nothing is lost
+with it, but `task_answers` references `project_items.task_no` and the cascade paths are
+easier to reason about with the table present and unused than with it gone.
+
+**If cases stop being served** and `reservations_starving_work` is in alert, the immediate
+relief is `select expire_reservations();`, which frees every lapsed lease at once. That is
+safe at any time: it only changes rows whose `expires_at` has already passed, and serving
+already ignores those. If it recurs, a client is reserving without submitting.
+
+### Backups, and one thing to do after a restore
+
+`~/senebiclabs-backups/backup.sh` discovers every table from the PostgREST schema, so
+`item_reservations` is captured with the rest and needs no change. Nothing in it is
+clinical evidence: a lease records that a case was shown to someone, and the answers are
+in `task_answers`.
+
+**After restoring a backup, clear the leases**: `update item_reservations set status =
+'expired' where status = 'active';`. A restored lease looks live and holds a case nobody is
+reading, for up to its full hour, and a restore is exactly the moment when nobody is
+holding anything. Losing them costs nothing, because a lease is not work.
 
 **If a migration fails:** the transactional ones (005, 006) leave nothing behind; fix and
 re-run. The others are idempotent; re-run. **Never** restore the database for a failed

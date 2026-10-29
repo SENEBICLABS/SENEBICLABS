@@ -4,6 +4,8 @@ recall / confusion matrix out; missing corrected_label flagged not dropped; cann
 unlabeled excluded; critical-miss list complete. Run: PYTHONPATH=. python3 tests/test_report.py
 (pytest not installed here, so self-running. Also prints a sample rendered report at the end.)
 """
+import json
+
 from app.services import report as R
 
 
@@ -275,6 +277,73 @@ def test_the_report_says_who_stands_behind_it_and_nothing_about_how_we_work():
     for leak in ("senior", "second clinician", "disagree", "averag", "Okafor", "Godwin",
                  "1", "2", "3"):
         assert leak not in a["statement"], leak
+
+
+def test_a_disagreement_never_carries_a_ratio_that_names_the_reviewer_count():
+    """0.333 is three readers and nothing else, so a ratio is a staffing disclosure.
+
+    The band says how divided the case was, which is what a client needs in order to read
+    the finding, and says nothing about how many people divided over it.
+    """
+    items = [
+        {"idx": 0, "status": "done", "content": {"prediction": "x", "case_id": "A"},
+         "label": {"verdict": "Correct", "_reviewers": 3, "_agreement": 1.0}},
+        {"idx": 1, "status": "done", "content": {"prediction": "x", "case_id": "B"},
+         "label": {"verdict": "Incorrect", "correct_label": "y", "_reviewers": 3,
+                   "_agreement": 0.333, "_disagreed": True}},
+        {"idx": 2, "status": "done", "content": {"prediction": "x", "case_id": "C"},
+         "label": {"verdict": "Partial", "_reviewers": 3, "_agreement": 0.667,
+                   "_disagreed": True}},
+    ]
+    for rep in (R.compute_report(items, ["x", "y"]),
+                R.compute_dataset_report(items, {"verdict": {"type": "single"}}, "label")):
+        cases = rep["qa"]["disagreement_cases"]
+        assert cases, rep["qa"]
+        for c in cases:
+            assert "agreement" not in c, c
+            assert "_reviewers" not in c and "reviewers" not in c, c
+        assert {c["concurrence"] for c in cases} == {"split", "majority"}
+        # The aggregate stays: an average over items names no denominator.
+        assert rep["qa"]["mean_agreement"]
+
+    # No per-case entry carries a number at all, which is where the denominator showed.
+    # The aggregate is deliberately left alone: it is an average over items, and a client
+    # cannot invert it to a reviewer count. With very few reviewed cases it can coincide
+    # with one case's ratio, which is a residual noted in the policy, not a disclosure.
+    rep = R.compute_report(items, ["x", "y"])
+    for c in rep["qa"]["disagreement_cases"]:
+        assert not any(isinstance(v, float) for v in c.values()), c
+        assert "0.333" not in json.dumps(c) and "0.667" not in json.dumps(c), c
+
+
+def test_a_multi_reviewed_dataset_report_renders_without_a_reviewer_count():
+    """The renderer asked `qa` for a reviewer count that had been deliberately removed.
+
+    Two bugs in one line: every multi-reviewed labelling report raised KeyError instead of
+    rendering, and had the key existed it would have printed the clinician count into a
+    client's deliverable. scripts/report.py is the caller, so the crash was reachable by
+    the tool an operator uses to produce one.
+    """
+    items = [
+        {"idx": 0, "status": "done", "content": {"text": "a"},
+         "label": {"label": "A", "_reviewers": 3, "_agreement": 1.0}},
+        {"idx": 1, "status": "done", "content": {"text": "b"},
+         "label": {"label": "B", "_reviewers": 3, "_agreement": 0.333, "_disagreed": True}},
+    ]
+    rep = R.compute_dataset_report(items, {"label": {"type": "single"}}, "label")
+    assert rep["qa"] is not None and "reviewers" not in rep["qa"]
+
+    md = R.render_markdown(rep)                      # used to raise KeyError('reviewers')
+    assert "Inter-reviewer agreement" in md
+    section = md.split("## Inter-reviewer agreement")[1].split("##")[0]
+    assert "Reviewers" not in section and "3" not in section
+    assert "Mean agreement" in section
+
+    # The same for an evaluation report, which shares the qa builder.
+    ev = R.compute_report(items, None)
+    if ev.get("qa"):
+        assert "reviewers" not in ev["qa"]
+        R.render_markdown(ev)
 
 
 def test_the_client_is_never_told_how_many_clinicians_saw_a_case():

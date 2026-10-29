@@ -359,7 +359,8 @@ When delivered:
     "accuracy": { "value": 0.8, "correct": 160, "assessable": 200, "basis": "verdict+class" },
     "critical_misses": [ ... ],
     "per_class": { ... },
-    "qa": { "mean_agreement": 0.86, "reviewed_items": 200, "disagreements": 12 }
+    "qa": { "mean_agreement": 0.86, "reviewed_items": 200, "disagreements": 12,
+            "disagreement_cases": [{ "idx": 7, "case_id": "CASE-7", "concurrence": "split" }] }
   },
   "items": [
     { "idx": 0, "content": { "case_id": "case_001", ... },
@@ -369,7 +370,34 @@ When delivered:
 ```
 
 Each item is reviewed by multiple licensed clinicians, and the `qa` block reports their
-mean agreement and how many items needed adjudication — so you can trust the numbers.
+mean agreement and how many items needed adjudication, so you can trust the numbers.
+
+`disagreement_cases` names the cases that were not settled on the first reading.
+`concurrence` says how divided each one was: `unanimous`, `majority` or `split`.
+
+### What the agreement figures do and do not say
+
+A deliberate line, because the two sides of it are easy to confuse:
+
+| Reported | Withheld |
+|---|---|
+| `mean_agreement`: how often readings matched, across the reviewed cases | how many clinicians read a case |
+| `disagreements` and `reviewed_items`: how much needed settling | who they were, or anything about who they were |
+| `concurrence` per case: unanimous, majority or split | the ratio behind that band |
+
+A per-case ratio is arithmetic on the number of readers: `0.333` is three of them and
+nothing else, so publishing one would state our staffing whether or not we meant to. The
+band carries what a client needs in order to read the finding, which is how far from
+settled the case was, and carries nothing else.
+
+The aggregate is left as a number on purpose. It is an average over cases, not over
+readers, and cannot be inverted into a reviewer count. One residual: where very few cases
+were reviewed, that average can coincide with a single case's ratio. It is a weak signal
+and no client has ever had a report that small, but it is the reason the aggregate is
+never reported per case.
+
+`report.py` is where this is enforced, and `tests/test_report.py` asserts it, alongside the
+rule that no reviewer identity or count reaches a client at all.
 
 The `assurance` block states who stands behind the result: licensed clinicians,
 independent of you and of the system under evaluation, with Senebiclabs accountable for

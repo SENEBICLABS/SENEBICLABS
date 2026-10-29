@@ -5,8 +5,20 @@ Read-only by construction: the session is set read-only before any query, so thi
 write even if pointed at production by mistake. It prints names and counts, never row
 contents.
 
-    python scripts/schema_check.py --dsn "$DATABASE_URL"                    # report
-    python scripts/schema_check.py --dsn "$DATABASE_URL" --require health_006  # gate a step
+Where the connection comes from, in order. A connection string holds the database
+password, and anything passed as an argument is visible in `ps` and left in shell history,
+so the first two ways exist to keep it out of both:
+
+    DATABASE_URL=... python scripts/schema_check.py                 # from the environment
+    python scripts/schema_check.py --dsn-file ~/.senebi-dsn         # from a mode-600 file
+    python scripts/schema_check.py --dsn "postgresql://..."         # for a throwaway database
+
+An empty string is refused rather than used. `psycopg.connect("")` falls back to libpq's
+defaults, which means the local socket: a blank `$DB` would quietly report on whatever
+database happens to be running here, and a release gate that passes against the wrong
+database is worse than one that fails.
+
+    python scripts/schema_check.py --require health_009             # gate a step
 
 Steps, in release order (see docs/release-runbook.md):
     workforce_021   pools.project_id (and the hand-added pools columns, declared)
@@ -16,17 +28,21 @@ Steps, in release order (see docs/release-runbook.md):
     workforce_022   agreement_acceptances and hashed invite tokens declared
     health_008      Label Studio removed: task_store native-only, ls_task_map and
                     project_submissions.ls_project_id dropped (a removal: "applied" means gone)
+    health_009      item_reservations: a case is held from the moment it is served
 
 --require STEP exits 1 unless STEP and every step before it are fully present, and every
 integrity check that would make the NEXT step fail is clear.
 """
 import argparse
 import json
+import os
+import pathlib
 import sys
 
 import psycopg
 
-STEPS = ["workforce_021", "health_005", "health_006", "health_007", "workforce_022", "health_008"]
+STEPS = ["workforce_021", "health_005", "health_006", "health_007", "workforce_022", "health_008",
+         "health_009"]
 
 COLUMNS = {
     "workforce_021": {"pools": ["project_id", "eval_config", "maximum_annotations"]},
@@ -37,18 +53,25 @@ COLUMNS = {
     "health_007": {"api_keys": ["email", "key_hash", "last4", "label", "revoked", "last_used_at"]},
     "workforce_022": {"agreement_acceptances": ["clinician_id", "version", "accepted_at", "ip"],
                       "invites": ["token_hash"]},
+    "health_009": {"item_reservations": ["task_no", "project_id", "pool_id", "clinician_id",
+                                         "item_version", "status", "expires_at", "renewals",
+                                         "release_reason"]},
 }
 FUNCTIONS = {
     "health_005": ["native_ceiling", "native_task_for_pool", "native_submit_judgement", "native_approve_review",
                    "native_task_states", "claim_answer_events", "finish_answer_event", "request_rebuild",
                    "retry_failed_events"],
     "health_006": ["ingest_item_version"],
+    "health_009": ["item_slots_taken", "item_lease_states", "reservation_health",
+                   "reserve_next_item", "reserve_adjudication", "renew_reservation",
+                   "release_reservation", "settle_reservation", "expire_reservations"],
 }
 INDEXES = {
     "workforce_021": ["pools_one_per_project"],
     "health_005": ["project_items_task_no_key", "answer_events_one_processing_per_task"],
     "health_006": ["project_items_one_current_per_idx"],
     "workforce_022": ["invites_token_hash_key"],
+    "health_009": ["item_reservations_one_live"],
 }
 # What a step takes away. 005 also created ls_task_map; 008 drops it again.
 REMOVED = {
@@ -121,10 +144,26 @@ def inspect(c) -> dict:
         checks["label_studio_projects"] = _one(
             c, "select count(*) from project_submissions where task_store <> 'native'")
         checks["label_studio_pools"] = _one(c, "select count(*) from pools where project_id is null")
-        checks["anon_can_call_store"] = bool(_one(
-            c, "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
-               "where n.nspname = 'public' and p.proname in ('native_submit_judgement', 'claim_answer_events') "
-               "and has_function_privilege('anon', p.oid, 'execute')"))
+        # `has_function_privilege` raises if the role is absent, which it is in a restore of
+        # a backup: roles live in the cluster, not in a database dump. Reported as null
+        # rather than crashing, so a restored backup can be checked against this too.
+        checks["anon_can_call_store"] = (
+            bool(_one(
+                c, "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
+                   "where n.nspname = 'public' and p.proname in ('native_submit_judgement', 'claim_answer_events') "
+                   "and has_function_privilege('anon', p.oid, 'execute')"))
+            if _one(c, "select count(*) from pg_roles where rolname = 'anon'") else None)
+        # Migration 009 grants EXECUTE on its functions to service_role explicitly, because
+        # revoking from `public` strips the default. If the role is not there the migration
+        # aborts, which is safe but wastes an approval, so it is checked before the go.
+        checks["service_role_present"] = bool(_one(
+            c, "select count(*) from pg_roles where rolname = 'service_role'"))
+        # 009 drops an earlier four-argument renew_reservation. Reported so the operator can
+        # see whether that drop will do anything, and that no overload is left behind.
+        checks["renew_reservation_signatures"] = _one(
+            c, "select coalesce(string_agg(pronargs::text, ',' order by pronargs), '') "
+               "from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
+               "where n.nspname = 'public' and p.proname = 'renew_reservation'")
     return {"steps": steps, "checks": checks}
 
 
@@ -145,17 +184,63 @@ def gate(report: dict, require: str) -> list[str]:
         if left:
             reasons.append(f"{left} Label Studio projects or pools remain; migration 008 would refuse. "
                            "Run scripts/sql/delete_label_studio_test_data.sql first")
+    if nxt == "health_009" or require == "health_009":
+        if not report["checks"].get("service_role_present", True):
+            reasons.append("the service_role role does not exist, so migration 009's grants "
+                           "would abort the migration. Check the database is the Supabase one")
     if report["checks"].get("anon_can_call_store"):
         reasons.append("the anon role can execute native store functions")
     return reasons
 
 
+def _resolve_dsn(args) -> str:
+    """The connection string, from the least exposed source available.
+
+    Never returns an empty string: that is the one value libpq treats as "use the local
+    defaults", and a gate that silently reports on the wrong database is the failure this
+    whole script exists to prevent.
+    """
+    if args.dsn_file:
+        path = pathlib.Path(args.dsn_file).expanduser()
+        if not path.is_file():
+            raise ValueError(f"no such DSN file: {args.dsn_file}")
+        mode = path.stat().st_mode & 0o077
+        if mode:
+            raise ValueError(f"{args.dsn_file} is readable by others (mode "
+                             f"{oct(path.stat().st_mode & 0o777)}); chmod 600 it first")
+        dsn = path.read_text().strip()
+        if not dsn:
+            raise ValueError(f"{args.dsn_file} is empty")
+        return dsn
+
+    if args.dsn and args.dsn.strip():
+        return args.dsn.strip()
+
+    env = (os.environ.get("DATABASE_URL") or "").strip()
+    if env:
+        return env
+
+    raise ValueError(
+        "no connection string. $DB or $DATABASE_URL is empty, and an empty one would be "
+        "read as the local database rather than production. Set DATABASE_URL, or pass "
+        "--dsn-file with a mode-600 file holding the direct connection string"
+    )
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dsn", required=True)
+    ap.add_argument("--dsn", help="connection string; prefer DATABASE_URL or --dsn-file")
+    ap.add_argument("--dsn-file", help="a file containing only the connection string, mode 600")
     ap.add_argument("--require", choices=STEPS)
     args = ap.parse_args(argv)
-    with psycopg.connect(args.dsn, autocommit=True) as c:
+
+    try:
+        dsn = _resolve_dsn(args)
+    except ValueError as exc:
+        print(f"NOT READY: {exc}", file=sys.stderr)
+        return 2
+
+    with psycopg.connect(dsn, autocommit=True) as c:
         c.execute("set session characteristics as transaction read only")
         c.execute("set default_transaction_read_only = on")
         report = inspect(c)

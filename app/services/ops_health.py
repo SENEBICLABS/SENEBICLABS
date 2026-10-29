@@ -22,6 +22,24 @@ SIGN_OFF_WAITING_WARN = timedelta(hours=48)
 DB_SLOW_WARN_MS = 2000
 MAX_IDS = 20
 
+# Leases (migration 009), with the longest legitimate life derived rather than quoted.
+#
+# `renew_reservation` has three bounds and only two of them bind at the defaults. A renewal
+# is refused once the lease has expired, so each one can add at most one lease length to
+# the expiry it found: four renewals reach 60 x 5 = 300 minutes and stop there. The
+# function's 480 minute absolute cap is never reached, and a threshold set to that figure
+# would let a lease run three hours past anything the rules allow before saying so.
+# tests/sql/test_item_reservations_sql.py measures both bounds against Postgres.
+LEASE_MINUTES = 60                              # reserve_next_item / renew_reservation default
+LEASE_MAX_RENEWALS = 4                          # renew_reservation default
+LEASE_MAX_LIFE = timedelta(minutes=LEASE_MINUTES * (LEASE_MAX_RENEWALS + 1))
+# Clock skew between this process and the database, and the moment between a renewal being
+# decided and the row being written. A lease at its exact maximum is legitimate; this is
+# only so the alarm does not flutter around the boundary.
+LEASE_LIFE_GRACE = timedelta(minutes=15)
+LEASE_UNSWEPT_WARN = timedelta(minutes=15)      # expired but still marked active
+LEASE_STARVATION_ALERT = timedelta(minutes=90)  # a project blocked on leases this long
+
 
 def _parse(stamp) -> datetime | None:
     if not stamp:
@@ -38,9 +56,11 @@ def _check(name, status, count, ids=(), note=""):
             "ids": [str(i) for i in list(ids)[:MAX_IDS]], "note": note}
 
 
-def _missing_table(exc: Exception) -> bool:
+def _missing_object(exc: Exception) -> bool:
+    """A table or function this database does not have. Matches PostgREST and psycopg."""
     text = str(exc)
-    return "42P01" in text or "PGRST205" in text or "does not exist" in text
+    return "42P01" in text or "42883" in text or "PGRST205" in text \
+        or "PGRST202" in text or "does not exist" in text
 
 
 def answer_events(db, now):
@@ -49,8 +69,15 @@ def answer_events(db, now):
                          .select("id,task_no,project_id,status,attempts,created_at,locked_at")
                          .in_("status", ["pending", "processing", "failed"]).order("id"))
     except Exception as exc:
-        if _missing_table(exc):
-            return [_check("scoring_events", "ok", 0, note="native task store not installed")]
+        if _missing_object(exc):
+            # Before migration 008 this meant "not installed yet". There is no other store
+            # now, so it means the store is gone, and a check that could not run must
+            # never read as a pass.
+            # Not "ok": this check did not run. Not an alert either, because during a
+            # migration the table is legitimately absent for a few minutes.
+            return [_check("scoring_events", "warn", 1,
+                           note="answer_events could not be read, so nothing here was checked. "
+                                "If migration 005 is applied, no answer can be scored")]
         raise
     old = [r for r in rows if r["status"] == "pending" and (_parse(r.get("created_at")) or now) < now - EVENT_PENDING_ALERT]
     failed = [r for r in rows if r["status"] == "failed"]
@@ -80,7 +107,7 @@ def review_queues(db, now):
         out.append(_check("second_readings_waiting", "warn" if old else "ok", len(old),
                           [r["ls_task_id"] for r in old], "Authored work waiting over a day for a second reader"))
     except Exception as exc:
-        if not _missing_table(exc):
+        if not _missing_object(exc):
             raise
     held = fetch_all(lambda: db.table("project_items").select("project_id,task_no,labeled_at")
                      .eq("status", "needs_adjudication").order("id"))
@@ -116,6 +143,75 @@ def deliveries(db, now):
     ]
 
 
+def reservations(db, now):
+    """Leases: swept, bounded, and not starving a pool of work.
+
+    None of these affects whether serving is correct. A lapsed lease stops counting by
+    predicate, so the platform recovers with or without the sweep. They are here because
+    each one means something an operator can act on, and because a pool that looks empty
+    to every clinician while it still holds work is invisible from any other angle.
+    """
+    try:
+        live = fetch_all(lambda: db.table("item_reservations")
+                         .select("id,task_no,project_id,created_at,expires_at,renewals")
+                         .eq("status", "active").order("id"))
+    except Exception as exc:
+        if _missing_object(exc):
+            # Same rule: a check that could not run is reported, not passed.
+            return [_check("reservations", "warn", 1,
+                           note="item_reservations could not be read, so nothing here was checked. "
+                                "Until migration 009 is applied, cases are served without being "
+                                "held and two clinicians can be given the same one")]
+        raise
+
+    unswept = [r for r in live
+               if (_parse(r.get("expires_at")) or now) < now - LEASE_UNSWEPT_WARN]
+    overlong = [r for r in live
+                if (_parse(r.get("created_at")) or now) < now - LEASE_MAX_LIFE - LEASE_LIFE_GRACE
+                and (_parse(r.get("expires_at")) or now) > now]
+
+    out = [
+        _check("reservations_lapsed_unswept", "warn" if unswept else "ok", len(unswept),
+               [r["task_no"] for r in unswept],
+               "Leases past their expiry still marked active. Serving is unaffected, because an "
+               "expired lease stops counting by itself; this says the tidy-up is not running. "
+               "Run select expire_reservations()"),
+        _check("reservations_overlong", "alert" if overlong else "ok", len(overlong),
+               [r["task_no"] for r in overlong],
+               "A lease has been alive longer than any review may run and has not been retired. "
+               "The renewal count bounds it at five hours, so these point at a write that went "
+               "around renew_reservation"),
+    ]
+
+    # Work that exists and cannot be served: every open case in the project is at its
+    # ceiling, and a live lease rather than a recorded answer is why.
+    try:
+        rows = db.rpc("reservation_health", {}).execute().data or []
+    except Exception as exc:
+        if _missing_object(exc):
+            return out + [_check("reservations_starving_work", "warn", 0,
+                                 note="reservation_health is not in this database, so starvation "
+                                      "was not checked. It comes with migration 009")]
+        return out + [_check("reservations_starving_work", "alert", 1,
+                             note=f"The starvation check itself failed ({type(exc).__name__})")]
+
+    starved = []
+    for r in rows:
+        if int(r.get("servable_items") or 0) > 0 or int(r.get("lease_blocked_items") or 0) == 0:
+            continue
+        since = _parse(r.get("oldest_blocking_lease"))
+        if since and since < now - LEASE_STARVATION_ALERT:
+            starved.append(r["project_id"])
+
+    out.append(_check("reservations_starving_work", "alert" if starved else "ok", len(starved),
+                      starved,
+                      "Every open case in these projects is held, and has been for over an hour "
+                      "and a half, so clinicians are told there is no work while the work is "
+                      "there (project ids). Check for abandoned sessions, then "
+                      "select expire_reservations()"))
+    return out
+
+
 def database(db):
     started = time.monotonic()
     db.table("project_submissions").select("id").limit(1).execute()
@@ -130,6 +226,7 @@ def run(db, now: datetime | None = None) -> dict:
     for name, fn in (("database", lambda: database(db)),
                      ("scoring_events", lambda: answer_events(db, now)),
                      ("review_queues", lambda: review_queues(db, now)),
+                     ("reservations", lambda: reservations(db, now)),
                      ("deliveries", lambda: deliveries(db, now))):
         try:
             checks.extend(fn())

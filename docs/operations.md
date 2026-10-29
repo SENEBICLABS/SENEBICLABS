@@ -37,8 +37,13 @@ pointed at it with the admin key header raises the same alarm without parsing th
 | `scoring_events_failed` | Alert: scoring gave up after 5 tries | `GET /project/admin/answer-events/{project}` shows `last_error`. Fix the cause, then `POST /project/admin/answer-events/retry` |
 | `scoring_events_abandoned` | Warning | A worker died mid-way. The next drain reclaims it after 5 minutes; nothing to do unless it repeats |
 | `scoring_events_retrying` | Warning | Failed once, retrying. Watch it |
+| `scoring_events` | Warning | `answer_events` could not be read, so no scoring check ran. A check that cannot run is reported as a warning, never as a pass |
 | `second_readings_waiting` | Warning: authored work unread for a day | Nudge the pool's readers |
 | `adjudication_waiting` | Warning: a split held for a day | Nudge the pool's seniors, or settle it via `/project/admin/adjudicate` |
+| `reservations_lapsed_unswept` | Warning: leases past expiry still marked active for over 15 minutes | Serving is unaffected: an expired lease stops counting by itself. It says the tidy-up is not running. `select expire_reservations()`, then check the scheduled job |
+| `reservations_overlong` | Alert | A lease has lived past the longest a renewal can carry it, which is five hours: 60 minutes per renewal and four renewals, because a renewal is refused once the lease has expired. `renew_reservation` cannot produce that, so something wrote to `item_reservations` around it. Find the writer |
+| `reservations_starving_work` | Alert: a project's every open case held for over 90 minutes | Clinicians are being told there is no work while the work is there. Usually abandoned sessions. `select expire_reservations()` frees them; if it recurs, look for a client that reserves without submitting |
+| `reservations` | Warning | The lease table could not be read, so none of the above was checked. If migration 009 is not applied yet, that is why, and cases are being served without being held |
 | `deliveries_failing` | Warning | The client's webhook is failing. It is retried on a growing schedule with the same event id; nothing to do yet |
 | `deliveries_given_up` | Alert | The client refused it (4xx) or the retries ran out. Tell the client; they can poll `/results` or call `/webhook/redeliver` |
 | `deliveries_awaiting_sign_off` | Warning: reviewed two days ago, not delivered | Deliver it: `/project/admin/advance` |

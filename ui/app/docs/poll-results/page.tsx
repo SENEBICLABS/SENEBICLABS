@@ -40,7 +40,8 @@ export default function Page() {
     "accuracy": { "value": 0.8, "correct": 160, "assessable": 200, "basis": "verdict+class" },
     "critical_misses": [ ... ],
     "per_class": { ... },
-    "qa": { "mean_agreement": 0.86, "reviewed_items": 200, "disagreements": 12 }
+    "qa": { "mean_agreement": 0.86, "reviewed_items": 200, "disagreements": 12,
+            "disagreement_cases": [{ "idx": 7, "case_id": "CASE-7", "concurrence": "split" }] }
   },
   "items": [
     { "idx": 0, "content": { "case_id": "case_001", ... },

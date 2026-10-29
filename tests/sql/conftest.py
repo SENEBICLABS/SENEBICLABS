@@ -47,6 +47,10 @@ create schema if not exists auth;
 create or replace function auth.uid() returns uuid language sql as 'select null::uuid';
 do $$ begin create role anon; exception when duplicate_object then null; end $$;
 do $$ begin create role authenticated; exception when duplicate_object then null; end $$;
+-- Migration 009 grants EXECUTE on its functions to service_role explicitly, so the role
+-- has to exist here too. Without it the whole suite errored, and only passed at all
+-- because the throwaway e2e stack happens to create the role in the same container.
+do $$ begin create role service_role nologin bypassrls; exception when duplicate_object then null; end $$;
 """
 
 
