@@ -17,6 +17,7 @@ and HEALTH scores them from there.
 | `pools.project_id` | workforce migration 021 | Links a pool to its HEALTH project. A pool reads that project's `eval_config` and `reviewers_per_item` directly, so there is no second copy to drift |
 | `native_submit_judgement`, `native_approve_review` | migration 005 | Each write is one transaction: answer, work record and event, or nothing |
 | `services/tasks.py` | HEALTH | Release, the drain, and reading a task in the shape scoring expects |
+| `item_reservations`, `reserve_next_item` | migration 009 | Holds a case for the clinician it was served to, for a bounded time, so two clinicians are never sent the same one |
 | `lib/taskstore.ts`, `lib/gate.ts` | workforce | Serving and submitting |
 
 Answers are attributed to the clinician who gave them. That attribution stays internal:
@@ -60,6 +61,37 @@ nudge delays scoring and loses nothing, because the events wait in the database.
 An event that fails is retried up to five times, then parked as `failed` until an operator
 retries it. A worker that dies mid-way has its claim released after five minutes.
 
+## Serving a case
+
+A case is held from the moment it is served, not from the moment an answer arrives
+(migration `009`). `reserve_next_item` records a reservation and returns a lease; the
+clinician reads with no lock held anywhere.
+
+Before this, the next case was whichever open one had the lowest number, and nothing was
+written down. Clinicians who asked at the same moment were given the same case, and all
+but one had the submission refused after they had already read it and formed a judgement.
+The refusal was always correct. The wasted reading was the cost, and we pay for that time.
+
+| Rule | Where it is enforced |
+|---|---|
+| A case is held by at most the number of reviews the project commissioned | `item_slots_taken` against `native_ceiling`, re-checked under a row lock |
+| One clinician holds at most one lease on a case | a unique index, so a retried request cannot make a second |
+| Asking again returns the same case | `reserve_next_item` serves an existing lease before drawing a new one |
+| A lease that lapses frees the case | by predicate on `expires_at`, so no sweep has to run for this to be true |
+| A re-uploaded case gives its lease back | a trigger on `project_items`, covering every path that supersedes |
+| A lease is never clinical evidence | only non-withdrawn `task_answers` are scored or delivered |
+
+Leases start at 60 minutes and renew up to four times, so an abandoned tab holds a case
+for five hours at most. `expire_reservations()` tidies lapsed rows; it is housekeeping, and
+correctness does not depend on it running.
+
+Partly reviewed cases are served first. Spreading clinicians over fresh cases would avoid
+collisions just as well, but it fills a project with half-reviewed work and nothing a
+client can be sent; filling a case to its ceiling is what produces a settled finding.
+
+A clinician who is not eligible, or whose pool is closed, is served nothing and is told
+nothing more than that.
+
 ## Re-uploading an item
 
 Uploading content again at an index never deletes anything (migration `006`):
@@ -102,6 +134,9 @@ beside this one, or `WORKFORCE_REPO` set.
 - the HEALTH API on :8765;
 - the workforce app on :3765.
 
+`WORKFORCE_REPO=<path>` points it at a different checkout of the clinician platform, which
+is how a change there is rehearsed before it is applied.
+
 `up` prints the command for `tests/e2e/test_native_cutover.py`, which drives a client,
 clinicians, a senior and an operator over HTTP:
 - ingest and serving;
@@ -110,6 +145,13 @@ clinicians, a senior and an operator over HTTP:
 - `number` and highlight answers;
 - the image route's permissions;
 - delivery with identities stripped.
+
+`tests/e2e/test_reservation_integration.py` drives the same stack to prove that every
+route which hands out a case holds it first: simultaneous asks, the configured number of
+independent readings, a reload, a lapsed and a renewed lease, a flag, a re-upload, a HEALTH
+outage, and the whole way through to a delivered result. It is the test that tells you
+whether the clinician platform is wired to reservations: without that wiring most of it
+fails, which is the point.
 
 `scripts/native_e2e_stack.sh down` removes all of it. Nothing in the stack reads
 production settings.
