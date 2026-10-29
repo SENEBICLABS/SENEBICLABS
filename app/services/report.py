@@ -282,19 +282,18 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
 
     # QA / inter-reviewer agreement — present only when items were multi-reviewed.
     qa = None
-    agrees, reviewer_counts, disagreement_cases = [], [], []
+    agrees, disagreement_cases = [], []
     for it in items:
         lbl = it.get("label") or {}
         if lbl.get("_agreement") is None:
             continue
         agrees.append(lbl["_agreement"])
-        reviewer_counts.append(lbl.get("_reviewers") or 0)
         if lbl.get("_disagreed"):
             content = it.get("content") or {}
             disagreement_cases.append({
                 "idx": it.get("idx"),
                 "case_id": _case_id(content, case_id_field),
-                "agreement": lbl["_agreement"],
+                "concurrence": _concurrence(lbl["_agreement"]),
                 "verdict": lbl.get("verdict"),
             })
     if agrees:
@@ -333,21 +332,34 @@ def compute_report(items: list[dict], classes=None, case_id_field: str | None = 
     }
 
 
+def _concurrence(agreement) -> str:
+    """How divided a case was, without saying how many people divided over it.
+
+    A ratio is arithmetic: 0.333 is three readers, 0.5 is two or four, and a client reading
+    one number learns our staffing. A band carries what they actually need, which is how
+    far from settled the case was before a senior decided it, and carries nothing else.
+    """
+    if agreement is None:
+        return "unknown"
+    if agreement >= 1.0:
+        return "unanimous"
+    return "majority" if agreement > 0.5 else "split"
+
+
 def _agreement_qa(items: list[dict], case_id_field: str | None) -> dict | None:
     """Inter-reviewer agreement, present only when items were multi-reviewed. Shared by the
     evaluation and dataset deliverables so both report agreement the same way."""
-    agrees, reviewer_counts, disagreement_cases = [], [], []
+    agrees, disagreement_cases = [], []
     for it in items:
         lbl = it.get("label") or {}
         if lbl.get("_agreement") is None:
             continue
         agrees.append(lbl["_agreement"])
-        reviewer_counts.append(lbl.get("_reviewers") or 0)
         if lbl.get("_disagreed"):
             disagreement_cases.append({
                 "idx": it.get("idx"),
                 "case_id": _case_id(it.get("content") or {}, case_id_field),
-                "agreement": lbl["_agreement"],
+                "concurrence": _concurrence(lbl["_agreement"]),
             })
     if not agrees:
         return None
@@ -650,8 +662,11 @@ def render_dataset_markdown(rep: dict) -> str:
     out.append("")
     qa = rep.get("qa")
     if qa:
-        out += [f"## Inter-reviewer agreement",
-                f"- Reviewers: {qa['reviewers']}  ·  mean agreement: {_pct(qa['mean_agreement'])}  ·  "
+        # No reviewer count here. It was deliberately removed from `qa` (a count invites a
+        # negotiation about inputs rather than findings), and this line still asked for it,
+        # so every multi-reviewed dataset report raised KeyError instead of rendering.
+        out += ["## Inter-reviewer agreement",
+                f"- Mean agreement: {_pct(qa['mean_agreement'])}  ·  "
                 f"disagreements: {qa['disagreements']} of {qa['reviewed_items']}", ""]
     out.append("## Notes")
     for c in rep.get("caveats", []):
