@@ -69,7 +69,8 @@ def test_no_route_reaches_label_studio():
 
 
 def test_no_application_code_keeps_a_label_studio_path():
-    for path in (ROOT / "app").rglob("*.py"):
+    for path in [*(ROOT / "app").rglob("*.py"), ROOT / "scripts" / "native_e2e_stack.sh",
+                 ROOT / "render.yaml", ROOT / "Dockerfile", ROOT / "Makefile"]:
         src = path.read_text()
         assert not re.search(r"labelstudio|label_studio|LS_URL|LS_TOKEN|LS_WEBHOOK_SECRET|/ls/|"
                              r"ls_project_id|_ls_task_id|is_native|LEGACY_PROJECT", src), path

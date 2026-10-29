@@ -1,12 +1,9 @@
 """
 What a project's eval_config must look like, and what every item must carry for it.
 
-These two answers used to be a side effect of generating Label Studio's labelling XML:
-a config was "valid" if the XML could be built, and an item's required keys were read
-back out of the XML with a regex. Clinicians work in the workforce app, which renders the
-form from eval_config itself, so the rules live here instead, stated directly, and the
-XML generator has gone with Label Studio. tests/test_eval_schema.py pins the old answers
-for every template and a wide set of invalid cases.
+Clinicians work in the workforce app, which renders the form from eval_config itself, so
+the rules are stated here directly. tests/test_eval_schema.py pins the answers for every
+template and a wide set of invalid cases.
 
 One rule is new: audio and video tasks are refused. HEALTH used to accept them, but the
 clinician app has no player, so such a task would show a clinician a URL where the

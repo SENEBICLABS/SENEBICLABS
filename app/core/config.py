@@ -67,8 +67,8 @@ class Settings(BaseSettings):
         """
         return v.strip() if isinstance(v, str) else v
 
-    # Settings this code no longer reads (the retired LS_* keys, say) may still sit in a
-    # .env file; ignore them rather than refuse to start.
+    # Settings this code no longer reads may still sit in a .env file; ignore them rather
+    # than refuse to start.
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

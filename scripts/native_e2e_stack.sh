@@ -97,11 +97,9 @@ KEY='$KEY'
 EOF
   start_health
 
-  # The workforce app may still read LABEL_STUDIO_* settings; point them at a closed port,
-  # so any call it makes there fails instead of passing unnoticed.
   setsid -f bash -c 'cd "$1" && echo $$ > "$2" && shift 2 && exec "$@"' _ "$WORKFORCE" "$STATE/workforce.pid" \
     env PATH="$NODE_BIN:$PATH" NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
-    SUPABASE_SERVICE_ROLE_KEY="$KEY" LABEL_STUDIO_API_URL=http://127.0.0.1:9 LABEL_STUDIO_API_TOKEN=unused \
+    SUPABASE_SERVICE_ROLE_KEY="$KEY" \
     MAGIC_LINK_SECRET=e2e-magic-link-secret-long-enough-0123456789 JWT_SECRET="$JWT_APP" \
     SENDGRID_API_KEY= RESEND_API_KEY= GOOGLE_CLIENT_ID= GOOGLE_CLIENT_SECRET= VERCEL_OIDC_TOKEN= \
     NEXT_PUBLIC_APP_URL=http://127.0.0.1:3765 OPS_API_KEY=e2e-ops-key \
