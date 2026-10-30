@@ -11,7 +11,10 @@ Each run:
 1. checks the API answers `/api/v1/health` (allowing for a free-plan cold start);
 2. checks the clinician app answers (an unauthenticated request must get `401`);
 3. **runs the scoring drain** (`POST /project/internal/process-answers`): scores answers
-   still waiting and re-sends failed client deliveries whose backoff has passed;
+   still waiting, re-sends failed client deliveries whose backoff has passed, and retires
+   leases that have lapsed (`reservations_expired` in the reply). Retiring a lapsed lease
+   changes nothing about who may read which case: serving already ignores one whose expiry
+   has passed. It is what keeps `reservations_lapsed_unswept` meaningful;
 4. reads `GET /project/admin/ops-health` and fails on any check in alert.
 
 **A failed run is the alert.** GitHub emails the repository owner. Warnings are printed in
