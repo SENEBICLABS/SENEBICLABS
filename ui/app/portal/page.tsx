@@ -220,7 +220,7 @@ function toCSV(items: ResultItem[]): string {
 }
 
 type Report = {
-  qa?: { reviewers: number | null; mean_agreement: number | null; reviewed_items: number; disagreements: number } | null
+  qa?: { mean_agreement: number | null; reviewed_items: number; disagreements: number } | null
   accuracy: { correct: number; assessable: number; value: number | null }
   per_class: Record<string, { support: number; precision: number | null; recall: number | null }>
   confusion_matrix: { labels: string[]; matrix: number[][] }
@@ -279,7 +279,7 @@ function DeliveredResults({ project, token }: { project: Project; token: string 
 
           {report.qa && report.qa.mean_agreement != null && (
             <p style={{ fontSize: 13.5, color: '#3a4655', marginBottom: 22 }}>
-              Each case reviewed by <strong>{report.qa.reviewers} clinicians</strong>, with{' '}
+              Each case independently reviewed, with{' '}
               <strong>{pct(report.qa.mean_agreement)}</strong> inter-reviewer agreement
               {report.qa.disagreements > 0 && <> ({report.qa.disagreements} adjudicated)</>}.
             </p>
