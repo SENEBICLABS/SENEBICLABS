@@ -2368,6 +2368,16 @@ def internal_process_answers(x_admin_key: str | None = Header(default=None)):
     except Exception as exc:
         logger.error("delivery retry pass failed (%s)", type(exc).__name__)
         out["delivery_retry_error"] = type(exc).__name__
+    # And tidies leases that have lapsed. Housekeeping only: serving already ignores a
+    # lease whose expiry has passed, so nothing here affects who may read which case. It
+    # exists so `reservations_lapsed_unswept` means something, and it rides on this call
+    # because the scheduled run already makes it every few minutes. Failure is logged and
+    # never fails the drain: a stale row is a tidier's problem, an unscored answer is not.
+    try:
+        out["reservations_expired"] = db.rpc("expire_reservations", {}).execute().data or 0
+    except Exception as exc:
+        logger.error("reservation sweep failed (%s)", type(exc).__name__)
+        out["reservation_sweep_error"] = type(exc).__name__
     return out
 
 
