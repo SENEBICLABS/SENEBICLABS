@@ -9,10 +9,19 @@ from playwright.sync_api import Page, expect
 APP = "https://app.senebiclabs.com"
 
 
-def test_root_redirects_unauthenticated_to_login(page: Page):
-    page.goto(APP + "/", wait_until="networkidle")
-    expect(page).to_have_url(re.compile(r"/login"))
-    expect(page.get_by_text(re.compile("Sign in", re.I)).first).to_be_visible()
+def test_the_root_serves_the_public_clinician_landing_page(page: Page):
+    """The root is a public page now, and that is the intended behaviour: it is where a
+    clinician who has not been invited yet arrives. It used to bounce to /login, so this
+    once asserted the redirect.
+
+    The gate did not move with it. It is on /dashboard and on the data API, asserted
+    below, and this still holds the root to carrying no session of its own.
+    """
+    resp = page.goto(APP + "/", wait_until="networkidle")
+    assert resp is not None and resp.status == 200, resp
+    expect(page).to_have_title(re.compile("clinicians", re.I))
+    body = page.inner_text("body").lower()
+    assert "sign out" not in body and "log out" not in body
 
 
 def test_login_is_invite_only(page: Page):

@@ -18,6 +18,7 @@ import json
 import os
 import time
 import uuid
+from urllib.parse import urlparse
 
 import pytest
 
@@ -71,11 +72,16 @@ def _project_with_cases(client, db, n, reviewers=1):
 
 
 def _signed_in(page: Page, db, doc: Clinician):
-    """The session the platform would have issued, set as its cookie."""
+    """The session the platform would have issued, set as its cookie.
+
+    The domain is taken from APP rather than written here. A cookie is only sent to the
+    host it names, so a hard-coded one silently stops arriving the moment the stack is
+    reached by another name, and the page then renders as a logged-out visitor.
+    """
     token = _session(db, doc.id, doc.email)
     page.context.add_cookies([{
         "name": "sessionToken", "value": token,
-        "domain": "127.0.0.1", "path": "/", "httpOnly": True, "sameSite": "Lax",
+        "domain": urlparse(APP).hostname, "path": "/", "httpOnly": True, "sameSite": "Lax",
     }])
 
 
