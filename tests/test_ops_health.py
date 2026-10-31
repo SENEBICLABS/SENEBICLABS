@@ -3,6 +3,7 @@ The operational health check: each failure mode is detected, reported by id and 
 only, and turns the endpoint into a 503 when it needs action.
 """
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from _fakedb import FakeDB
@@ -14,8 +15,18 @@ AGO = lambda **kw: (NOW - timedelta(**kw)).isoformat()   # noqa: E731
 
 
 def _db(**rows):
+    # A healthy system includes a lease sweep that has succeeded recently: the schedule
+    # from migration 011 is part of a working platform, so its absence is a fault, not a
+    # baseline. Pass ops_sweep_state explicitly to say otherwise.
+    #
+    # Dated from the real clock rather than from NOW, because these rows are read two ways:
+    # `run(db, NOW)` against the fixed clock, and through the endpoint, which uses the real
+    # one. A timestamp relative to NOW is days stale by the time the endpoint reads it; one
+    # relative to the real clock is simply "recent" to NOW as well.
     base = {"project_submissions": [], "project_items": [], "answer_events": [],
-            "review_items": [], "item_reservations": []}
+            "review_items": [], "item_reservations": [],
+            "ops_sweep_state": [{"name": "reservations", "last_expired": 0, "runs": 7,
+                                 "last_run_at": datetime.now(timezone.utc).isoformat()}]}
     health = rows.pop("_reservation_health", [])
     rpcs = {"reservation_health": lambda _params, out=health: out}
     base.update(rows)
@@ -83,8 +94,14 @@ def test_a_check_that_could_not_run_is_reported_rather_than_passed():
                 raise RuntimeError(f'relation "{name}" does not exist (42P01)')
             return super().table(name)
 
+    # A healthy sweep, so this stays a test about missing tables: a sweep that has never
+    # succeeded is an alert, and would otherwise be the thing setting the overall status.
     out = ops_health.run(NoStore({"project_submissions": [], "project_items": [],
-                                  "review_items": []}), NOW)
+                                  "review_items": [],
+                                  "ops_sweep_state": [
+                                      {"name": "reservations", "last_expired": 0, "runs": 1,
+                                       "last_run_at": datetime.now(timezone.utc).isoformat()}]}),
+                         NOW)
     assert out["status"] == "warn"
     c = _by_name(out)
     assert c["scoring_events"]["status"] == "warn"
@@ -302,3 +319,159 @@ def test_no_check_ever_reports_ok_while_saying_it_could_not_run():
         if "could not" in note or "not checked" in note or "itself failed" in note:
             assert check["status"] != "ok", check
     assert out["status"] in ("warn", "alert")
+
+
+# ── the lease sweep's own schedule (migrations 010 and 011) ─────────────────────
+
+def _sweep(out):
+    return _by_name(out)["reservations_sweep_stalled"]
+
+
+def test_a_sweep_that_ran_minutes_ago_is_ok():
+    out = ops_health.run(_db(), NOW)
+    assert _sweep(out)["status"] == "ok" and _sweep(out)["count"] == 0
+
+
+def test_a_sweep_past_the_twenty_minute_bound_alerts():
+    out = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": AGO(minutes=21),
+         "last_expired": 0, "runs": 3}]), NOW)
+    c = _sweep(out)
+    assert c["status"] == "alert" and c["count"] == 1
+    assert "21 minutes ago" in c["note"] and "20 minute bound" in c["note"]
+    assert "cron.job" in c["note"], "the note must say where to look"
+    assert out["status"] == "alert"
+
+
+def test_a_stalled_sweep_turns_the_endpoint_into_a_503():
+    """What makes this an alert rather than a line in a log nobody reads.
+
+    A monitor pointed at this endpoint raises the alarm without parsing the body, and the
+    scheduled run fails, which is what reaches a person.
+    """
+    stale = _db(ops_sweep_state=[{"name": "reservations", "last_run_at": AGO(minutes=45),
+                                  "last_expired": 0, "runs": 3}])
+    with patch.object(proj, "get_client", return_value=stale), patch.object(proj, "_require_admin"):
+        assert proj.admin_ops_health(x_admin_key="k").status_code == 503
+    # And a sweep that is running keeps it a 200, so the 503 is about the sweep.
+    with patch.object(proj, "get_client", return_value=_db()), patch.object(proj, "_require_admin"):
+        assert proj.admin_ops_health(x_admin_key="k").status_code == 200
+
+
+def test_a_sweep_just_inside_the_bound_is_not_an_alarm():
+    """Four missed ticks, not three: the threshold must not flutter."""
+    out = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": AGO(minutes=19),
+         "last_expired": 2, "runs": 3}]), NOW)
+    assert _sweep(out)["status"] == "ok"
+
+
+def test_a_sweep_that_has_never_succeeded_alerts():
+    """The table is there, so 010 is applied and the schedule from 011 is not running."""
+    out = ops_health.run(_db(ops_sweep_state=[]), NOW)
+    c = _sweep(out)
+    assert c["status"] == "alert"
+    assert "No sweep has ever succeeded" in c["note"]
+    assert "cron.job" in c["note"]
+    assert out["status"] == "alert"
+
+
+def test_a_missing_state_table_warns_rather_than_alerting():
+    """Deliberately not an alert, and the reason matters.
+
+    This is the state of production between deploying the code and applying 010. An alert
+    would make ops-health answer 503 and fail the scheduled run during a release, about a
+    migration that has not been applied yet. The module's rule holds: a check that could
+    not run is reported, never passed, and never escalated.
+    """
+    class NoTable(FakeDB):
+        def table(self, name):
+            if name == "ops_sweep_state":
+                raise RuntimeError(f'relation "{name}" does not exist (42P01)')
+            return super().table(name)
+
+    out = ops_health.run(NoTable({"project_submissions": [], "project_items": [],
+                                  "answer_events": [], "review_items": [],
+                                  "item_reservations": []}),
+                         NOW)
+    c = _sweep(out)
+    assert c["status"] == "warn", "an unapplied migration must not be an alert"
+    assert "migration 010" in c["note"]
+    assert out["status"] == "warn"
+
+
+def test_an_unreadable_timestamp_alerts_because_no_success_can_be_shown():
+    out = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": "not a date",
+         "last_expired": 0, "runs": 1}]), NOW)
+    assert _sweep(out)["status"] == "alert"
+    assert "no readable timestamp" in _sweep(out)["note"]
+
+
+def test_a_zero_count_sweep_is_still_a_healthy_sweep():
+    """Nothing to retire is the normal case, and must not read as a stall."""
+    out = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": AGO(minutes=1),
+         "last_expired": 0, "runs": 999}]), NOW)
+    assert _sweep(out)["status"] == "ok"
+
+
+def test_the_severity_follows_the_age_across_the_boundary():
+    """The whole transition in one place, so the boundary cannot drift unnoticed."""
+    seen = {}
+    for minutes in (0, 5, 19, 20, 21, 60, 24 * 60):
+        out = ops_health.run(_db(ops_sweep_state=[
+            {"name": "reservations", "last_run_at": AGO(minutes=minutes),
+             "last_expired": 0, "runs": 1}]), NOW)
+        seen[minutes] = _sweep(out)["status"]
+    assert seen == {0: "ok", 5: "ok", 19: "ok", 20: "ok",
+                    21: "alert", 60: "alert", 24 * 60: "alert"}, seen
+
+
+def test_a_failed_sweep_is_detected_once_the_preserved_timestamp_goes_stale():
+    """How a failing sweep reaches this check.
+
+    A failure rolls back, which is what preserves the last success, so it writes nothing of
+    its own (proved against Postgres in tests/sql/test_reservation_sweep_sql.py). It arrives
+    here as the preserved timestamp ageing out, which it does whether the schedule stopped
+    or every run since has failed.
+    """
+    healthy = {"name": "reservations", "last_run_at": AGO(minutes=4),
+               "last_expired": 3, "runs": 9}
+    assert _sweep(ops_health.run(_db(ops_sweep_state=[healthy]), NOW))["status"] == "ok"
+
+    # Runs keep failing: the row never moves, and NOW keeps moving.
+    later = NOW + timedelta(minutes=25)
+    c = _sweep(ops_health.run(_db(ops_sweep_state=[healthy]), later))
+    assert c["status"] == "alert"
+    assert "every run since has failed" in c["note"], \
+        "the note should name the failing-run case, not only a stopped schedule"
+
+
+def test_the_sweep_check_breaking_is_an_alert_and_is_named():
+    class Broken(FakeDB):
+        def table(self, name):
+            if name == "ops_sweep_state":
+                raise RuntimeError("connection reset by peer")
+            return super().table(name)
+
+    out = ops_health.run(Broken({"project_submissions": [], "project_items": [],
+                                 "answer_events": [], "review_items": [],
+                                 "item_reservations": []}),
+                         NOW)
+    c = _sweep(out)
+    assert c["status"] == "alert" and "check itself failed" in c["note"]
+
+
+def test_the_drain_must_not_be_the_thing_that_records_a_sweep():
+    """A guard on the design, not on behaviour.
+
+    `ops_sweep_state` is trustworthy only because the scoring drain does not write it. If
+    the drain ever called `sweep_reservations()`, a drain that happened to run would refresh
+    the timestamp and hide a dead schedule from the check above.
+    """
+    src = (Path(__file__).resolve().parents[1] / "app" / "api" / "v1" / "project.py").read_text()
+    assert "sweep_reservations" not in src, \
+        "the API calls sweep_reservations(), which would mask a stalled schedule"
+    assert src.count('db.rpc("expire_reservations"') == 1, \
+        "the drain's own fallback sweep should still be exactly one call"
