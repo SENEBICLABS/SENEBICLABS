@@ -56,6 +56,45 @@ def test_anything_else_is_refused(db, key):
         operators.require(key)
 
 
+@pytest.mark.parametrize("key", ["kéy", ROOT_KEY + "—", "op_é"])
+def test_a_non_ascii_key_is_refused_rather_than_raising(db, key):
+    """`hmac.compare_digest` raises TypeError on a non-ASCII str instead of returning
+    False, so such a key used to leave authenticate as an exception rather than as a
+    refusal. A key that can be nobody's is a refusal, by the same route as any other."""
+    assert operators.authenticate(db, key) is None
+    with pytest.raises(HTTPException) as e:
+        operators.require(key)
+    assert e.value.status_code == 403
+
+
+def test_a_non_ascii_header_is_refused_rather_than_answering_500(db):
+    """Where the TypeError reached a client. A header is carried as bytes and decoded as
+    latin-1, which is how a byte above 0x7f becomes a non-ASCII str; httpx will not send
+    such a value as a str, so this sends the bytes a real client sends. The refusal has to
+    be the one an ordinary wrong key gets, not a server error."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    client = TestClient(app, raise_server_exceptions=False)
+    route = "/api/v1/project/admin/ops-health"
+    bad = client.get(route, headers={"X-Admin-Key": "Admin key — root".encode()})
+    ascii_wrong = client.get(route, headers={"X-Admin-Key": b"wrong"})
+    assert ascii_wrong.status_code == 403
+    assert bad.status_code == 403 and bad.json() == ascii_wrong.json()
+
+
+def test_the_guard_leaves_valid_keys_and_ordinary_refusals_alone(db):
+    """The guard runs before both key paths, so this is what says it did not shorten
+    either: the root key still needs no database, and an operator key is still looked up
+    by hash and still stamps last_used_at."""
+    _, op_key = operators.create(db, "Dr Amina", None)
+    assert operators.authenticate(None, ROOT_KEY)["id"] == "root"
+    assert operators.authenticate(db, op_key)["name"] == "Dr Amina"
+    assert db.rows["operators"][0]["last_used_at"]
+    assert operators.authenticate(db, "wrong") is None
+    assert operators.authenticate(db, "op_not-a-real-key") is None
+
+
 def test_only_the_root_key_manages_operators(db):
     out = proj.admin_create_operator(proj.OperatorIn(name="Dr Amina"), x_admin_key=ROOT_KEY)
     op_key = out["admin_key"]
