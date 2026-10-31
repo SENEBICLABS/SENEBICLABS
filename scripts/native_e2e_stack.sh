@@ -64,8 +64,13 @@ grant anon, authenticated, service_role to authenticator;
 SQL
   # Both repos' migrations, in release order: workforce's (including 021) before HEALTH's
   # from 005 on, exactly as the runbook applied them.
+  #
+  # 011 is left out on purpose: it schedules the lease sweep through pg_cron, which this
+  # throwaway Postgres does not have, and it is written to refuse rather than half-apply.
+  # Everything the application reads lives in 010, so the stack is still representative.
   local files=("$HEALTH"/supabase_schema.sql "$HEALTH"/migrations/00[2-4]_*.sql "$WORKFORCE"/database.sql)
-  files+=("$WORKFORCE"/migrations/*.sql "$HEALTH"/migrations/00[5-9]_*.sql)
+  files+=("$WORKFORCE"/migrations/*.sql "$HEALTH"/migrations/00[5-9]_*.sql
+          "$HEALTH"/migrations/010_*.sql)
   for f in "${files[@]}"; do
     $P -d senebi_e2e -f "$f" 2>&1 | grep -v NOTICE || true
   done
@@ -73,6 +78,12 @@ SQL
     grant all on all tables in schema public to service_role;
     grant all on all sequences in schema public to service_role;
     grant execute on all functions in schema public to service_role;"
+
+  # One sweep, standing in for the schedule 011 installs, because this Postgres has no
+  # pg_cron. Without it `reservations_sweep_stalled` alerts for the whole run, and the test
+  # that proves an overlong lease answers 503 would pass on this instead of on the lease.
+  # Twenty minutes is far longer than a run, so one sweep at setup is enough.
+  $P -d senebi_e2e -c "select sweep_reservations()" >/dev/null
 
   local KEY
   KEY="$(python3 - "$JWT_PGRST" <<'PY'

@@ -39,6 +39,14 @@ LEASE_MAX_LIFE = timedelta(minutes=LEASE_MINUTES * (LEASE_MAX_RENEWALS + 1))
 LEASE_LIFE_GRACE = timedelta(minutes=15)
 LEASE_UNSWEPT_WARN = timedelta(minutes=15)      # expired but still marked active
 LEASE_STARVATION_ALERT = timedelta(minutes=90)  # a project blocked on leases this long
+# The sweep is scheduled every five minutes (migration 011), so this is four missed ticks:
+# late enough that one slow run is not an alarm, early enough to be the first thing that
+# says so rather than LEASE_UNSWEPT_WARN five minutes later.
+#
+# An alert, which makes the endpoint answer 503 and fails the scheduled run. The sweep is
+# the only thing keeping `reservations_lapsed_unswept` honest, and a warning here would be
+# printed in a log nobody reads rather than sent to anyone.
+SWEEP_STALLED_ALERT = timedelta(minutes=20)
 
 
 def _parse(stamp) -> datetime | None:
@@ -212,6 +220,79 @@ def reservations(db, now):
     return out
 
 
+def reservation_sweep(db, now):
+    """Is the scheduled lease sweep still running?
+
+    `ops_sweep_state` is written only by `sweep_reservations()`, on the schedule migration
+    011 installs. The scoring drain calls `expire_reservations()` directly and deliberately
+    does not touch that row: if it did, a drain that happened to run would hide a dead
+    schedule from this check.
+
+    An alert when the sweep has never succeeded or has not succeeded in
+    SWEEP_STALLED_ALERT. Serving stays correct either way, because a lapsed lease stops
+    counting by predicate, so this is not about cases being served wrongly. It is an alert
+    because a stalled sweep silently removes the meaning of `reservations_lapsed_unswept`,
+    and a warning would be printed in a run log rather than sent to anybody.
+
+    A failed sweep arrives here as staleness rather than as its own state: the failure
+    rolls back, which is what preserves the last genuine success, so there is nothing for
+    it to write. It shows up when that preserved timestamp ages past the bound, and
+    immediately in `cron.job_run_details`.
+
+    Not being able to read the table at all stays a warning, which is the rule everywhere
+    else in this module: a check that could not run is reported, never passed, and never
+    escalated. It is also the state of a database where 010 has not been applied yet, and a
+    release must not be able to make this endpoint answer 503 on its way through.
+
+    Separate from `reservations` above so that an unreadable `item_reservations` cannot take
+    this answer with it. Whether the tidy-up is alive is worth knowing precisely when the
+    rest of the group could not be read.
+    """
+    try:
+        # One row, looked up by primary key, so this is not paged: `fetch_all` sets its own
+        # range and there is nothing here to page through.
+        rows = (db.table("ops_sweep_state").select("name,last_run_at,last_expired")
+                .eq("name", "reservations").limit(1).execute().data) or []
+    except Exception as exc:
+        if _missing_object(exc):
+            # Same rule as everywhere else here: a check that could not run is reported,
+            # never passed.
+            return [_check("reservations_sweep_stalled", "warn", 1,
+                           note="ops_sweep_state could not be read, so nothing here says whether "
+                                "the lease sweep is running. It comes with migration 010")]
+        raise
+
+    bound = int(SWEEP_STALLED_ALERT.total_seconds() // 60)
+    where_to_look = ("Check select jobname, schedule, active from cron.job, then "
+                     "select status, return_message, start_time from cron.job_run_details "
+                     "order by start_time desc limit 5")
+
+    if not rows:
+        return [_check("reservations_sweep_stalled", "alert", 1,
+                       note="No sweep has ever succeeded. The table exists, so migration 010 is "
+                            "applied and the schedule from 011 is either missing or has never "
+                            f"completed a run. {where_to_look}")]
+
+    last = _parse(rows[0].get("last_run_at"))
+    if last is None:
+        # The row is there and its timestamp is not readable, so no successful run can be
+        # established. That is the same risk as never having run, not a check that failed.
+        return [_check("reservations_sweep_stalled", "alert", 1,
+                       note="The recorded sweep has no readable timestamp, so no successful sweep "
+                            f"could be established. {where_to_look}")]
+
+    if last < now - SWEEP_STALLED_ALERT:
+        return [_check("reservations_sweep_stalled", "alert", 1,
+                       note=f"The lease sweep last succeeded {int((now - last).total_seconds() // 60)} "
+                            f"minutes ago, past the {bound} minute bound. Either the schedule has "
+                            "stopped or every run since has failed, which leaves this timestamp "
+                            "where it was. Leases will sit expired but still marked active, and "
+                            f"reservations_lapsed_unswept follows. {where_to_look}")]
+
+    return [_check("reservations_sweep_stalled", "ok", 0,
+                   note=f"The lease sweep succeeded within the last {bound} minutes")]
+
+
 def database(db):
     started = time.monotonic()
     db.table("project_submissions").select("id").limit(1).execute()
@@ -227,6 +308,7 @@ def run(db, now: datetime | None = None) -> dict:
                      ("scoring_events", lambda: answer_events(db, now)),
                      ("review_queues", lambda: review_queues(db, now)),
                      ("reservations", lambda: reservations(db, now)),
+                     ("reservations_sweep_stalled", lambda: reservation_sweep(db, now)),
                      ("deliveries", lambda: deliveries(db, now))):
         try:
             checks.extend(fn())

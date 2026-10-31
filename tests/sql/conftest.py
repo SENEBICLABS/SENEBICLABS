@@ -34,6 +34,12 @@ WORKFORCE = Path(os.environ.get(
     "WORKFORCE_REPO",
     HEALTH.parent / "workforce" / "senebiclabs-workforce-platform"))
 
+# Migrations that need a Postgres extension this disposable server does not have, so they
+# cannot be part of a template. 011 schedules the lease sweep through pg_cron and is written
+# to refuse rather than half-apply, which is itself asserted in
+# tests/sql/test_reservation_sweep_sql.py. Everything the application reads is in 010.
+NEEDS_EXTENSIONS = {"011_schedule_reservation_sweep.sql"}
+
 TEMPLATE_BEFORE = "senebi_tpl_before_native"   # everything except the native store
 TEMPLATE_BEFORE_008 = "senebi_tpl_before_008"   # the native store, Label Studio not yet removed
 TEMPLATE = "senebi_tpl_native"                 # everything
@@ -64,7 +70,8 @@ def _schema_files(native: bool, upto: str | None = None) -> list[Path]:
     else:
         # Every HEALTH migration from the native store on, in order.
         files += sorted(f for f in (HEALTH / "migrations").glob("*.sql")
-                        if f.name >= "005" and (upto is None or f.name < upto))
+                        if f.name >= "005" and f.name not in NEEDS_EXTENSIONS
+                        and (upto is None or f.name < upto))
     return files
 
 
