@@ -108,21 +108,33 @@ KEY='$KEY'
 EOF
   start_health
 
+  # The app is reached as localhost, not 127.0.0.1.
+  #
+  # `next dev` serves /_next to localhost and refuses it to any other host unless that host
+  # is listed in allowedDevOrigins. Reached as 127.0.0.1 the page still renders, because
+  # that part is server side, so the stack looks fine: what fails is the client bundle, so
+  # nothing hydrates, no fetch is ever made, and a browser test waits on a workspace that
+  # will never load a case. The production config is not involved and must not be changed
+  # for a rehearsal.
+  #
+  # Everything below stays 127.0.0.1 on purpose: a port published to 127.0.0.1 is a bind
+  # address, and the rest is resolved inside a container or by a server that listens on
+  # 127.0.0.1 only, where localhost may resolve to ::1 and nothing is listening.
   setsid -f bash -c 'cd "$1" && echo $$ > "$2" && shift 2 && exec "$@"' _ "$WORKFORCE" "$STATE/workforce.pid" \
     env PATH="$NODE_BIN:$PATH" NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
     SUPABASE_SERVICE_ROLE_KEY="$KEY" \
     MAGIC_LINK_SECRET=e2e-magic-link-secret-long-enough-0123456789 JWT_SECRET="$JWT_APP" \
     SENDGRID_API_KEY= RESEND_API_KEY= GOOGLE_CLIENT_ID= GOOGLE_CLIENT_SECRET= VERCEL_OIDC_TOKEN= \
-    NEXT_PUBLIC_APP_URL=http://127.0.0.1:3765 OPS_API_KEY=e2e-ops-key \
+    NEXT_PUBLIC_APP_URL=http://localhost:3765 OPS_API_KEY=e2e-ops-key \
     NEXT_PUBLIC_HEARTBEAT_INTERVAL_MS="${HEARTBEAT_INTERVAL_MS:-}" \
     HEALTH_API_BASE=http://127.0.0.1:8765/api/v1/project HEALTH_ADMIN_KEY="$ADMIN" HEALTH_KEY_HEADER=X-Admin-Key \
     npx next dev -p 3765 > "$STATE/workforce.log" 2>&1 < /dev/null
 
-  until [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3765/api/pools)" = "401" ]; do sleep 1; done
+  until [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3765/api/pools)" = "401" ]; do sleep 1; done
   cat <<EOF
 stack up (logs in $STATE). Run the rehearsal:
 
-  NATIVE_E2E_API=http://127.0.0.1:8765 NATIVE_E2E_APP=http://127.0.0.1:3765 \\
+  NATIVE_E2E_API=http://127.0.0.1:8765 NATIVE_E2E_APP=http://localhost:3765 \\
   NATIVE_E2E_DSN=postgresql://postgres:test@127.0.0.1:$PGPORT/senebi_e2e \\
   NATIVE_E2E_ADMIN_KEY=$ADMIN NATIVE_E2E_JWT_SECRET=$JWT_APP \\
   NATIVE_E2E_STACK=$0 \\

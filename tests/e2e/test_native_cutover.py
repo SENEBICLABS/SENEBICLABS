@@ -6,7 +6,7 @@ senior and an operator would.
 It needs a throwaway stack (docs/native-task-store.md, "Rehearsing end to end") and skips
 without one:
 
-    NATIVE_E2E_API=http://127.0.0.1:8765  NATIVE_E2E_APP=http://127.0.0.1:3765 \\
+    NATIVE_E2E_API=http://127.0.0.1:8765  NATIVE_E2E_APP=http://localhost:3765 \\
     NATIVE_E2E_DSN=postgresql://postgres:test@127.0.0.1:55432/senebi_e2e \\
     NATIVE_E2E_ADMIN_KEY=...  NATIVE_E2E_JWT_SECRET=...  PYTHONPATH=. pytest tests/e2e/test_native_cutover.py
 
