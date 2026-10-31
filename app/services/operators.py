@@ -38,6 +38,13 @@ def authenticate(db, key: str | None) -> dict | None:
     API's own background calls and break-glass access survive a database outage."""
     if not key:
         return None
+    # A header arrives decoded as latin-1, so one byte above 0x7f in X-Admin-Key produces a
+    # str that `compare_digest` will not take: it raises TypeError on non-ASCII, and that
+    # left the comparison below and reached the client as a 500 rather than a refusal.
+    # No key this system issues can be non-ASCII, because both kinds are URL-safe base64
+    # from `secrets.token_urlsafe`, so such a key belongs to nobody and is refused here.
+    if not key.isascii():
+        return None
     if settings.ADMIN_API_KEY and hmac.compare_digest(key, settings.ADMIN_API_KEY):
         return dict(ROOT)
     if not key.startswith(PREFIX) or db is None:
