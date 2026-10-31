@@ -14,8 +14,29 @@ Each run:
    still waiting, re-sends failed client deliveries whose backoff has passed, and retires
    leases that have lapsed (`reservations_expired` in the reply). Retiring a lapsed lease
    changes nothing about who may read which case: serving already ignores one whose expiry
-   has passed. It is what keeps `reservations_lapsed_unswept` meaningful;
+   has passed. It is the fallback, not the schedule: the sweep's own schedule lives in
+   Postgres (below);
 4. reads `GET /project/admin/ops-health` and fails on any check in alert.
+
+## The lease sweep's own schedule
+
+Retiring a lapsed lease does not depend on this workflow. `pg_cron` calls
+`sweep_reservations()` every 5 minutes inside the database (migrations 010 and 011), which
+needs no credential and cannot be throttled by anyone else. The drain above still calls
+`expire_reservations()`, which is the fallback if that schedule ever stops.
+
+**This workflow's schedule is not reliable enough to be the sweep's.** It is written as
+every 10 minutes and has been measured firing between 2.8 and 7.1 hours apart, against a
+15 minute warning threshold. The sweep was moved off it for that reason.
+
+`reservations_sweep_stalled` is what notices the schedule stopping, and it is an **alert**:
+it fails the scheduled run, emails the owner and makes `ops-health` answer `503`. A warning
+would only have been printed in a run log. `select * from ops_sweep_state` answers the same
+question directly.
+
+A failed sweep does not get its own state. The failure rolls back, which is exactly what
+preserves the last genuine success, so it surfaces here once that timestamp passes 20
+minutes, and immediately in `cron.job_run_details`.
 
 **A failed run is the alert.** GitHub emails the repository owner. Warnings are printed in
 the run log without failing it.
@@ -46,6 +67,8 @@ pointed at it with the admin key header raises the same alarm without parsing th
 | `reservations_lapsed_unswept` | Warning: leases past expiry still marked active for over 15 minutes | Serving is unaffected: an expired lease stops counting by itself. It says the tidy-up is not running. `select expire_reservations()`, then check the scheduled job |
 | `reservations_overlong` | Alert | A lease has lived past the longest a renewal can carry it, which is five hours: 60 minutes per renewal and four renewals, because a renewal is refused once the lease has expired. `renew_reservation` cannot produce that, so something wrote to `item_reservations` around it. Find the writer |
 | `reservations_starving_work` | Alert: a project's every open case held for over 90 minutes | Clinicians are being told there is no work while the work is there. Usually abandoned sessions. `select expire_reservations()` frees them; if it recurs, look for a client that reserves without submitting |
+| `reservations_sweep_stalled` | Alert: the sweep has never succeeded, or last succeeded over 20 minutes ago | The sweep runs every 5 minutes inside Postgres (migration 011), so this is four missed ticks. Either the schedule stopped or every run since has failed, because a failed run preserves the previous timestamp rather than writing its own. Serving is unaffected, but `reservations_lapsed_unswept` follows. `select jobname, schedule, active from cron.job`, then `select status, return_message from cron.job_run_details order by start_time desc limit 5`. The scoring drain's own `expire_reservations()` call is the fallback while you fix it |
+| `reservations_sweep_stalled` (warning) | Warning | `ops_sweep_state` could not be read, so nothing was checked. Before migration 010 is applied that is expected, and it is a warning rather than an alert so that deploying the code ahead of the migration cannot turn this endpoint into a 503 |
 | `reservations` | Warning | The lease table could not be read, so none of the above was checked. If migration 009 is not applied yet, that is why, and cases are being served without being held |
 | `deliveries_failing` | Warning | The client's webhook is failing. It is retried on a growing schedule with the same event id; nothing to do yet |
 | `deliveries_given_up` | Alert | The client refused it (4xx) or the retries ran out. Tell the client; they can poll `/results` or call `/webhook/redeliver` |
