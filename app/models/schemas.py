@@ -12,3 +12,6 @@ class SystemHealth(BaseModel):
     status: str
     version: str
     timestamp: datetime
+    # Which build is answering. Additive, and defaulted, so a client written against the
+    # three fields above keeps working.
+    commit: str = "unknown"

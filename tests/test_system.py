@@ -66,3 +66,69 @@ def test_the_retired_label_studio_endpoints_are_gone(client, path):
     scoring; with the routes removed, nothing answers there at all."""
     assert client.post(path, json={"action": "ANNOTATION_CREATED"},
                        headers={"X-Ls-Secret": "anything"}).status_code == 404
+
+
+# ── which build is answering (the deployed commit) ─────────────────────────────
+#
+# `version` is a constant in the source and has never distinguished one deploy from another.
+# A post-merge audit could confirm what was on main and nothing at all about what was
+# serving requests, which is why four merged commits could not be verified in production.
+# `RENDER_GIT_COMMIT` is a documented default on every Render runtime.
+
+from app.api.v1 import system as system_mod
+
+
+@pytest.mark.parametrize("env, expect", [
+    ("4a1298f0123456789abcdef", "4a1298f"),   # a real SHA, truncated to seven
+    ("4a1298f", "4a1298f"),                   # exactly seven, unchanged
+    ("abc", "abc"),                           # shorter than seven: reported as it is
+    ("\n4a1298f\n", "4a1298f"),               # whitespace from the environment
+    ("  4a1298f0123  ", "4a1298f"),
+])
+def test_the_commit_is_reported_truncated(monkeypatch, client, env, expect):
+    monkeypatch.setenv("RENDER_GIT_COMMIT", env)
+    body = client.get("/api/v1/health").json()
+    assert body["commit"] == expect, body
+    assert len(body["commit"]) <= system_mod.COMMIT_CHARS
+
+
+@pytest.mark.parametrize("env", [None, "", "   ", "\n\t "])
+def test_an_absent_or_blank_commit_reads_as_unknown(monkeypatch, client, env):
+    """The honest answer when the environment said nothing. Anywhere but Render -- a laptop,
+    a test run, another host -- this is the expected value."""
+    if env is None:
+        monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    else:
+        monkeypatch.setenv("RENDER_GIT_COMMIT", env)
+    assert client.get("/api/v1/health").json()["commit"] == "unknown"
+
+
+def test_a_value_that_is_not_a_sha_is_shown_rather_than_hidden(monkeypatch, client):
+    """Deliberately not validated. If this is ever set to something that is not a commit,
+    seeing the wrong value is more useful than seeing "unknown", which would hide the
+    misconfiguration behind the same string a correctly unset variable produces.
+    """
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "not-a-sha-but-set")
+    assert client.get("/api/v1/health").json()["commit"] == "not-a-s"
+
+
+def test_the_existing_fields_are_untouched(monkeypatch, client):
+    """Additive only: anything written against the three original fields keeps working.
+    scripts/ops_check.py reads this endpoint for its status code alone."""
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "4a1298f")
+    r = client.get("/api/v1/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["version"] and isinstance(body["version"], str)
+    assert body["timestamp"]
+    assert set(body) == {"status", "version", "timestamp", "commit"}, set(body)
+
+
+def test_the_commit_never_reveals_anything_but_the_commit(monkeypatch, client):
+    """A guard on the obvious mistake: reading the whole environment into a response."""
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "4a1298f")
+    monkeypatch.setenv("ADMIN_API_KEY", "op_SENTINEL_must_not_appear_here")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "eyJ_SENTINEL_must_not_appear_here")
+    text = client.get("/api/v1/health").text
+    assert "SENTINEL" not in text, text

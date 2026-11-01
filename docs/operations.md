@@ -741,6 +741,33 @@ fifteen minutes of quiet, so the first clinician of the morning does not pay for
 start, and `last_failing_checks` gives the alert state a history rather than only a value at
 the moment somebody asks.
 
+## Which build is answering
+
+`GET /api/v1/health` needs no credential and reports the commit it is running:
+
+```json
+{"status":"ok","version":"0.1.0","timestamp":"...","commit":"4a1298f"}
+```
+
+`commit` is the first seven characters of `RENDER_GIT_COMMIT`, a documented default
+environment variable on every Render runtime. `version` is a constant in the source and has
+never distinguished one deploy from another, which is why a post-merge audit could confirm
+what was on `main` and nothing at all about what was serving requests.
+
+To check that a merge has actually deployed:
+
+```bash
+curl -s https://api.senebiclabs.com/api/v1/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])'
+git log --oneline -1 origin/main
+```
+
+The two should agree on the first seven characters. They will not while a deploy is in
+flight, which is itself the useful answer.
+
+`unknown` means the variable was absent or blank: expected off Render, and a
+misconfiguration on it. A value that is not a commit is shown as-is rather than hidden
+behind `unknown`, because seeing the wrong value is more useful than seeing nothing.
+
 ## Backups
 
 | What | How | Proves itself by |
