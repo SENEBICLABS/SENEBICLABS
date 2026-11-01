@@ -108,7 +108,28 @@ def _missing_object(exc: Exception) -> bool:
         or "PGRST202" in text or "does not exist" in text
 
 
-def answer_events(db, now):
+def _ts(stamp, bad: list | None, where: str, ident=None):
+    """`_parse`, but a malformed timestamp is recorded instead of vanishing.
+
+    The callers below read `_ts(...) or now`, which treats "no usable timestamp" as "not old
+    enough to report". For an **absent** timestamp that is right and deliberate: a pending
+    event with no `locked_at` has not been locked, and reporting it as overdue would be
+    wrong. For a **malformed** one it silently drops a row the check exists to find, which
+    is how a trimmed fraction used to make roughly one stale row in ten invisible.
+
+    So absent stays silent and malformed is collected, and `run` reports the collection as
+    one `timestamps_unreadable` check rather than changing what each check decides. Nothing
+    here invents an age for a row whose age is unknown.
+    """
+    if not stamp:
+        return None                                  # absent: legitimate, nothing to report
+    got = _parse(stamp)
+    if got is None and bad is not None:
+        bad.append((where, ident))
+    return got
+
+
+def answer_events(db, now, bad=None):
     try:
         rows = fetch_all(lambda: db.table("answer_events")
                          .select("id,task_no,project_id,status,attempts,created_at,locked_at")
@@ -124,10 +145,10 @@ def answer_events(db, now):
                            note="answer_events could not be read, so nothing here was checked. "
                                 "If migration 005 is applied, no answer can be scored")]
         raise
-    old = [r for r in rows if r["status"] == "pending" and (_parse(r.get("created_at")) or now) < now - EVENT_PENDING_ALERT]
+    old = [r for r in rows if r["status"] == "pending" and (_ts(r.get("created_at"), bad, "answer_events.created_at", r.get("id")) or now) < now - EVENT_PENDING_ALERT]
     failed = [r for r in rows if r["status"] == "failed"]
     stale = [r for r in rows if r["status"] == "processing"
-             and (_parse(r.get("locked_at")) or now) < now - timedelta(minutes=5)]
+             and (_ts(r.get("locked_at"), bad, "answer_events.locked_at", r.get("id")) or now) < now - timedelta(minutes=5)]
     retrying = [r for r in rows if r["status"] == "pending" and int(r.get("attempts") or 0) > 0]
     return [
         _check("scoring_events_waiting", "alert" if old else "ok", len(old), [r["id"] for r in old],
@@ -143,12 +164,12 @@ def answer_events(db, now):
     ]
 
 
-def review_queues(db, now):
+def review_queues(db, now, bad=None):
     out = []
     try:
         reviews = fetch_all(lambda: db.table("review_items").select("id,ls_task_id,authored_at")
                             .eq("state", "needs_review").order("id"))
-        old = [r for r in reviews if (_parse(r.get("authored_at")) or now) < now - REVIEW_WAITING_WARN]
+        old = [r for r in reviews if (_ts(r.get("authored_at"), bad, "review_items.authored_at", r.get("ls_task_id")) or now) < now - REVIEW_WAITING_WARN]
         out.append(_check("second_readings_waiting", "warn" if old else "ok", len(old),
                           [r["ls_task_id"] for r in old], "Authored work waiting over a day for a second reader"))
     except Exception as exc:
@@ -156,7 +177,7 @@ def review_queues(db, now):
             raise
     held = fetch_all(lambda: db.table("project_items").select("project_id,task_no,labeled_at")
                      .eq("status", "needs_adjudication").order("id"))
-    old = [r for r in held if (_parse(r.get("labeled_at")) or now) < now - ADJUDICATION_WAITING_WARN]
+    old = [r for r in held if (_ts(r.get("labeled_at"), bad, "project_items.labeled_at", r.get("task_no")) or now) < now - ADJUDICATION_WAITING_WARN]
     out.append(_check("adjudication_waiting", "warn" if old else "ok", len(old),
                       sorted({r["project_id"] for r in old}),
                       "Disagreements held over a day for a senior reviewer (project ids)"))
@@ -188,7 +209,7 @@ def deliveries(db, now):
     ]
 
 
-def reservations(db, now):
+def reservations(db, now, bad=None):
     """Leases: swept, bounded, and not starving a pool of work.
 
     None of these affects whether serving is correct. A lapsed lease stops counting by
@@ -210,10 +231,10 @@ def reservations(db, now):
         raise
 
     unswept = [r for r in live
-               if (_parse(r.get("expires_at")) or now) < now - LEASE_UNSWEPT_WARN]
+               if (_ts(r.get("expires_at"), bad, "item_reservations.expires_at", r.get("task_no")) or now) < now - LEASE_UNSWEPT_WARN]
     overlong = [r for r in live
-                if (_parse(r.get("created_at")) or now) < now - LEASE_MAX_LIFE - LEASE_LIFE_GRACE
-                and (_parse(r.get("expires_at")) or now) > now]
+                if (_ts(r.get("created_at"), bad, "item_reservations.created_at", r.get("task_no")) or now) < now - LEASE_MAX_LIFE - LEASE_LIFE_GRACE
+                and (_ts(r.get("expires_at"), bad, "item_reservations.expires_at", r.get("task_no")) or now) > now]
 
     out = [
         _check("reservations_lapsed_unswept", "warn" if unswept else "ok", len(unswept),
@@ -463,13 +484,41 @@ def database(db):
                    note="One indexed read. Slow or failing reads point at the database plan's limits")]
 
 
+def _unreadable_timestamps(bad: list) -> dict:
+    """One check for every timestamp this pass could not read.
+
+    A malformed timestamp is a data fault with a specific consequence: the check that read it
+    skipped that row, so something that should have been reported was not. That is worth
+    saying out loud, and worth saying **once** -- a column holding one bad value usually
+    holds many, and a check per row would push the rest of the body out of sight.
+
+    A warning rather than an alert, which is this module's rule for a check that could not
+    run: reported, never passed, never escalated. It names the columns and up to MAX_IDS ids
+    so the rows can be found and fixed, and nothing here guesses how old they were.
+    """
+    if not bad:
+        return _check("timestamps_unreadable", "ok", 0,
+                      note="Every timestamp read in this pass parsed")
+    columns = sorted({where for where, _ in bad})
+    ids = [f"{where}:{ident}" for where, ident in bad if ident is not None]
+    return _check("timestamps_unreadable", "warn", len(bad), ids,
+                  note=f"{len(bad)} timestamp(s) could not be read, in "
+                       f"{', '.join(columns)}. The checks that read them skipped those rows, "
+                       "so work that should have been reported may not be. Fix or clear the "
+                       "values; the ids are column:id")
+
+
 def run(db, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     checks = []
+    # Malformed timestamps found anywhere in this pass, as (column, id). Collected rather
+    # than reported per row: one unreadable column usually means many unreadable rows, and a
+    # check per row would bury everything else in the body.
+    bad: list = []
     for name, fn in (("database", lambda: database(db)),
-                     ("scoring_events", lambda: answer_events(db, now)),
-                     ("review_queues", lambda: review_queues(db, now)),
-                     ("reservations", lambda: reservations(db, now)),
+                     ("scoring_events", lambda: answer_events(db, now, bad)),
+                     ("review_queues", lambda: review_queues(db, now, bad)),
+                     ("reservations", lambda: reservations(db, now, bad)),
                      ("reservations_sweep_stalled", lambda: reservation_sweep(db, now)),
                      ("ops_monitor", lambda: ops_monitor(db, now)),
                      ("deliveries", lambda: deliveries(db, now))):
@@ -477,6 +526,7 @@ def run(db, now: datetime | None = None) -> dict:
             checks.extend(fn())
         except Exception as exc:
             checks.append(_check(name, "alert", 1, note=f"The check itself failed ({type(exc).__name__})"))
+    checks.append(_unreadable_timestamps(bad))
     worst = "alert" if any(c["status"] == "alert" for c in checks) else \
         "warn" if any(c["status"] == "warn" for c in checks) else "ok"
     return {"status": worst, "checked_at": now.isoformat(), "checks": checks}
