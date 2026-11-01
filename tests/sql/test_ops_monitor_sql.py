@@ -922,3 +922,143 @@ def test_the_guard_covers_vault_because_service_role_can_already_read_it(db):
     assert "SELECT *and DELETE*" in text or "select *and DELETE*" in text.lower(), \
         "the comment should record that the grant includes DELETE, not only SELECT"
     assert "NOLOGIN" in text, "the comment should say why this is not already a breach"
+
+
+# ── the service key's privileges on the record (migration 014) ─────────────────
+
+M014 = HEALTH / "migrations" / "014_ops_monitor_state_service_role_acl.sql"
+
+
+def _svc_privs(db):
+    """Every privilege that matters, as the migration's own verification query reads them."""
+    row = db.execute(
+        "select has_table_privilege('service_role','public.ops_monitor_state','select'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','insert'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','update'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','delete'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','truncate'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','references'),"
+        "       has_table_privilege('service_role','public.ops_monitor_state','trigger')").fetchone()
+    return dict(zip(("select", "insert", "update", "delete", "truncate", "references",
+                     "trigger"), row))
+
+
+def _as_supabase_left_it(db):
+    """What production actually looked like after 012, and why.
+
+    Supabase's default privileges for new tables in `public` hand `service_role` Dxtm —
+    TRUNCATE, REFERENCES, TRIGGER — and 012 revokes only from `public, anon, authenticated`,
+    so the grant of `select` lands on top of those rather than replacing them. This
+    disposable Postgres has no such default ACL, so the test has to recreate the state
+    before it can prove the fix, exactly as the grant tests above do.
+    """
+    db.execute("grant truncate, references, trigger on ops_monitor_state to service_role")
+
+
+def test_a_grant_does_not_remove_what_the_platform_already_handed_out(db):
+    """Why 012's `grant select` was not enough, as a property of Postgres.
+
+    This is the mechanism behind what production read after 012 was applied:
+
+        select=True insert=False update=False delete=False TRUNCATE=True refs=True trigger=True
+
+    It replays 012's *pattern* — revoke from public, anon and authenticated, then grant
+    select to service_role — against a role that already holds Dxtm from Supabase's default
+    privileges, and shows the grant leaving those in place. A grant adds to a privilege set;
+    only a revoke takes anything away.
+
+    Deliberately not an assertion about migration 012's text or its current behaviour. If
+    012 is ever amended to revoke from service_role too, or Supabase changes its defaults,
+    this test still passes: it pins the Postgres behaviour that made the omission matter,
+    not the omission itself. Nothing here requires 012 to stay wrong.
+    """
+    db.execute("grant truncate, references, trigger on ops_monitor_state to service_role")
+    before = _svc_privs(db)
+    assert before["truncate"] is True, "the starting state this test needs was not created"
+
+    db.execute("revoke all on ops_monitor_state from public, anon, authenticated")
+    db.execute("grant select on ops_monitor_state to service_role")
+
+    after = _svc_privs(db)
+    assert after["select"] is True
+    assert after["truncate"] is True, \
+        "a grant removed a privilege, which would mean 012 never needed a fix"
+    assert (after["insert"], after["update"], after["delete"]) == (False, False, False)
+
+
+def test_014_leaves_the_service_key_with_select_and_nothing_else(db):
+    _as_supabase_left_it(db)
+    db.execute(M014.read_text())
+    assert _svc_privs(db) == {"select": True, "insert": False, "update": False,
+                              "delete": False, "truncate": False, "references": False,
+                              "trigger": False}
+    acl = db.execute("select array_to_string(relacl::text[], ', ') from pg_class c"
+                     " join pg_namespace n on n.oid = c.relnamespace"
+                     " where n.nspname = 'public' and c.relname = 'ops_monitor_state'"
+                     ).fetchone()[0]
+    assert "service_role=r/" in acl, acl
+    assert "service_role=rD" not in acl and "service_role=rw" not in acl, acl
+
+
+def test_014_converges_from_any_starting_state(db):
+    """Safe to re-run, and the reason the revoke comes before the grant: a grant adds to a
+    privilege set, so only the revoke can take anything away. Run against a database
+    somebody has widened by hand, it still ends at select-only."""
+    db.execute("grant all on ops_monitor_state to service_role")
+    assert _svc_privs(db)["delete"] is True
+    for _ in range(2):
+        db.execute(M014.read_text())
+        assert _svc_privs(db) == {"select": True, "insert": False, "update": False,
+                                  "delete": False, "truncate": False, "references": False,
+                                  "trigger": False}
+
+
+def test_re_running_012_does_not_undo_014(db):
+    """012 advertises itself as safe to re-run, so this has to hold or the fix is temporary.
+
+    It holds because `create table if not exists` is a no-op on an existing table, so no
+    default privileges are applied a second time, and 012's own `grant select` adds nothing
+    that is not already there.
+    """
+    _as_supabase_left_it(db)
+    db.execute(M014.read_text())
+    db.execute((HEALTH / "migrations" / "012_ops_monitor.sql").read_text())
+    assert _svc_privs(db) == {"select": True, "insert": False, "update": False,
+                              "delete": False, "truncate": False, "references": False,
+                              "trigger": False}, "re-running 012 resurrected the extra grants"
+
+
+def test_014_refuses_without_012(dsn_before_native):
+    """Clear refusal rather than a half-applied privilege change, as 011 and 013 do."""
+    with psycopg.connect(dsn_before_native, autocommit=True) as db:
+        assert db.execute("select to_regclass('public.ops_monitor_state')").fetchone()[0] is None
+        with pytest.raises(psycopg.errors.UndefinedTable) as e:
+            db.execute(M014.read_text())
+        assert "ops_monitor_state is missing" in str(e.value)
+        assert "Nothing in 014 has been applied" in str(e.value)
+
+
+def test_014_touches_nothing_but_the_one_table(db):
+    """Scope guard. ops_sweep_state has the same omission and is deliberately out of scope;
+    the default privileges on public are a platform-wide decision, not this migration's."""
+    text = M014.read_text()
+    assert "ops_sweep_state" not in text.split("WHAT THIS DELIBERATELY DOES NOT DO")[1].split("begin;")[1], \
+        "014 should not modify ops_sweep_state"
+    assert "alter default privileges" not in text.lower()
+
+    # Executable lines only. Counting the word anywhere in the file counts the comments
+    # explaining the change, which is most of it.
+    stmts = [l.strip() for l in text.splitlines()
+             if l.strip() and not l.lstrip().startswith("--")
+             and l.strip().split()[0].lower() in ("revoke", "grant")]
+    assert stmts == ["revoke all on public.ops_monitor_state from service_role;",
+                     "grant select on public.ops_monitor_state to service_role;"], stmts
+
+    before = db.execute(
+        "select has_table_privilege('service_role','ops_sweep_state','truncate'),"
+        "       has_table_privilege('service_role','ops_sweep_state','delete')").fetchone()
+    db.execute(text)
+    after = db.execute(
+        "select has_table_privilege('service_role','ops_sweep_state','truncate'),"
+        "       has_table_privilege('service_role','ops_sweep_state','delete')").fetchone()
+    assert before == after, "014 changed ops_sweep_state's privileges"
