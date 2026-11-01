@@ -275,9 +275,13 @@ def reservation_sweep(db, now):
         raise
 
     bound = int(SWEEP_STALLED_ALERT.total_seconds() // 60)
+    # `status` and not `return_message`: pg_cron stores the row count of a SELECT, so
+    # `return_message` reads "1 row" on every run of `select public.sweep_reservations()`
+    # whatever it did. What the sweep did is in `ops_sweep_state`.
     where_to_look = ("Check select jobname, schedule, active from cron.job, then "
-                     "select status, return_message, start_time from cron.job_run_details "
-                     "order by start_time desc limit 5")
+                     "select status, start_time from cron.job_run_details order by "
+                     "start_time desc limit 5. return_message reads '1 row' for a SELECT "
+                     "and says nothing; what each sweep did is in ops_sweep_state")
 
     if not rows:
         return [_check("reservations_sweep_stalled", "alert", 1,
@@ -370,9 +374,12 @@ def ops_monitor(db, now):
 
     out = []
     bound = int(MONITOR_STALLED_ALERT.total_seconds() // 60)
+    # Same correction as the sweep's above, and for the same reason: the tick returns a
+    # description of what it did, pg_cron discards it, and `ops_monitor_state` is the record.
     where_to_look = ("Check select jobname, schedule, active from cron.job where jobname = "
-                     "'ops-monitor', then select status, return_message from "
-                     "cron.job_run_details order by start_time desc limit 5")
+                     "'ops-monitor', then select status, start_time from cron.job_run_details "
+                     "order by start_time desc limit 5. return_message reads '1 row' for a "
+                     "SELECT and says nothing; what each tick found is in ops_monitor_state")
     last = _parse(row.get("last_success_at"))
 
     if last is None:
