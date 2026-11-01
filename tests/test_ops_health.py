@@ -955,3 +955,103 @@ def test_a_genuinely_stale_record_with_a_trimmed_fraction_is_still_reported():
     c = _by_name(out)["adjudication_waiting"]
     assert c["status"] == "warn" and c["count"] == 1, \
         f"a stale adjudication with a trimmed fraction was dropped: {c}"
+
+
+# ── malformed timestamps are visible, absent ones stay quiet (workstream C) ─────
+#
+# Eleven call sites read `_parse(x) or now`, which treats "no usable timestamp" as "not old
+# enough to report". For an absent timestamp that is correct: a pending event with no
+# locked_at has not been locked. For a malformed one it silently drops a row the check exists
+# to find. Workstream A stopped trimmed fractions being malformed; this makes what remains
+# visible instead of invisible.
+
+def _unreadable(out):
+    return _by_name(out)["timestamps_unreadable"]
+
+
+def test_a_clean_pass_reports_the_data_quality_check_as_ok():
+    out = ops_health.run(_db(), NOW)
+    assert _unreadable(out)["status"] == "ok" and _unreadable(out)["count"] == 0
+    assert out["status"] == "ok"
+
+
+@pytest.mark.parametrize("table, rows, column, ident", [
+    ("answer_events", [{"id": 9, "status": "pending", "task_no": 1, "project_id": "p",
+                        "created_at": "not a date", "attempts": 0}],
+     "answer_events.created_at", "9"),
+    ("answer_events", [{"id": 4, "status": "processing", "task_no": 1, "project_id": "p",
+                        "created_at": None, "locked_at": "garbage", "attempts": 0}],
+     "answer_events.locked_at", "4"),
+    ("review_items", [{"id": 1, "ls_task_id": "T-7", "state": "needs_review",
+                       "authored_at": "13:70:99"}],
+     "review_items.authored_at", "T-7"),
+    ("project_items", [{"id": 1, "project_id": "p1", "task_no": 11,
+                        "status": "needs_adjudication", "labeled_at": "nope"}],
+     "project_items.labeled_at", "11"),
+])
+def test_each_fail_open_check_reports_a_malformed_timestamp(table, rows, column, ident):
+    out = ops_health.run(_db(**{table: rows}), NOW)
+    c = _unreadable(out)
+    assert c["status"] == "warn", f"{column} was skipped silently"
+    assert c["count"] == 1
+    assert f"{column}:{ident}" in c["ids"], c["ids"]
+    assert column in c["note"]
+    assert out["status"] in ("warn", "alert")
+
+
+def test_the_lease_checks_report_malformed_timestamps_too():
+    out = ops_health.run(_db(item_reservations=[
+        {"task_no": 5, "project_id": "p1", "status": "active",
+         "expires_at": "not a date", "created_at": "also not"}]), NOW)
+    c = _unreadable(out)
+    assert c["status"] == "warn"
+    assert any("item_reservations.expires_at:5" in i for i in c["ids"]), c["ids"]
+    assert any("item_reservations.created_at:5" in i for i in c["ids"]), c["ids"]
+
+
+def test_an_absent_timestamp_is_not_a_data_fault():
+    """The distinction this change is about. A null `locked_at` on a pending event means it
+    was never locked, which is ordinary; reporting it would train the reader to ignore this
+    check. Only a value that is present and unreadable counts.
+    """
+    out = ops_health.run(_db(answer_events=[
+        {"id": 1, "status": "pending", "task_no": 1, "project_id": "p",
+         "created_at": None, "locked_at": None, "attempts": 0}]), NOW)
+    assert _unreadable(out)["status"] == "ok", _unreadable(out)
+    out = ops_health.run(_db(review_items=[
+        {"id": 1, "ls_task_id": "T-1", "state": "needs_review", "authored_at": None}]), NOW)
+    assert _unreadable(out)["status"] == "ok"
+
+
+def test_many_bad_rows_are_one_check_rather_than_a_flood():
+    """A column holding one bad value usually holds many. One check, counted in full, with
+    the ids capped the way every other check caps them."""
+    rows = [{"id": i, "status": "pending", "task_no": i, "project_id": "p",
+             "created_at": "not a date", "attempts": 0} for i in range(40)]
+    out = ops_health.run(_db(answer_events=rows), NOW)
+    names = [c["name"] for c in out["checks"]]
+    assert names.count("timestamps_unreadable") == 1, names
+    c = _unreadable(out)
+    assert c["count"] == 40, "the count should be the whole truth"
+    assert len(c["ids"]) == ops_health.MAX_IDS, "the ids should be capped like everywhere else"
+
+
+def test_the_business_decision_of_each_check_is_unchanged():
+    """A malformed timestamp must not silently become a stale row either: the row's age is
+    unknown, so it stays out of the age-based list and appears only as a data fault."""
+    out = ops_health.run(_db(review_items=[
+        {"id": 1, "ls_task_id": "T-1", "state": "needs_review", "authored_at": "garbage"}]), NOW)
+    assert _by_name(out)["second_readings_waiting"]["status"] == "ok", \
+        "an unreadable timestamp was treated as a stale second reading"
+    assert _unreadable(out)["status"] == "warn"
+
+
+def test_a_malformed_timestamp_does_not_mask_a_genuinely_stale_row():
+    """Both at once: the stale row is still reported, and the bad one is still flagged."""
+    stale = _pg((NOW - timedelta(hours=30)).replace(microsecond=87200))
+    out = ops_health.run(_db(review_items=[
+        {"id": 1, "ls_task_id": "T-stale", "state": "needs_review", "authored_at": stale},
+        {"id": 2, "ls_task_id": "T-bad", "state": "needs_review", "authored_at": "garbage"}]), NOW)
+    waiting = _by_name(out)["second_readings_waiting"]
+    assert waiting["status"] == "warn" and waiting["count"] == 1 and "T-stale" in waiting["ids"]
+    assert _unreadable(out)["count"] == 1 and "review_items.authored_at:T-bad" in _unreadable(out)["ids"]
