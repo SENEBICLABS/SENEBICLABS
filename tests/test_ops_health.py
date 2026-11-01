@@ -751,3 +751,41 @@ def test_an_answer_that_was_not_ops_health_reaches_the_operator_as_itself():
     assert "not with an ops-health body" in _probe(out)["note"]
     assert "url column" in _probe(out)["note"]
     assert _mon(out)["status"] == "alert", "nothing has confirmed the platform, so it is stalled"
+
+
+def test_the_stall_notes_point_at_the_record_not_at_return_message():
+    """Where an operator is sent at three in the morning.
+
+    pg_cron stores the row count of a `SELECT`, so `cron.job_run_details.return_message`
+    reads "1 row" on every run of `select public.sweep_reservations()` or
+    `select public.ops_monitor_tick()`, whatever happened. Observed on production. Both
+    notes used to send the reader there for the function's result, which is the wrong place
+    to be sent when you are already unsure whether the thing works.
+
+    `status` stays, because it does say whether the function raised.
+    """
+    stale_sweep = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": AGO(minutes=45),
+         "last_expired": 0, "runs": 3}]), NOW)
+    stale_monitor = ops_health.run(_db(ops_monitor_state=_monitor(
+        last_success_at=AGO(minutes=90))), NOW)
+
+    for label, note, record in (
+            ("reservations_sweep_stalled", _by_name(stale_sweep)["reservations_sweep_stalled"]["note"],
+             "ops_sweep_state"),
+            ("ops_monitor_stalled", _mon(stale_monitor)["note"], "ops_monitor_state")):
+        assert "cron.job" in note, f"{label}: the note must still say where to look"
+        assert record in note, f"{label}: the note must name {record} as the record"
+
+        # The query it hands the operator must select `status`, which is useful, and must
+        # not select `return_message`, which is not. Asserting only on the prose let a
+        # mutation that put `return_message` back into the query slip through.
+        assert "select status, start_time from cron.job_run_details" in note, \
+            f"{label}: the suggested query should select status and start_time"
+        assert "status, return_message" not in note, \
+            f"{label}: the suggested query still selects return_message"
+        assert "return_message reads '1 row'" in note, \
+            f"{label}: the note should say what return_message actually contains"
+        for promise in ("nothing pending", "answered 200", "answered 503"):
+            assert promise not in note, \
+                f"{label}: the note implies return_message carries the tick's result"
