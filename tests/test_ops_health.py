@@ -2,6 +2,7 @@
 The operational health check: each failure mode is detected, reported by id and count
 only, and turns the endpoint into a 503 when it needs action.
 """
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -822,12 +823,28 @@ def _pg(dt):
     return f"{base}{'.' + frac if frac else ''}+00:00"
 
 
-def test_the_pg_helper_really_produces_a_width_python_310_rejects():
-    """A guard on the fixtures: if this ever starts parsing, the tests below prove nothing."""
+def test_the_pg_helper_really_produces_a_width_the_stdlib_once_rejected():
+    """A guard on the fixtures: if this stops producing an awkward width, the tests below
+    prove nothing.
+
+    The width is what matters and it is the same on every version: four digits, which is
+    neither of the two `fromisoformat` accepted before 3.11. Whether the stdlib *raises* on
+    it is version-dependent, and asserting the raise unconditionally is how the first
+    version of this test failed CI on 3.11 while passing on 3.10. 3.11 relaxed
+    `fromisoformat` to take any width, so this defect could never have happened there --
+    which is worth knowing but is not a fix, because production runs 3.10.
+    """
     trimmed = _pg(datetime(2026, 11, 1, 17, 53, 0, 87200, tzinfo=timezone.utc))
     assert trimmed == PROD_REGRESSION, trimmed
-    with pytest.raises(ValueError):
-        datetime.fromisoformat(trimmed)
+    assert len(trimmed.split(".")[1].split("+")[0]) == 4, trimmed
+
+    if sys.version_info < (3, 11):
+        with pytest.raises(ValueError):
+            datetime.fromisoformat(trimmed)
+    else:
+        # Lenient here, so the fixture cannot reproduce the production failure on this
+        # interpreter. `_parse` must still return the right instant, which it does below.
+        assert datetime.fromisoformat(trimmed).microsecond == 87200
 
 
 @pytest.mark.parametrize("text, expect_us", [
