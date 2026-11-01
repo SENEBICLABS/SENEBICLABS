@@ -310,5 +310,16 @@ commit;
 -- `drop table ops_monitor_state` undo 012, after which `ops-health` reports the check as a
 -- warning saying the table is missing, exactly as it does before 012 is applied. The Vault
 -- secret and the operator key are separate: `select vault.update_secret(...)` or delete the
--- row from `vault.secrets`, and revoke the operator key through
--- `DELETE /project/admin/operators/{id}` so it stops working everywhere.
+-- row from `vault.secrets`, and revoke the operator key so it stops working everywhere.
+--
+-- Revoking is a POST carrying the id in a body, not a DELETE on a path; there is no DELETE
+-- route for operators. Both calls need the root key, so the monitor's own key cannot revoke
+-- anything, and the id for the second comes from the first:
+--
+--   curl -s $API/project/admin/operators -H "X-Admin-Key: $ADMIN_API_KEY"
+--   curl -s -X POST $API/project/admin/operators/revoke \
+--     -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+--     -d '{"operator_id":"<id from the list>"}'
+--
+-- It marks the row inactive, so the key stops working on its next use rather than at once.
+-- docs/operations.md, "Revoking the monitor's key", is the fuller version.
