@@ -2673,7 +2673,14 @@ def work_home(x_work_code: str | None = Header(default=None)):
             if at:
                 recent.append((at, pid))
                 try:
-                    dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                    # `labeled_at` comes from project_items through PostgREST, and Postgres trims
+                    # trailing zeros from a timestamptz in JSON, so .087200 arrives as ".0872".
+                    # fromisoformat on 3.10 raises on that width and the `except` below swallowed
+                    # it, dropping the item from this_week, my_dates and the activity calendar.
+                    # items_svc.parse_ts pads the fraction first. Roughly one item in ten was affected.
+                    dt = items_svc.parse_ts(at)
+                    if dt is None:
+                        raise ValueError("unparseable labeled_at")
                     if dt >= week_ago:
                         this_week += 1
                         mp["week"] += 1
