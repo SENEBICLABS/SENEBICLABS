@@ -296,3 +296,203 @@ def test_scheduling_without_migration_010_names_that_instead(db):
 
     assert "sweep_reservations() is missing" in str(e.value)
     assert "migration 010" in (e.value.diag.message_hint or "")
+
+
+# ── the service key's privileges on the record and the sweep (migration 015) ────
+#
+# 010 revokes from `public, anon, authenticated` and never from `service_role`, so Supabase's
+# default privileges for new objects in `public` survive: insert, update, delete and truncate
+# on the table, and EXECUTE on the function. This disposable Postgres has no such default
+# ACL, so each test recreates the state before proving the fix, as the grant tests above do.
+
+M015 = HEALTH / "migrations" / "015_ops_sweep_state_service_role_acl.sql"
+
+
+def _svc(db):
+    row = db.execute(
+        "select has_table_privilege('service_role','public.ops_sweep_state','select'),"
+        "       has_table_privilege('service_role','public.ops_sweep_state','insert'),"
+        "       has_table_privilege('service_role','public.ops_sweep_state','update'),"
+        "       has_table_privilege('service_role','public.ops_sweep_state','delete'),"
+        "       has_table_privilege('service_role','public.ops_sweep_state','truncate'),"
+        "       has_function_privilege('service_role','public.sweep_reservations()','execute'),"
+        "       has_function_privilege('service_role','public.expire_reservations()','execute')"
+    ).fetchone()
+    return dict(zip(("select", "insert", "update", "delete", "truncate",
+                     "can_sweep", "can_expire"), row))
+
+
+def _as_supabase_left_it(db):
+    """What production read after 010: the defaults it never revoked from service_role."""
+    db.execute("grant insert, update, delete, truncate, references, trigger"
+               " on ops_sweep_state to service_role")
+    db.execute("grant execute on function sweep_reservations() to service_role")
+
+
+def _as_supabase_grants_the_lease_table(db):
+    """`item_reservations` as production has it, which the two functions have to write.
+
+    The note above the grant tests applies here too: on the production project `service_role`
+    holds select, insert, update and delete on `item_reservations` from Supabase's defaults,
+    and only row level security keeps it out. This disposable Postgres grants none of that,
+    so a call that should be refused for want of EXECUTE on the *function* would otherwise
+    fail on the table instead, and the test would pass for the wrong reason.
+    """
+    db.execute("grant select, insert, update, delete on item_reservations to service_role")
+    db.execute("grant select on project_items, pools, clinicians to service_role")
+
+
+INTENDED = {"select": True, "insert": False, "update": False, "delete": False,
+            "truncate": False, "can_sweep": False, "can_expire": True}
+
+
+def test_a_grant_does_not_remove_what_the_platform_already_handed_out(db):
+    """Why 010's `grant select` was not enough, as a property of Postgres.
+
+    Replays 010's pattern — revoke from public, anon and authenticated, then grant select to
+    service_role — against a role that already holds the defaults, and shows the grant
+    leaving them in place. Deliberately not an assertion about 010's text: if 010 is ever
+    amended to revoke from service_role too, this still passes. Nothing here requires that
+    file to stay wrong.
+    """
+    _as_supabase_left_it(db)
+    assert _svc(db)["truncate"] is True, "the starting state this test needs was not created"
+
+    db.execute("revoke all on ops_sweep_state from public, anon, authenticated")
+    db.execute("grant select on ops_sweep_state to service_role")
+
+    after = _svc(db)
+    assert after["select"] is True
+    assert after["truncate"] is True, \
+        "a grant removed a privilege, which would mean 010 never needed a fix"
+    assert after["can_sweep"] is True, "the function grant survived the table revoke, as it must"
+
+
+def test_015_leaves_select_on_the_record_and_no_sweep(db):
+    _as_supabase_left_it(db)
+    db.execute(M015.read_text())
+    assert _svc(db) == INTENDED
+
+    acl = db.execute("select array_to_string(relacl::text[], ', ') from pg_class c"
+                     " join pg_namespace n on n.oid=c.relnamespace"
+                     " where n.nspname='public' and c.relname='ops_sweep_state'").fetchone()[0]
+    assert "service_role=r/" in acl, acl
+    fn = db.execute("select coalesce(array_to_string(proacl::text[], ', '), '(default)')"
+                    " from pg_proc p join pg_namespace n on n.oid=p.pronamespace"
+                    " where n.nspname='public' and p.proname='sweep_reservations'").fetchone()[0]
+    assert "service_role" not in fn, fn
+
+
+def test_015_keeps_the_drains_fallback_working(db):
+    """The regression that would hurt, and the reason the two functions differ.
+
+    `expire_reservations()` is granted to the service key on purpose in 009: the scoring
+    drain calls it through RPC as the fallback that retires lapsed leases when the schedule
+    is down. Revoking it would break that silently.
+    """
+    _as_supabase_left_it(db)
+    _as_supabase_grants_the_lease_table(db)
+    db.execute(M015.read_text())
+    assert _svc(db)["can_expire"] is True, "015 broke the scoring drain's fallback sweep"
+    # And the service key really can call it, not merely hold the privilege bit.
+    db.execute("set role service_role")
+    try:
+        db.execute("select expire_reservations()")
+    finally:
+        db.execute("reset role")
+
+
+def test_the_service_key_cannot_call_the_sweep_after_015(db):
+    """The serious half. 010 says the only way to refresh the record is to be the scheduler;
+    an EXECUTE grant to the service key is a way for anything holding it to refresh the
+    heartbeat and hide a dead schedule from reservations_sweep_stalled."""
+    _as_supabase_left_it(db)
+    _as_supabase_grants_the_lease_table(db)
+    db.execute("set role service_role")
+    db.execute("select sweep_reservations()")          # possible before 015
+    db.execute("reset role")
+
+    db.execute(M015.read_text())
+    db.execute("set role service_role")
+    try:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("select sweep_reservations()")
+    finally:
+        db.execute("reset role")
+
+
+def test_015_converges_from_broad_grants_and_repeat_application(db):
+    db.execute("grant all on ops_sweep_state to service_role")
+    db.execute("grant execute on function sweep_reservations() to service_role")
+    assert _svc(db)["delete"] is True and _svc(db)["can_sweep"] is True
+    for _ in range(2):
+        db.execute(M015.read_text())
+        assert _svc(db) == INTENDED
+
+
+def test_re_running_010_after_015_does_not_restore_the_grants(db):
+    """010 advertises itself as safe to re-run, so this has to hold or the fix is temporary.
+
+    It holds because `create table if not exists` is a no-op on an existing table and
+    `create or replace function` preserves the existing ACL. The next test pins the one case
+    where that is not true.
+    """
+    _as_supabase_left_it(db)
+    db.execute(M015.read_text())
+    db.execute((HEALTH / "migrations" / "010_reservation_sweep.sql").read_text())
+    assert _svc(db) == INTENDED, "re-running 010 resurrected the unwanted privileges"
+
+
+def test_dropping_and_recreating_the_sweep_would_restore_the_grant(db):
+    """The residual risk 015 documents and cannot close.
+
+    `create or replace function` keeps a function's ACL; `drop` plus `create` resets it to
+    the schema's default privileges, which on Supabase hand EXECUTE back to service_role.
+    Nothing in this repository drops it, and every migration here uses `create or replace`,
+    but a future one that did would silently undo 015. Pinned so that it is a known
+    property rather than a surprise.
+    """
+    _as_supabase_left_it(db)
+    db.execute(M015.read_text())
+    assert _svc(db)["can_sweep"] is False
+
+    db.execute("alter default privileges in schema public grant execute on functions to service_role")
+    db.execute("drop function sweep_reservations()")
+    db.execute("create function sweep_reservations() returns integer language sql as"
+               " $$ select 0 $$")
+    assert _svc(db)["can_sweep"] is True, \
+        "drop+create no longer resets the ACL, so 015's documented caveat is stale"
+
+
+def test_015_refuses_when_010s_objects_are_absent(dsn_before_native):
+    with psycopg.connect(dsn_before_native, autocommit=True) as db:
+        assert db.execute("select to_regclass('public.ops_sweep_state')").fetchone()[0] is None
+        with pytest.raises(psycopg.errors.UndefinedTable) as e:
+            db.execute(M015.read_text())
+        assert "ops_sweep_state is missing" in str(e.value)
+        assert "Nothing in 015 has been applied" in str(e.value)
+
+
+def test_015_touches_no_other_objects_acls(db):
+    """Scope guard: ops_monitor_state and item_reservations must come out identical."""
+    def acls():
+        return db.execute("""
+            select coalesce(string_agg(c.relname || '=' ||
+                     coalesce(array_to_string(c.relacl::text[], ','), 'default'), ' | '
+                     order by c.relname), '')
+              from pg_class c join pg_namespace n on n.oid=c.relnamespace
+             where n.nspname='public'
+               and c.relname in ('ops_monitor_state','item_reservations','project_items')
+        """).fetchone()[0]
+    before = acls()
+    db.execute(M015.read_text())
+    assert acls() == before, "015 changed an ACL it should not have"
+
+    stmts = [l.strip() for l in M015.read_text().splitlines()
+             if l.strip() and not l.lstrip().startswith("--")
+             and l.strip().split()[0].lower() in ("revoke", "grant")]
+    assert stmts == ["revoke all on public.ops_sweep_state from service_role;",
+                     "grant select on public.ops_sweep_state to service_role;",
+                     "revoke all on function public.sweep_reservations() from service_role;"], stmts
+    assert "expire_reservations() from" not in M015.read_text(), \
+        "015 must never revoke expire_reservations()"
