@@ -9,6 +9,7 @@ check is in alert, so a plain uptime monitor can raise the alarm without parsing
 
 What each check means for an operator is written in docs/operations.md.
 """
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -61,11 +62,35 @@ MONITOR_STALLED_ALERT = timedelta(minutes=35)
 MONITOR_FAILURES_ALERT = 3
 
 
+# Fractional seconds, for the normalisation below.
+_FRACTION = re.compile(r"\.(\d+)")
+
+
 def _parse(stamp) -> datetime | None:
+    """An aware datetime from a timestamp PostgREST returned, or None.
+
+    The fraction is padded to six digits first, and that is the whole point of this
+    function rather than a detail of it. **Postgres trims trailing zeros when it serialises
+    a timestamptz to JSON**, so a column holding 17:53:00.087200 arrives as
+    "2026-11-01T17:53:00.0872+00:00". Python's `fromisoformat` before 3.11 accepts only
+    three or six fractional digits and raises `ValueError` on any other width, and
+    production runs python:3.10-slim (Dockerfile).
+
+    Measured: 9.93% of microsecond values render at a width 3.10 rejects. Before this,
+    roughly one timestamp in ten came back as None, and every caller read that None as
+    "there is no timestamp" -- which made `ops_monitor_stalled` alert that the monitor had
+    never succeeded about once every hundred minutes, and made the `_parse(...) or now`
+    callers treat a stale row as fresh and drop it from their list.
+
+    None still means absent or genuinely malformed. Distinguishing those two is a separate
+    concern, deliberately not folded in here.
+    """
     if not stamp:
         return None
+    text = _FRACTION.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"),
+                         str(stamp).replace("Z", "+00:00"), count=1)
     try:
-        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        t = datetime.fromisoformat(text)
     except ValueError:
         return None
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
