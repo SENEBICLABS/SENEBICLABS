@@ -1062,3 +1062,182 @@ def test_014_touches_nothing_but_the_one_table(db):
         "select has_table_privilege('service_role','ops_sweep_state','truncate'),"
         "       has_table_privilege('service_role','ops_sweep_state','delete')").fetchone()
     assert before == after, "014 changed ops_sweep_state's privileges"
+
+
+# ── the tick as a state machine, over repeated cycles (workstream D) ───────────
+#
+# The tests above each prove one transition. These drive the thing the way pg_cron does, many
+# ticks in a row with scripted replies, and assert the whole record at every step. That is
+# where the two-phase cycle actually shows: pg_net cannot return a reply inside the call that
+# sent the request, so every tick reports on the *previous* probe, and the sequence a reader
+# sees is always one step behind what the endpoint said.
+#
+# EXPECTED STATE TRANSITIONS
+#
+#   tick  collects            then sends   last_success_at  consecutive_failures
+#   ----  ------------------  -----------  ---------------  --------------------
+#   1     nothing (first)     request 1    unchanged (null) unchanged (0)
+#   2     request 1's reply   request 2    set if answered  0 if answered, +1 if not
+#   n     request n-1's reply request n    same rule        same rule
+#
+# So after N ticks the record describes probe N-1, `runs` is N, and exactly one request is
+# outstanding. A failure never moves last_success_at; an answer always resets the counter.
+
+
+def _cycle(db, replies):
+    """Drive N ticks, answering each outstanding request from `replies`.
+
+    `replies[i]` is the kwargs for the reply to the request that tick i+1 sent, or None to
+    leave that request unanswered. Returns the record after every tick, so a test can assert
+    the sequence rather than only the end.
+    """
+    seen = []
+    for reply in replies:
+        _tick(db)
+        pending = _state(db)["pending"]
+        if reply is not None and pending is not None:
+            _reply(db, pending, **reply)
+        seen.append(_state(db))
+    _tick(db)                                    # one more, to collect the last reply
+    seen.append(_state(db))
+    return seen
+
+
+OK = dict(status_code=200, content=OK_BODY)
+ALERTING = dict(status_code=503, content=ALERT_BODY)
+BROKEN = dict(status_code=502, content="bad gateway")
+
+
+def test_ten_healthy_cycles_keep_the_record_healthy_and_one_step_behind(db):
+    _arm(db)
+    seen = _cycle(db, [OK] * 10)
+
+    # The first tick has nothing to collect: that is the two-phase cycle, not a fault.
+    assert seen[0]["runs"] == 1
+    assert seen[0]["last_success_at"] is None, "tick 1 reported on a probe that had not replied"
+    assert seen[0]["failures"] == 0
+
+    for i, s in enumerate(seen[1:], start=2):
+        assert s["runs"] == i, (i, s["runs"])
+        assert s["last_success_at"] is not None, f"tick {i} lost the heartbeat"
+        assert s["code"] == 200 and s["reported"] == "ok", (i, s["code"], s["reported"])
+        assert s["failures"] == 0 and s["error"] is None, (i, s["failures"], s["error"])
+        assert s["pending"] is not None, f"tick {i} left no probe outstanding"
+
+    # The heartbeat moves forward every cycle rather than sticking at the first success.
+    stamps = [s["last_success_at"] for s in seen[1:]]
+    assert len(set(stamps)) == len(stamps), "last_success_at stopped advancing"
+
+
+def test_a_run_of_503s_is_a_healthy_monitor_reporting_an_unhealthy_platform(db):
+    """The distinction the whole design rests on, over many cycles rather than one."""
+    _arm(db)
+    seen = _cycle(db, [ALERTING] * 6)
+    for s in seen[1:]:
+        assert s["last_success_at"] is not None, "a 503 was treated as a failed probe"
+        assert s["failures"] == 0, "a 503 incremented the failure counter"
+        assert s["code"] == 503 and s["reported"] == "alert"
+        assert s["failing"] == ["deliveries_failing", "scoring_events_failed"]
+
+
+def test_a_run_of_broken_probes_climbs_and_never_moves_the_heartbeat(db):
+    _arm(db)
+    _tick(db)
+    _reply(db, _state(db)["pending"], **OK)
+    _tick(db)
+    alive = _state(db)["last_success_at"]
+    assert alive is not None
+
+    climbed = []
+    for _ in range(4):
+        _reply(db, _state(db)["pending"], **BROKEN)
+        _tick(db)
+        s = _state(db)
+        climbed.append(s["failures"])
+        assert s["last_success_at"] == alive, "a failing probe moved the heartbeat"
+        assert s["error"] is not None and s["reported"] is None and s["failing"] is None
+    assert climbed == [1, 2, 3, 4], climbed
+
+
+def test_recovery_after_a_failed_probe_is_immediate_and_complete(db):
+    """One answer clears everything a run of failures left behind, with no half state."""
+    _arm(db)
+    _tick(db)
+    for _ in range(3):
+        _reply(db, _state(db)["pending"], **BROKEN)
+        _tick(db)
+    bad = _state(db)
+    assert bad["failures"] == 3 and bad["error"] is not None
+
+    _reply(db, _state(db)["pending"], **OK)
+    _tick(db)
+    good = _state(db)
+    assert good["failures"] == 0, "the counter survived a good answer"
+    assert good["error"] is None, "the error text survived a good answer"
+    assert good["last_success_at"] is not None and good["last_success_at"] != bad["last_success_at"]
+    assert good["code"] == 200 and good["reported"] == "ok"
+    assert good["last_failure_at"] is not None, "the history of the failure should remain"
+
+
+def test_the_bootstrap_sequence_is_two_ticks_and_only_the_first_is_blind(db):
+    """What an operator sees in the first twenty minutes, which looks like a fault.
+
+    Tick 1 has no previous reply, so last_success_at stays null and `ops_monitor_stalled`
+    would alert on a monitor that is working. Tick 2 settles it. This is the sequence
+    observed in production at activation.
+    """
+    _arm(db)
+    _tick(db)
+    first = _state(db)
+    assert (first["runs"], first["last_success_at"], first["failures"]) == (1, None, 0)
+    assert first["pending"] is not None
+
+    _reply(db, first["pending"], **OK)
+    _tick(db)
+    second = _state(db)
+    assert second["runs"] == 2 and second["last_success_at"] is not None
+    assert second["code"] == 200 and second["failures"] == 0
+
+
+def test_mixed_cycles_track_the_previous_probe_and_nothing_else(db):
+    """A scripted sequence with every outcome in it, asserted step by step. This is the test
+    that would have caught a tick reporting on the wrong probe."""
+    _arm(db)
+    script = [OK, BROKEN, OK, ALERTING, dict(timed_out=True), OK]
+    seen = _cycle(db, script)
+
+    # seen[i] is the state after tick i+1, which has just collected script[i-1].
+    expected = [
+        (1, None,  0,  None, None),          # tick 1: nothing collected yet
+        (2, True,  0,  200,  "ok"),          # collected script[0] = OK
+        (3, False, 1,  502,  None),          # collected script[1] = BROKEN
+        (4, True,  0,  200,  "ok"),          # collected script[2] = OK
+        (5, True,  0,  503,  "alert"),       # collected script[3] = ALERTING -- still a success
+        (6, False, 1,  None, None),          # collected script[4] = timed out
+        (7, True,  0,  200,  "ok"),          # collected script[5] = OK -- recovered
+    ]
+    for s, (runs, moved, failures, code, reported) in zip(seen, expected):
+        assert s["runs"] == runs, (runs, s["runs"])
+        assert s["failures"] == failures, (runs, failures, s["failures"])
+        assert s["code"] == code, (runs, code, s["code"])
+        assert s["reported"] == reported, (runs, reported, s["reported"])
+        if moved is True:
+            assert s["last_success_at"] is not None, runs
+        elif moved is None:
+            assert s["last_success_at"] is None, runs
+
+
+def test_exactly_one_request_is_outstanding_at_every_point_in_a_long_run(db):
+    """The invariant that makes the two-phase cycle safe: a tick collects one reply and
+    leaves one probe outstanding, so nothing accumulates in pg_net's tables."""
+    _arm(db)
+    for i in range(8):
+        _tick(db)
+        pending = _state(db)["pending"]
+        assert pending is not None, i
+        queued = db.execute("select count(*) from net.http_request_queue").fetchone()[0]
+        assert queued == i + 1, "the stub queue keeps every request, so this counts sends"
+        stored = db.execute("select count(*) from net._http_response").fetchone()[0]
+        assert stored == 0, f"tick {i+1} left an uncollected reply behind"
+        _reply(db, pending, **OK)
+        assert db.execute("select count(*) from net._http_response").fetchone()[0] == 1
