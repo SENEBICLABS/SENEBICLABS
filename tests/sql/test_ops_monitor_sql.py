@@ -22,6 +22,7 @@ pg_net. Everything the application reads is in 012.
 """
 import json
 import pathlib
+import re
 import uuid
 
 import psycopg
@@ -275,15 +276,52 @@ def test_a_503_is_the_monitor_working_and_names_the_failing_checks(db):
         "the names of what was failing, in a stable order, and nothing else"
 
 
-def test_an_unparseable_body_is_still_a_heartbeat(db):
-    """A proxy returning HTML, or a truncated body. The endpoint answered, which is what the
-    heartbeat is about; the verdict is simply unknown rather than bad."""
+@pytest.mark.parametrize("label, code, content", [
+    ("an unrelated marketing page", 200, "<html>Sign in to our site</html>"),
+    ("a proxy error page", 200, "<html>502 Bad Gateway</html>"),
+    ("malformed JSON", 200, '{"status": "ok", "checks": ['),
+    ("JSON with no checks", 200, '{"status": "ok"}'),
+    ("checks that is not an array", 200, '{"status": "ok", "checks": "none"}'),
+    ("an empty body", 200, ""),
+    # The route answers 503 with this when it cannot reach the database, and a load
+    # balancer answers 503 with its own page. Neither is ops-health reporting on anything.
+    ("the route's own database-unavailable 503", 503, '{"detail": "Database unavailable."}'),
+])
+def test_an_answer_that_is_not_an_ops_health_body_is_not_a_heartbeat(db, label, code, content):
+    """What a status code does and does not prove, which this originally got wrong.
+
+    This test replaces one that asserted the opposite: that any 200 was a heartbeat and an
+    unparseable body merely left the verdict unknown. Pointed at a marketing page, that gave
+    a monitor which was permanently green and had never spoken to this platform once. A
+    status code proves something at the configured URL replied; the body is what proves it
+    was `ops-health`.
+    """
     _arm(db)
     _tick(db)
-    _reply(db, _state(db)["pending"], status_code=200, content="<html>502 Bad Gateway</html>")
-    assert _tick(db).startswith("answered 200")
+    _reply(db, _state(db)["pending"], status_code=code, content=content)
+
+    assert _tick(db).startswith(f"failed: HTTP {code} but not an ops-health body"), label
     s = _state(db)
-    assert s["last_success_at"] is not None and s["reported"] is None and s["failures"] == 0
+    assert s["last_success_at"] is None, f"{label} was recorded as a heartbeat"
+    assert s["failures"] == 1 and s["code"] == code
+    assert "not with an ops-health body" in s["error"]
+    assert "url column" in s["error"], "the note should say where to look first"
+
+
+@pytest.mark.parametrize("code", [200, 201, 503])
+def test_a_real_ops_health_body_is_a_heartbeat_whatever_the_status(db, code):
+    """The deliberate 503 behaviour, kept: `ops-health` answers 503 whenever anything is in
+    alert, and that is the endpoint working. Validating the body is what makes the 503 case
+    mean "ops-health said so" rather than "something on that port said so"."""
+    _arm(db)
+    _tick(db)
+    _reply(db, _state(db)["pending"], status_code=code,
+           content=ALERT_BODY if code == 503 else OK_BODY)
+
+    assert _tick(db).startswith(f"answered {code}")
+    s = _state(db)
+    assert s["last_success_at"] is not None and s["failures"] == 0 and s["error"] is None
+    assert s["reported"] == ("alert" if code == 503 else "ok")
 
 
 @pytest.mark.parametrize("reply, expect_return, expect_error", [
@@ -585,3 +623,201 @@ def test_013_never_contains_a_key_and_only_names_the_secret(db):
         for found in re.findall(r"op_[A-Za-z0-9_.-]*", path.read_text()):
             assert found == "op_...", f"{path.name} appears to contain a key: {found}"
     assert "ops_monitor_admin_key" in M013.read_text(), "the secret is referred to by name"
+
+
+# ── switching off while a request is in flight ─────────────────────────────────
+
+def test_disabling_the_monitor_releases_the_request_in_flight(db):
+    """What the disabled path has to do besides stand down.
+
+    Returning with the request still held left two things behind: a `pending_request_id`
+    nothing would ever collect, and its reply in `net._http_response` until pg_net's own six
+    hour prune rather than until the tick that asked for it.
+    """
+    _arm(db)
+    _tick(db)
+    rid = _state(db)["pending"]
+    _reply(db, rid, status_code=200, content=OK_BODY)
+
+    db.execute("update ops_monitor_state set enabled = false")
+    assert _tick(db) == "skipped: disabled, released the request in flight"
+
+    s = _state(db)
+    assert s["pending"] is None and s["pending_since"] is None
+    assert db.execute("select count(*) from net._http_response where id = %s",
+                      (rid,)).fetchone()[0] == 0, "the uncollected reply was left behind"
+    # Standing down is not a probe result: nothing failed and nothing succeeded.
+    assert s["failures"] == 0 and s["last_success_at"] is None and s["error"] is None
+
+    # And a second tick while still disabled has nothing left to release.
+    assert _tick(db) == "skipped: disabled"
+
+
+def test_re_enabling_later_does_not_blame_pg_net_for_an_abandoned_request(db):
+    """The misdiagnosis this fixes.
+
+    Before the release above, switching back on days later collected a request whose reply
+    pg_net had long since pruned, and recorded "the pg_net worker may not be running": a
+    true-sounding verdict on a system that was working perfectly.
+    """
+    _arm(db)
+    _tick(db)
+    _reply(db, _state(db)["pending"], status_code=200, content=OK_BODY)
+    db.execute("update ops_monitor_state set enabled = false")
+    _tick(db)                                        # releases
+    db.execute("delete from net._http_response")     # pg_net's prune, days later
+    db.execute("update ops_monitor_state set enabled = true")
+
+    assert _tick(db).startswith("nothing pending; sent "), \
+        "re-enabling should start a fresh probe, not collect a request it let go of"
+    s = _state(db)
+    assert s["failures"] == 0
+    assert s["error"] is None, f"a spurious failure was recorded: {s['error']}"
+
+
+def test_being_disabled_without_pg_net_installed_is_not_a_failure(db):
+    """The release has to be guarded: reading net._http_response when the extension is gone
+    would raise, and a disabled monitor must not record a failure about anything."""
+    _arm(db, net=False)
+    db.execute("update ops_monitor_state set pending_request_id = 42,"
+               " pending_since = now(), enabled = false")
+    assert _tick(db) == "skipped: disabled, released the request in flight"
+    s = _state(db)
+    assert s["pending"] is None and s["failures"] == 0 and s["error"] is None
+
+
+# ── a failure leaves no stale verdict beside it ────────────────────────────────
+
+@pytest.mark.parametrize("reply", [
+    dict(status_code=502, content="bad gateway"),
+    dict(status_code=403, content="forbidden"),
+    dict(timed_out=True),
+    dict(error_msg="Could not resolve host: api.test"),
+    dict(status_code=200, content="<html>hello</html>"),
+])
+def test_a_failure_clears_the_verdict_the_last_answer_left(db, reply):
+    """`last_reported_status` and `last_failing_checks` describe an answer. Left in place
+    beside a current failure they read as though the platform were still reporting them,
+    which is the opposite of what the row is for."""
+    _arm(db)
+    _tick(db)
+    _reply(db, _state(db)["pending"], status_code=503, content=ALERT_BODY)
+    _tick(db)
+    assert _state(db)["failing"] == ["deliveries_failing", "scoring_events_failed"]
+
+    _reply(db, _state(db)["pending"], **reply)
+    _tick(db)
+    s = _state(db)
+    assert s["failures"] == 1
+    assert s["failing"] is None, "a stale failing-checks list survived a failure"
+    assert s["reported"] is None, "a stale reported status survived a failure"
+
+
+# ── the exposed-schema guard, against real pg_db_role_setting rows ─────────────
+#
+# 013 cannot be run end to end here: it refuses on pg_cron, which this server does not have
+# and which cannot be faked, because `pg_extension` is a catalog. So these tests lift the
+# guard's own SQL out of the migration file and run that, which is the next best thing to
+# running the file: the query under test is the one that ships, not a copy of it.
+
+def _guard_sql():
+    """The two halves of the guard, as written in 013."""
+    text = M013.read_text()
+    reader = re.search(r"(select string_agg\(split_part.*?)\s*;", text, re.S).group(1)
+    reader = reader.replace("into exposed", "")
+    predicate = re.search(r"exists \(select 1 from unnest\(string_to_array\(exposed, ','\)\)"
+                          r".*?btrim\(sch\) = 'net'\)", text, re.S).group(0)
+    return reader, predicate
+
+
+def _ask_the_guard(db):
+    """What 013 would conclude: the value it read, and whether it refuses."""
+    reader, predicate = _guard_sql()
+    return db.execute(f"with v(exposed) as ({reader})"
+                      f" select exposed, {predicate} as refuses from v").fetchone()
+
+
+def _authenticator(db, *, cluster_wide=None, in_this_database=None):
+    db.execute("do $$ begin create role authenticator nologin;"
+               " exception when duplicate_object then null; end $$")
+    db.execute("alter role authenticator reset all")
+    if cluster_wide:
+        for setting in cluster_wide:
+            db.execute(f"alter role authenticator set {setting}")
+    if in_this_database:
+        for setting in in_this_database:
+            db.execute(f"alter role authenticator in database {db.info.dbname}"
+                       f" set {setting}")
+
+
+def test_the_guard_reads_the_setting_from_whichever_row_holds_it(db):
+    """The bug this guard was rewritten for, reproduced.
+
+    Two rows: one cluster-wide, one for this database, which is where Supabase puts
+    `pgrst.db_schemas`. The first version read one arbitrary row with `limit 1` and no
+    `order by`, and against this exact shape it read the cluster-wide one, found no `net`,
+    and installed while `net` was exposed the whole time.
+    """
+    _authenticator(db,
+                   cluster_wide=["statement_timeout = '8s'"],
+                   in_this_database=['"pgrst.db_schemas" = \'public,net\''])
+    rows = db.execute("select count(*) from pg_db_role_setting s join pg_roles r"
+                      " on r.oid = s.setrole where r.rolname = 'authenticator'").fetchone()[0]
+    assert rows == 2, "the two-row shape this test is about was not created"
+
+    exposed, refuses = _ask_the_guard(db)
+    assert exposed == "public,net"
+    assert refuses is True, "the guard passed while net was exposed"
+
+    # And what the old query did with the same database, so the regression is on the record.
+    missed = db.execute("select setconfig::text from pg_db_role_setting s"
+                        " join pg_roles r on r.oid = s.setrole"
+                        " where r.rolname = 'authenticator' limit 1").fetchone()[0]
+    assert "pgrst.db_schemas" not in missed, \
+        "this database no longer reproduces the wrong-row case, so the test proves nothing"
+
+
+@pytest.mark.parametrize("label, settings, exposed, refuses", [
+    ("net exposed, cluster-wide row only", ['"pgrst.db_schemas" = \'public,net\''],
+     "public,net", True),
+    ("net exposed with spaces", ['"pgrst.db_schemas" = \'public, net, graphql_public\''],
+     "public, net, graphql_public", True),
+    ("net alone", ['"pgrst.db_schemas" = \'net\''], "net", True),
+    ("the ordinary safe setting", ['"pgrst.db_schemas" = \'public, graphql_public\''],
+     "public, graphql_public", False),
+    # The old regex matched any `net` token anywhere in the whole setting string, so a
+    # lookalike schema was a hazard in one direction and an unrelated setting in the other.
+    ("a lookalike schema name", ['"pgrst.db_schemas" = \'public,network_logs\''],
+     "public,network_logs", False),
+    ("an unrelated setting whose value is net",
+     ['"pgrst.db_schemas" = \'public\'', '"pgrst.db_extra_search_path" = \'net\''],
+     "public", False),
+])
+def test_the_guard_decides_on_exact_schema_tokens(db, label, settings, exposed, refuses):
+    _authenticator(db, cluster_wide=settings)
+    assert _ask_the_guard(db) == (exposed, refuses), label
+
+
+def test_an_unestablished_setting_is_not_a_pass(db):
+    """PostgREST can be configured from its environment rather than from a role setting, and
+    then there is nothing here to read. 013 must say so rather than carry on quietly: the
+    old version treated finding *a* row as having established the answer, which skipped the
+    manual-confirmation notice at the same moment it failed open."""
+    _authenticator(db, cluster_wide=["statement_timeout = '8s'"])
+    exposed, refuses = _ask_the_guard(db)
+    assert exposed is None, "the guard claimed to have read a setting that is not there"
+    assert refuses is False
+
+    text = M013.read_text()
+    assert "if exposed is null then" in text
+    assert "raise notice" in text.split("if exposed is null then")[1].split("elsif")[0], \
+        "a guard that could not establish the answer must say so, not pass silently"
+    assert "Could not establish" in text
+
+
+def test_the_guard_never_runs_after_installation(db):
+    """Stated here because it is a limitation, not a bug, and the kind that gets forgotten:
+    exposing `net` tomorrow is a dashboard setting no migration and no scheduled check in
+    this repository will notice."""
+    assert "That check runs once" in M013.read_text()
+    assert "install-time" in (HEALTH / "docs" / "operations.md").read_text().lower()

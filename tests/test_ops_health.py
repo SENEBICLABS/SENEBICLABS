@@ -710,3 +710,44 @@ def test_nothing_in_the_api_writes_the_monitors_record():
     assert "ops_monitor_tick" not in (
         Path(__file__).resolve().parents[1] / "app" / "api" / "v1" / "project.py").read_text(), \
         "the API calls ops_monitor_tick(), which would mask a stalled schedule"
+
+
+def test_how_long_it_has_been_failing_comes_from_the_clock_not_the_count():
+    """This arithmetic was wrong, and wrong in the reassuring direction.
+
+    It multiplied the failure count by the ten minute cadence. A lost reply makes the tick
+    return without sending a new probe, so those failures arrive one per twenty minutes, and
+    three of them would have been reported as "about 30 minutes" when an hour had passed.
+    `last_success_at` is what actually knows.
+    """
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=3, last_success_at=AGO(minutes=60),
+        last_error="no reply was ever recorded for the request")), NOW)
+    note = _probe(out)["note"]
+    assert "60 minutes" in note, note
+    assert "30 minutes" not in note, "the duration is still being inferred from the count"
+
+
+def test_a_monitor_that_has_never_succeeded_states_no_duration_at_all():
+    """Rather than reporting a made-up one from the count."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=4, last_success_at=None,
+        last_error="the Vault secret named in secret_name does not exist")), NOW)
+    note = _probe(out)["note"]
+    assert "never read this endpoint successfully" in note
+    assert "minutes" not in note.split("never read")[0], note
+
+
+def test_an_answer_that_was_not_ops_health_reaches_the_operator_as_itself():
+    """The failure the body validation added. It must arrive naming the url column, because
+    a monitor pointed at the wrong host looks exactly like an outage otherwise."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=3, last_status_code=200, last_reported_status=None,
+        last_success_at=None,
+        last_error="something answered HTTP 200 at the configured URL but not with an "
+                   "ops-health body (no checks array), so nothing here has confirmed this "
+                   "platform. Check the url column of ops_monitor_state")), NOW)
+    assert _probe(out)["status"] == "alert"
+    assert "not with an ops-health body" in _probe(out)["note"]
+    assert "url column" in _probe(out)["note"]
+    assert _mon(out)["status"] == "alert", "nothing has confirmed the platform, so it is stalled"

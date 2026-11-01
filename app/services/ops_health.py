@@ -396,11 +396,20 @@ def ops_monitor(db, now):
     # new key rather than a look at cron.
     fails = int(row.get("consecutive_failures") or 0)
     err = str(row.get("last_error") or "").strip()[:300]
+    # How long it has been failing comes from the clock, not from the count.
+    #
+    # Multiplying the count by the ten minute cadence was wrong, and wrong in the direction
+    # that matters: a lost reply makes the tick return without sending a new probe, so those
+    # failures arrive one per twenty minutes, and "about 30 minutes" would have been said
+    # about an hour. `last_success_at` is what actually knows, and when there has never been
+    # a success there is no duration to state rather than one to guess.
+    since = _parse(row.get("last_success_at"))
+    how_long = (f", and nothing inside the platform has read this endpoint for "
+                f"{int((now - since).total_seconds() // 60)} minutes" if since else
+                ", and it has never read this endpoint successfully")
     if fails >= MONITOR_FAILURES_ALERT:
         out.append(_check("ops_monitor_probe", "alert", fails,
-                          note=f"{fails} probes in a row failed, so for about "
-                               f"{fails * 10} minutes nothing inside the platform has been "
-                               f"able to read this endpoint. {err}"))
+                          note=f"{fails} probes in a row failed{how_long}. {err}"))
     elif fails:
         out.append(_check("ops_monitor_probe", "warn", fails,
                           note=f"{fails} probe(s) failed since the last success. {err}"))

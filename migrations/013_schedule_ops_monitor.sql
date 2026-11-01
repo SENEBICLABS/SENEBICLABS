@@ -11,19 +11,23 @@
 --
 -- 2. Put a **dedicated operator key** in Vault under the name 012 seeded, which is
 --    `ops_monitor_admin_key`. Mint the key first so it can be revoked on its own without
---    touching the root key or anyone else's:
+--    touching the root key or anyone else's.
 --
---      curl -s -X POST https://api.senebiclabs.com/api/v1/project/admin/operators \
---        -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
---        -d '{"name":"in-database monitor"}'
+--    **Not through the SQL editor.** The dashboard keeps a history of what was run whether
+--    or not the query is saved, so a key pasted there is a key stored in the dashboard for
+--    as long as that history lives. Do it from `psql` instead, where the value can be kept
+--    out of the shell history, out of every process's arguments and off the disk. The
+--    procedure is in docs/operations.md, "Switching it on", step 2, and in outline:
 --
---    then, in the SQL editor, with the key pasted in place of the placeholder:
+--      set +o history                  # this shell stops recording
+--      read -rsp 'operator key: ' K    # a builtin: no process, no argv, no echo
+--      ...write it to a tmpfs file, have psql read the file with \set, shred the file...
 --
---      select vault.create_secret('op_...', 'ops_monitor_admin_key',
---                                 'Operator key used by ops_monitor_tick()');
---
---    Do that in a query you do not save. The SQL editor keeps a history of what was run,
---    and a key pasted into a saved snippet is a key stored in the dashboard.
+--    One thing that cannot be avoided and is therefore written down: `vault.create_secret`
+--    takes the key as a SQL literal, so the statement text contains it. psql does not bind
+--    parameters. If the project is logging statements (`log_statement = 'all'`, or a
+--    `log_min_duration_statement` short enough to catch it) the key lands in the Postgres
+--    log. Confirm that setting before running it, which docs/operations.md says how to do.
 --
 -- This file does not do either of them, and that is deliberate for the same reason 011 does
 -- not enable pg_cron: the `postgres` role on this project is not a superuser, so whether it
@@ -54,7 +58,11 @@
 --   * `anon`, `authenticated` and `service_role` cannot open a direct connection, and the
 --     Data API does not expose the `net` schema, so no API key reaches it. The check below
 --     refuses to install the schedule if `net` has been added to the exposed schemas,
---     because that would turn a bounded exposure into a public one;
+--     because that would turn a bounded exposure into a public one. **That check runs once,
+--     here, at install time.** Nothing re-checks it afterwards: exposing `net` later is a
+--     dashboard setting that no migration and no code in this repository will notice, and
+--     there is no scheduled check for it. It is on the list in docs/operations.md of what
+--     to confirm by hand, next to the provider dashboards;
 --   * the roles that *can* connect are `postgres` and anything an operator creates. A role
 --     holding the connection string already reads every table in the database, including
 --     `operators`, so it is not learning anything this key would not have given it;
@@ -62,6 +70,34 @@
 --     revoking it is one row in `operators`.
 --
 -- The alternative is not having a monitor. This is the trade, made knowingly.
+--
+-- AND THE REPLY, WHICH IS NOT A CREDENTIAL BUT IS NOT NOTHING
+--
+-- `net._http_response` holds the whole body of each reply, and an `ops-health` body carries
+-- operational identifiers: project ids, task numbers and event ids. No clinical content, no
+-- clinician names, no client URLs or secrets. The tick deletes the row as soon as it has
+-- read it, so the window is one tick, and the disabled path in 012 releases a reply it will
+-- never collect rather than leaving it to pg_net's own six hour prune. It sits in the same
+-- `net` schema with the same unrevokable PUBLIC grants as the queue above, so the same
+-- bounded set of roles can read it for that window.
+--
+-- WHAT STILL HAS TO BE CHECKED AGAINST SUPABASE
+--
+-- Two things in this design cannot be tested anywhere but the real project, because
+-- `pg_net` and `supabase_vault` are not installable on a throwaway Postgres and the SQL
+-- tests stub their interfaces:
+--
+--   * **that pg_net's background worker is actually running.** The check below confirms the
+--     extension is installed, which is not the same thing. A worker that is not running
+--     leaves requests in the queue, never writes a reply, and the monitor then records a
+--     lost reply every twenty minutes;
+--   * **that `vault.decrypted_secrets` is not readable by `service_role` or by `anon`.**
+--     That is asserted nowhere in this repository and Supabase's documentation does not
+--     state it either way. If it is readable by the service key, the API's own key can read
+--     this monitor's operator key.
+--
+-- Both are in the activation smoke test in docs/operations.md, and the second one is a
+-- single read-only query that should be run before this monitor is trusted.
 
 begin;
 
@@ -109,20 +145,46 @@ begin
                    'save. Then run this migration again. Nothing in 013 has been applied.';
   end if;
 
-  -- A best-effort read of what PostgREST is told to expose. If `net` is in that list, the
-  -- request queue is readable with an API key and the header above stops being a bounded
-  -- exposure. The setting is not always readable from here, and when it is not this says so
-  -- and carries on rather than blocking on something it cannot see.
-  select setconfig::text into exposed
+  -- What PostgREST is told to expose. If `net` is in that list, the request queue is
+  -- readable with an API key and the header above stops being a bounded exposure.
+  --
+  -- Read from every row rather than from one of them, because `limit 1` without an
+  -- `order by` is not a choice, it is a coin toss. A role routinely has two rows in
+  -- `pg_db_role_setting`: one cluster-wide (`setdatabase = 0`) and one per database, which
+  -- is where Supabase puts `pgrst.db_schemas`. The first version of this guard read one
+  -- arbitrary row, and against a database holding
+  --
+  --     setdatabase | setconfig
+  --     0           | {statement_timeout=8s}
+  --     5           | {"pgrst.db_schemas=public,net"}
+  --
+  -- it read the first, found no `net`, and installed, while `net` was exposed the whole
+  -- time. Worse, finding *a* row made `exposed` non-null, so it also skipped the notice
+  -- below that would have asked for the check to be done by hand. It failed open and quiet
+  -- at the same moment, which is the one combination a guard must never manage.
+  --
+  -- So: pull the value of `pgrst.db_schemas` itself out of every row, and keep whether it
+  -- was found at all separate from what it said. Comparing exact comma-separated tokens
+  -- rather than matching a pattern over the whole setting string also drops the one false
+  -- positive the old regex had, an unrelated setting whose value happened to be `net`.
+  select string_agg(split_part(e, '=', 2), ',')
+    into exposed
     from pg_db_role_setting s
     join pg_roles r on r.oid = s.setrole
+   cross join lateral unnest(s.setconfig) as e
    where r.rolname = 'authenticator'
-   limit 1;
+     and e like 'pgrst.db_schemas=%';
 
   if exposed is null then
-    raise notice 'Could not read PostgREST''s exposed schemas from here. Confirm by hand '
-                 'that "net" is not listed under Settings -> API -> Exposed schemas.';
-  elsif exposed ~ '(^|[=,{"[:space:]])net([,"}[:space:]]|$)' then
+    -- Not established, so not passed. PostgREST can also be configured from its own
+    -- environment rather than from a role setting, in which case there is nothing here to
+    -- read and this is the honest answer.
+    raise notice 'Could not establish PostgREST''s exposed schemas from the database '
+                 '(no pgrst.db_schemas setting on the authenticator role). Confirm by hand '
+                 'that "net" is not listed under Settings -> API -> Exposed schemas before '
+                 'relying on this monitor.';
+  elsif exists (select 1 from unnest(string_to_array(exposed, ',')) sch
+                 where btrim(sch) = 'net') then
     raise exception 'the net schema is exposed through the Data API'
       using errcode = 'insufficient_privilege',
             hint = 'Remove "net" from Settings -> API -> Exposed schemas first. While it is '
@@ -183,8 +245,21 @@ commit;
 --
 -- TO ROLL BACK
 --
+-- Both statements, then the check that both took. Doing only the second is the quiet
+-- failure: the job stays scheduled and ticks `skipped: disabled` for ever, while
+-- `ops_monitor_stalled` drops from an alert to a warning, so the endpoint stops saying 503
+-- about a monitor that is still installed and no longer watching anything.
+--
 --   select cron.unschedule('ops-monitor');
 --   update ops_monitor_state set enabled = false where name = 'ops-health';
+--
+--   -- expect: 0 | f
+--   select (select count(*) from cron.job where jobname = 'ops-monitor') as jobs_left,
+--          (select enabled from ops_monitor_state where name = 'ops-health') as still_on;
+--
+-- `cron.unschedule` raises if the job does not exist, so a rollback run twice errors on the
+-- first statement rather than quietly leaving the second undone; run them separately, or
+-- read the check above to see which half is outstanding.
 --
 -- That is the whole rollback and it needs no deploy. The schedule stops, the row stops
 -- being written, and `ops_monitor_stalled` returns to the warning it reported before 013,

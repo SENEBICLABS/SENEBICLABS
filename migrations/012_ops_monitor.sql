@@ -97,8 +97,13 @@ alter table ops_monitor_state enable row level security;
 -- The thing being probed. Seeded rather than demanded, so activation is one fewer step, and
 -- `on conflict do nothing` so re-running this file never overwrites an operator's own URL.
 --
--- The URL is not a secret. It is in docs/api.md, in .github/workflows/ops.yml and on the
--- public documentation site. The key that opens it is the secret, and that lives in Vault.
+-- The URL is not a secret: it is in .github/workflows/ops.yml, and `ops-health` is an
+-- operator endpoint which is deliberately not in the client reference (docs/api.md or
+-- ui/app/docs/). The key that opens it is the secret, and that lives in Vault.
+--
+-- Nothing checks that this URL is the ops-health of *this* project, and nothing can: a
+-- database cannot know which deployment it belongs to. What the tick checks instead is the
+-- shape of what answers, so a URL pointing somewhere else is reported rather than believed.
 insert into ops_monitor_state (name, url, secret_name)
      values ('ops-health',
              'https://api.senebiclabs.com/api/v1/project/admin/ops-health',
@@ -125,6 +130,7 @@ declare
   v_body            jsonb;
   v_reported        text;
   v_failing         text[];
+  v_valid           boolean;
   v_secret          text;
   v_request         bigint;
   v_collected       text := 'nothing pending';
@@ -146,6 +152,22 @@ begin
     return 'skipped: not configured';
   end if;
   if not s.enabled then
+    -- Let go of anything in flight before standing down. Returning with the request still
+    -- held would leave two things behind: a `pending_request_id` nothing will ever collect,
+    -- and its reply sitting in `net._http_response` until pg_net's own six hour prune
+    -- rather than until the tick that asked for it. Switching the monitor back on days
+    -- later would then collect a request whose reply had long since been pruned and record
+    -- "the pg_net worker may not be running", which is a true-sounding diagnosis of the
+    -- wrong system.
+    if s.pending_request_id is not null then
+      if to_regclass('net._http_response') is not null then
+        delete from net._http_response where id = s.pending_request_id;
+      end if;
+      update ops_monitor_state
+         set pending_request_id = null, pending_since = null
+       where name = 'ops-health';
+      return 'skipped: disabled, released the request in flight';
+    end if;
     return 'skipped: disabled';
   end if;
 
@@ -158,6 +180,9 @@ begin
        set pending_request_id   = null,
            pending_since        = null,
            last_failure_at      = now(),
+           last_status_code     = null,
+           last_reported_status = null,
+           last_failing_checks  = null,
            last_error           = 'pg_net is not installed on this database, so no request '
                                   'can be sent. Enable it once as the project owner, then '
                                   'apply migration 013',
@@ -186,6 +211,9 @@ begin
          set pending_request_id   = null,
              pending_since        = null,
              last_failure_at      = now(),
+             last_status_code     = null,
+             last_reported_status = null,
+             last_failing_checks  = null,
              last_error           = 'no reply was ever recorded for the request: the pg_net '
                                     'worker may not be running',
              consecutive_failures = s.consecutive_failures + 1
@@ -199,6 +227,8 @@ begin
              pending_since        = null,
              last_failure_at      = now(),
              last_status_code     = null,
+             last_reported_status = null,
+             last_failing_checks  = null,
              last_error           = 'the request timed out',
              consecutive_failures = s.consecutive_failures + 1
        where name = 'ops-health';
@@ -212,38 +242,80 @@ begin
              pending_since        = null,
              last_failure_at      = now(),
              last_status_code     = null,
+             last_reported_status = null,
+             last_failing_checks  = null,
              last_error           = left(coalesce(v_error, 'the request failed'), 500),
              consecutive_failures = s.consecutive_failures + 1
        where name = 'ops-health';
       v_collected := 'failed: no response';
 
-    elsif v_code in (200, 503) then
-      -- The endpoint answered, which is what the heartbeat is about. 503 is not a failure
-      -- of the monitor: it is `ops-health` doing its job and reporting an alert, and that
-      -- verdict is recorded below so the history shows what it said rather than only that
-      -- it spoke.
+    elsif v_code between 200 and 299 or v_code = 503 then
+      -- Something answered with a status `ops-health` itself uses. Whether it *was*
+      -- `ops-health` is a separate question, and one this has to ask.
+      --
+      -- A status code alone proves only that something at the configured URL replied. A
+      -- marketing page, a proxy's sign-in redirect or a parked domain answers 200 with
+      -- HTML, and recording that as the heartbeat gives a monitor which is permanently
+      -- green and has never once spoken to this platform. 503 is no safer: the route
+      -- answers 503 with `{"detail": "Database unavailable."}` when it cannot reach the
+      -- database at all, and a load balancer answers 503 with its own page, neither of
+      -- which is `ops-health` reporting on the platform.
+      --
+      -- So the heartbeat requires the shape of the real answer: JSON carrying a `checks`
+      -- array. That keeps the deliberate 503 behaviour intact, because `ops-health`'s own
+      -- 503 carries the full body and passes, while making it mean what it was always
+      -- supposed to mean: this endpoint, not merely this port.
       begin
         v_body := v_content::jsonb;
       exception when others then
         v_body := null;
       end;
-      v_reported := v_body ->> 'status';
-      select array_agg(c ->> 'name' order by c ->> 'name')
-        into v_failing
-        from jsonb_array_elements(coalesce(v_body -> 'checks', '[]'::jsonb)) c
-       where coalesce(c ->> 'status', 'ok') <> 'ok';
+      -- `coalesce`, and not decoration. When the body did not parse, `v_body` is null, so
+      -- `v_body -> 'checks'` is null, `jsonb_typeof` of that is null, and `null = 'array'`
+      -- is null rather than false: `if not v_valid` on a null is not taken, and every
+      -- unparseable body fell straight through into the heartbeat branch. That is exactly
+      -- the bug this validation exists to fix, reintroduced one line below the fix.
+      v_valid := coalesce(jsonb_typeof(v_body -> 'checks') = 'array', false);
 
-      update ops_monitor_state
-         set pending_request_id   = null,
-             pending_since        = null,
-             last_success_at      = now(),
-             last_status_code     = v_code,
-             last_reported_status = v_reported,
-             last_failing_checks  = v_failing,
-             last_error           = null,
-             consecutive_failures = 0
-       where name = 'ops-health';
-      v_collected := 'answered ' || v_code || coalesce(': ' || v_reported, '');
+      if not v_valid then
+        update ops_monitor_state
+           set pending_request_id   = null,
+               pending_since        = null,
+               last_failure_at      = now(),
+               last_status_code     = v_code,
+               last_reported_status = null,
+               last_failing_checks  = null,
+               last_error           = 'something answered HTTP ' || v_code || ' at the '
+                                      'configured URL but not with an ops-health body (no '
+                                      'checks array), so nothing here has confirmed this '
+                                      'platform. Check the url column of ops_monitor_state, '
+                                      'and whether a proxy is answering in front of the API',
+               consecutive_failures = s.consecutive_failures + 1
+         where name = 'ops-health';
+        v_collected := 'failed: HTTP ' || v_code || ' but not an ops-health body';
+      else
+        -- The endpoint answered, which is what the heartbeat is about. A 503 here is not a
+        -- failure of the monitor: it is `ops-health` doing its job and reporting an alert,
+        -- and that verdict is recorded so the history shows what it said rather than only
+        -- that it spoke.
+        v_reported := v_body ->> 'status';
+        select array_agg(c ->> 'name' order by c ->> 'name')
+          into v_failing
+          from jsonb_array_elements(v_body -> 'checks') c
+         where coalesce(c ->> 'status', 'ok') <> 'ok';
+
+        update ops_monitor_state
+           set pending_request_id   = null,
+               pending_since        = null,
+               last_success_at      = now(),
+               last_status_code     = v_code,
+               last_reported_status = v_reported,
+               last_failing_checks  = v_failing,
+               last_error           = null,
+               consecutive_failures = 0
+         where name = 'ops-health';
+        v_collected := 'answered ' || v_code || coalesce(': ' || v_reported, '');
+      end if;
 
     else
       -- Anything else is the endpoint refusing or breaking. 401 and 403 are the ones worth
@@ -255,6 +327,8 @@ begin
              pending_since        = null,
              last_failure_at      = now(),
              last_status_code     = v_code,
+             last_reported_status = null,
+             last_failing_checks  = null,
              last_error           = case
                when v_code in (401, 403) then
                  'the monitor key was refused (HTTP ' || v_code || '): the operator key in '
@@ -292,6 +366,9 @@ begin
   if v_secret is null or v_secret = '' then
     update ops_monitor_state
        set last_failure_at      = now(),
+           last_status_code     = null,
+           last_reported_status = null,
+           last_failing_checks  = null,
            last_error           = 'the Vault secret named in secret_name does not exist or '
                                   'is empty, so there is no key to call the endpoint with. '
                                   'Create it with vault.create_secret',
@@ -336,6 +413,11 @@ $$;
 -- matter: `ops-health` has to read it, and `ops-health` runs under the service key.
 revoke all on ops_monitor_state from public, anon, authenticated;
 revoke all on function ops_monitor_tick() from public, anon, authenticated;
+-- Named separately, and not redundant with the PUBLIC revoke above. On a clean install it
+-- removes nothing, because `service_role` holds nothing of its own. Its job is the second
+-- run: re-applying this file after somebody granted the service key EXECUTE directly is
+-- what restores the posture, and a PUBLIC revoke does not touch a grant made to a named
+-- role. tests/sql/test_ops_monitor_sql.py grants it first for exactly that reason.
 revoke all on function ops_monitor_tick() from service_role;
 
 grant select on ops_monitor_state to service_role;

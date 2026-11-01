@@ -95,6 +95,18 @@ what the heartbeat is about; the alert it carried belongs to the check that rais
 503 counted as a probe failure, any alert anywhere would make the monitor alert too, and the
 monitor's own alert would keep the 503 alive after the original fault was fixed.
 
+**But the status code alone is never enough.** A heartbeat requires the reply to be JSON
+carrying a `checks` array, whatever its status. A status code only proves that something at
+the configured URL replied, and a marketing page, a parked domain or a proxy's sign-in page
+answers 200 with HTML; recording that would give a monitor that is permanently green and has
+never once spoken to this platform. 503 is no safer, because the route itself answers 503
+with `{"detail": "Database unavailable."}` when it cannot reach the database, and a load
+balancer answers 503 with its own page. An answer without an `ops-health` body is recorded
+as a failure that says so and points at the `url` column first.
+
+Nothing checks that the URL belongs to *this* deployment, and nothing can: a database cannot
+know which project it is part of. The shape of the reply is the check.
+
 ### Switching it on
 
 Three steps, in this order. Until all three are done, `ops_monitor_stalled` is reported as a
@@ -112,19 +124,90 @@ would report `ok` for a platform nothing is watching.
      -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
      -d '{"name":"in-database monitor"}'
    ```
-   then, in the SQL editor, **in a query you do not save**, because the editor keeps a
-   history of what was run:
+   Then store it **from `psql`, not from the SQL editor**. The dashboard keeps a history of
+   what was run whether or not the query is saved, so a key pasted there is a key held in
+   the dashboard for as long as that history lives. This keeps the value out of the shell
+   history, out of every process's argument list and off the disk:
+   ```bash
+   set +o history                              # this shell stops recording
+   umask 077
+   read -rsp 'operator key: ' K; echo          # a builtin: no process, no argv, no echo
+   printf '%s' "$K" > /dev/shm/opskey          # tmpfs, never written to disk
+   unset K
+   psql "$(cat ~/.config/senebiclabs/backup-db.url)" -q -v ON_ERROR_STOP=1 <<'SQL'
+   \set k `cat /dev/shm/opskey`
+   select vault.create_secret(:'k', 'ops_monitor_admin_key',
+                              'Operator key used by ops_monitor_tick()') is not null as stored;
+   SQL
+   shred -u /dev/shm/opskey
+   set -o history
+   ```
+   `read` is a shell builtin, so the key never appears in `ps`. `\set k \`cat ...\`` makes
+   psql read the file, so the key is not in psql's own arguments either. `:'k'` quotes it as
+   a SQL literal.
+
+   **One exposure this cannot remove, so it is written down instead:** `vault.create_secret`
+   takes the key as a literal and psql does not bind parameters, so the key is in the
+   statement text sent to the server. If the project logs statements it lands in the
+   Postgres log. Check first, and expect `none` or a duration long enough not to catch it:
    ```sql
-   select vault.create_secret('op_...', 'ops_monitor_admin_key',
-                              'Operator key used by ops_monitor_tick()');
+   select name, setting from pg_settings
+    where name in ('log_statement', 'log_min_duration_statement');
    ```
 3. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
    missing, if 012 has not been applied, if the Vault secret is absent, or if `net` has been
    added to the Data API's exposed schemas. It switches the monitor on last, so a refusal
    leaves it off.
 
-Verify after twenty minutes: the first tick returns `nothing pending; sent <id>` because it
-had no reply to collect, and the second returns `answered 200: ok; sent <id>`.
+   That exposed-schema check is **install-time only**. Nothing re-checks it: exposing `net`
+   later is a dashboard setting no migration and no scheduled check here will notice, so it
+   belongs on the list of things to confirm by hand below. It also depends on Supabase
+   storing `pgrst.db_schemas` as a role setting; where PostgREST is configured from its own
+   environment the check cannot establish an answer and says so rather than passing.
+
+### The activation smoke test
+
+Two things in this design can only be checked on the real project, because `pg_net` and
+`supabase_vault` cannot be installed on a throwaway Postgres and the SQL tests stub their
+interfaces. **Neither has been tested against Supabase.** Run these once after activating,
+before trusting the monitor. Everything here is read-only except the ticks pg_cron runs
+itself.
+
+1. **Vault's real grants.** Asserted nowhere in this repository, and Supabase's
+   documentation does not state it either way. If the service key can read the secret, the
+   API's own key can read this monitor's operator key:
+   ```sql
+   select has_table_privilege('service_role', 'vault.decrypted_secrets', 'select') as svc,
+          has_table_privilege('anon', 'vault.decrypted_secrets', 'select') as anon;
+   -- both must be false
+   ```
+2. **pg_net's worker is really running.** 013 confirms the extension is installed, which is
+   not the same thing. Wait two ticks, up to twenty minutes:
+   ```sql
+   select status, return_message, start_time from cron.job_run_details
+    where jobid = (select jobid from cron.job where jobname = 'ops-monitor')
+    order by start_time desc limit 3;
+   ```
+   Expect `nothing pending; sent <id>` then `answered 200: ok; sent <id>`. A repeated
+   `failed: no reply recorded` means the worker is not draining the queue.
+3. **It really reached `ops-health`**, and not something else answering on that URL:
+   ```sql
+   select last_success_at, last_status_code, last_reported_status, consecutive_failures
+     from ops_monitor_state;
+   ```
+   `last_reported_status` must be `ok` or `warn` or `alert`. **Null means something answered
+   but not `ops-health`**, and `last_error` will say so.
+4. **The queue drains.** `select count(*) from net.http_request_queue` between ticks: expect
+   0. A number that grows is the worker again.
+5. **End to end**, with your own key: `GET /project/admin/ops-health` and confirm
+   `ops_monitor_stalled` reads `ok` rather than the warning it showed before activation.
+
+**What the reply is exposed to.** `net._http_response` holds the whole body of each reply,
+and an `ops-health` body carries operational identifiers: project ids, task numbers and
+event ids. No clinical content, no clinician names, no client URLs and no secrets. The tick
+deletes the row as soon as it has read it, and a monitor switched off releases a reply it
+will never collect, so the window is one tick rather than pg_net's six hour prune. It lives
+in the same `net` schema under the same grants as the queue below.
 
 **What the key is exposed to.** `pg_net` parks the request, headers included, in
 `net.http_request_queue` until its worker sends it, which is seconds. Supabase grants
@@ -138,10 +221,26 @@ schemas, which 013 refuses to install without.
 
 ### Turning it off
 
+Both statements, then the check that both took:
+
 ```sql
 select cron.unschedule('ops-monitor');
 update ops_monitor_state set enabled = false where name = 'ops-health';
+
+-- expect: 0 | f
+select (select count(*) from cron.job where jobname = 'ops-monitor') as jobs_left,
+       (select enabled from ops_monitor_state where name = 'ops-health') as still_on;
 ```
+
+**Doing only the second is the quiet failure.** The job stays scheduled and ticks
+`skipped: disabled` for ever while `ops_monitor_stalled` drops from an alert to a warning, so
+the endpoint stops answering 503 about a monitor that is still installed and no longer
+watching anything. Nothing detects that state but the query above. `cron.unschedule` raises
+if the job is already gone, so a rollback run twice errors on the first statement rather than
+leaving the second undone.
+
+A monitor switched off releases any request still in flight, so nothing is left pending and
+no reply is left sitting in `net._http_response`.
 
 No deploy, and nothing else in the platform reads this record, so nothing else changes:
 `ops_monitor_stalled` returns to the warning it reported before 013, which does not make the
@@ -218,6 +317,11 @@ What the runs establish, and what they do not:
 **Not covered by this check**, so watch these on the providers' own dashboards:
 - error rates and latency per route (Render and Vercel);
 - database connection exhaustion and storage quota (Supabase);
+- **whether `net` has been added to Settings -> API -> Exposed schemas.** Migration 013
+  refuses to install while it is, but that is an install-time check and nothing re-checks
+  it. While `net` is exposed, `anon` and `authenticated` can read
+  `net.http_request_queue`, which holds the monitor's key in a request header until the
+  worker sends it;
 - the Supabase free plan's pause after 7 days without activity. `pg_cron` ticking every five
   minutes (migration 011) prevents that pause whether or not anything else is running, which
   the GitHub workflow could not be relied on for.
