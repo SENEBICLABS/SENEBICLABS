@@ -17,17 +17,26 @@
 --    or not the query is saved, so a key pasted there is a key stored in the dashboard for
 --    as long as that history lives. Do it from `psql` instead, where the value can be kept
 --    out of the shell history, out of every process's arguments and off the disk. The
---    procedure is in docs/operations.md, "Switching it on", step 2, and in outline:
+--    procedure is in docs/operations.md, "Switching it on", step 2. Run it from bash as a
+--    script, not pasted into a shell: it relies on `read` and `printf` being bash builtins
+--    so the key never reaches a process's arguments, and on a trap to shred the key file
+--    when the call fails or is interrupted. In outline:
 --
---      set +o history                  # this shell stops recording
---      read -rsp 'operator key: ' K    # a builtin: no process, no argv, no echo
+--      read -rsp 'operator key: ' K    # a bash builtin: no process, no argv, no echo
 --      ...write it to a tmpfs file, have psql read the file with \set, shred the file...
 --
 --    One thing that cannot be avoided and is therefore written down: `vault.create_secret`
 --    takes the key as a SQL literal, so the statement text contains it. psql does not bind
---    parameters. If the project is logging statements (`log_statement = 'all'`, or a
---    `log_min_duration_statement` short enough to catch it) the key lands in the Postgres
---    log. Confirm that setting before running it, which docs/operations.md says how to do.
+--    parameters.
+--
+--    **The failing call is the dangerous one, not the successful one.** Production has
+--    `log_statement = ddl` and `log_min_duration_statement = -1`, so a successful call is
+--    logged by neither, but it also has `log_min_error_statement = error`, which logs the
+--    full text of any statement that raises. So a `vault.create_secret` that fails, for
+--    instance because the name is already taken, writes the key into the Postgres log.
+--    Checking only the first two settings is not enough, and a key whose creation failed
+--    must be revoked and replaced rather than retried. docs/operations.md has all three
+--    settings and the revoke-and-remint procedure.
 --
 -- This file does not do either of them, and that is deliberate for the same reason 011 does
 -- not enable pg_cron: the `postgres` role on this project is not a superuser, so whether it

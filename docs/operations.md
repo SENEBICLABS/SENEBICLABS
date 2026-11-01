@@ -126,34 +126,262 @@ would report `ok` for a platform nothing is watching.
    ```
    Then store it **from `psql`, not from the SQL editor**. The dashboard keeps a history of
    what was run whether or not the query is saved, so a key pasted there is a key held in
-   the dashboard for as long as that history lives. This keeps the value out of the shell
-   history, out of every process's argument list and off the disk:
+   the dashboard for as long as that history lives.
+
+   **Check the logging settings first**, because one of them decides what happens if the
+   call fails, and that is the dangerous case rather than the successful one:
+
+   ```sql
+   select name, setting from pg_settings
+    where name in ('log_statement', 'log_min_duration_statement', 'log_min_error_statement');
+   ```
+
+   On production as of 2026-11-01: `log_statement = ddl`, `log_min_duration_statement = -1`,
+   `log_min_error_statement = error`. A successful `select vault.create_secret(...)` is
+   neither DDL nor slow, so it is **not** logged. **A failing one is**, in full, including
+   the key, because `log_min_error_statement = error` logs the text of any statement that
+   raises. Checking only the first two settings would have missed that entirely.
+
+   **Save this as a file and run it with `bash`.** Three reasons, and none of them is
+   style:
+
+   - it depends on `read` and `printf` being **bash builtins**. They are in bash, so no
+     process is spawned and the key reaches no argument list. Under a shell where either is
+     an external command, the key would be in that process's arguments and visible in `ps`.
+     The script refuses to run if `BASH_VERSION` is unset;
+   - running it as a script rather than pasting it is what makes the `trap` fire, which is
+     what shreds the key file when the call fails or you interrupt it. Pasted into an
+     interactive shell, an `EXIT` trap does not run until you log out;
+   - it needs the repo root as its working directory, for `.venv`.
+
+   If you copy it out of the raw Markdown rather than the rendered page, remove the leading
+   indentation: a heredoc terminator has to be at the start of its line.
+
    ```bash
-   set +o history                              # this shell stops recording
+   #!/usr/bin/env bash
+   # Store the monitor's operator key in Vault.
+   # Requires bash, and the repo root as the working directory (for .venv).
+   #   bash store-monitor-key.sh
+   [ -n "${BASH_VERSION:-}" ] || { echo "run this with bash, not sh" >&2; exit 1; }
+   set -uo pipefail
    umask 077
-   read -rsp 'operator key: ' K; echo          # a builtin: no process, no argv, no echo
-   printf '%s' "$K" > /dev/shm/opskey          # tmpfs, never written to disk
+   DSN_FILE=${DSN_FILE:-$HOME/.config/senebiclabs/backup-db.url}
+
+   # A private directory: 0700, uniquely named, on tmpfs where there is one, so the key
+   # never touches a disk. `mktemp -d` cannot be pre-created or symlinked by anyone else,
+   # which a fixed name in /dev/shm can be, because /dev/shm is mode 1777. Two kernel
+   # settings usually block that attack (fs.protected_symlinks, fs.protected_regular) but
+   # this should not be relying on sysctls it never checks.
+   PRIV=
+   for d in /dev/shm "${TMPDIR:-/tmp}"; do
+     if [ -d "$d" ] && [ -w "$d" ]; then PRIV=$(mktemp -d "$d/opsprep.XXXXXXXX") && break; fi
+   done
+   [ -n "$PRIV" ] || { echo "could not create a private temporary directory" >&2; exit 1; }
+   export KEYFILE="$PRIV/key"     # exported: psql's backtick shell reads it, see below
+   PASSFILE="$PRIV/pgpass"
+
+   # Everything secret dies with that directory, on every exit path: success, SQL failure,
+   # Ctrl-C, kill, and a closed terminal. HUP matters because its default action kills the
+   # shell *without* running the EXIT trap, which would leave the key behind until reboot.
+   #
+   # The EXIT trap deliberately does not call `exit` itself: that would return shred's
+   # status and mask psql's, which is the one thing this script must report accurately.
+   cleanup() {
+     for f in "$KEYFILE" "$PASSFILE"; do [ -e "$f" ] && shred -u "$f" 2>/dev/null; done
+     rm -rf "$PRIV" 2>/dev/null
+     return 0
+   }
+   trap cleanup EXIT
+   trap 'cleanup; exit 130' INT TERM HUP
+
+   # Split the stored connection string once, the same way backup_verify.py does: the
+   # non-secret parts into the environment, the password into a mode-600 password file.
+   # Neither the password nor the full URI ever reaches a command line. Every value is
+   # shell-quoted, because an unquoted `export PGHOST=db host.example.com` sets PGHOST to
+   # "db" and carries on, which would connect somewhere unintended. The OPSPREP_OK sentinel
+   # is how the shell knows the whole thing ran: any failure leaves it unset and aborts,
+   # rather than continuing with a half-populated environment.
+   eval "$(.venv/bin/python - "$PASSFILE" "$DSN_FILE" <<'PY'
+   import shlex, sys
+   from pathlib import Path
+   from psycopg.conninfo import conninfo_to_dict
+
+   passfile, dsnfile = Path(sys.argv[1]), Path(sys.argv[2]).expanduser()
+   try:
+       p = conninfo_to_dict(dsnfile.read_text().strip())
+   except Exception as exc:
+       # Deliberately does not echo what it failed to parse: that is the connection string.
+       sys.exit(f"cannot parse {dsnfile}: {type(exc).__name__}")
+   pw = p.get("password")
+   absent = [k for k in ("host", "user") if not p.get(k)] + ([] if pw else ["password"])
+   if absent:
+       sys.exit("the connection string has no " + ", ".join(absent))
+   if "\n" in pw or "\r" in pw:
+       # .pgpass is line-based and has no escape for a newline, so such a password cannot
+       # be represented at all. Fail rather than write a file libpq will silently misread.
+       sys.exit("the password contains a newline, which .pgpass cannot represent; "
+                "rotate it to one without, or connect another way")
+   esc = lambda v: str(v).replace("\\", "\\\\").replace(":", "\\:")
+   passfile.write_text(":".join(esc(p.get(k, "*")) for k in ("host", "port", "dbname", "user"))
+                       + ":" + esc(pw) + "\n")
+   passfile.chmod(0o600)
+   print("export " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (
+       ("PGHOST", p["host"]), ("PGPORT", p.get("port", "5432")),
+       ("PGDATABASE", p.get("dbname", "postgres")), ("PGUSER", p["user"]),
+       ("PGSSLMODE", p.get("sslmode", "require")), ("PGPASSFILE", str(passfile)),
+       ("PGCONNECT_TIMEOUT", "15")) if v))
+   print("OPSPREP_OK=1")
+   PY
+   )"
+   [ "${OPSPREP_OK:-}" = 1 ] || { echo "aborting: connection settings not prepared" >&2; exit 1; }
+
+   # Preflight, BEFORE the key is asked for. Two jobs: prove the connection works, and read
+   # the logging settings. A key typed into a session that then cannot connect is a key that
+   # has to be thrown away for no reason, and a key stored on a server that logs statements
+   # is a key in a log file.
+   pre=$(psql -q -At -v ON_ERROR_STOP=1 -v VERBOSITY=terse -c "
+     select (select setting from pg_settings where name = 'log_statement') || '|' ||
+            (select setting from pg_settings where name = 'log_min_duration_statement') || '|' ||
+            (select setting from pg_settings where name = 'log_min_error_statement')")
+   prc=$?
+   if [ "$prc" -ne 0 ]; then
+     echo "preflight failed (psql exit $prc): could not connect or read pg_settings." >&2
+     echo "No key has been asked for, so there is nothing to revoke. Fix this and re-run." >&2
+     exit 1
+   fi
+   IFS='|' read -r LOG_STMT LOG_DUR LOG_ERR <<<"$pre"
+
+   # `pg_settings.setting` is the raw value in base units, so this is a plain integer in ms.
+   # current_setting() would have returned "250ms" and broken the comparison.
+   case "$LOG_STMT" in
+     all|mod) echo "refusing: log_statement = $LOG_STMT, so a SUCCESSFUL create would be" >&2
+              echo "  written to the Postgres log with the key in it. Set it to ddl or none." >&2
+              exit 1 ;;
+   esac
+   case "$LOG_DUR" in
+     ''|*[!0-9-]*) echo "refusing: could not read log_min_duration_statement ($LOG_DUR)" >&2
+                   exit 1 ;;
+   esac
+   if [ "$LOG_DUR" -ge 0 ]; then
+     echo "refusing: log_min_duration_statement = ${LOG_DUR}ms, so the create would be" >&2
+     echo "  logged with the key in it. Set it to -1 for the duration of this." >&2
+     exit 1
+   fi
+   # Not a refusal, because it cannot be fixed: `error` is Supabase's default and governs
+   # only the failing path, which the exit-code handling below acts on instead.
+   echo "note: log_min_error_statement = $LOG_ERR. A create that FAILS is logged in full," >&2
+   echo "      key included. That is what makes a failed attempt burn the key." >&2
+
+   read -rsp 'operator key (not echoed): ' K; echo   # builtin: no process, no argv, no echo
+   [ -n "$K" ] || { echo "no key entered" >&2; exit 1; }
+   printf '%s' "$K" > "$KEYFILE"                     # builtin: never in argv, never on disk
    unset K
-   psql "$(cat ~/.config/senebiclabs/backup-db.url)" -q -v ON_ERROR_STOP=1 <<'SQL'
-   \set k `cat /dev/shm/opskey`
+
+   # The heredoc is quoted, so this shell expands nothing in it. The backtick is psql's own
+   # and runs through /bin/sh, which expands the exported $KEYFILE there. VERBOSITY=terse is
+   # load-bearing: at the default verbosity psql prints the offending statement back, which
+   # for a SQL error means printing `LINE 1: select vault.create_secret('op_...` to the
+   # terminal.
+   psql -q -v ON_ERROR_STOP=1 -v VERBOSITY=terse <<'SQL'
+   \set k `cat "$KEYFILE"`
    select vault.create_secret(:'k', 'ops_monitor_admin_key',
                               'Operator key used by ops_monitor_tick()') is not null as stored;
    SQL
-   shred -u /dev/shm/opskey
-   set -o history
-   ```
-   `read` is a shell builtin, so the key never appears in `ps`. `\set k \`cat ...\`` makes
-   psql read the file, so the key is not in psql's own arguments either. `:'k'` quotes it as
-   a SQL literal.
+   rc=$?
 
-   **One exposure this cannot remove, so it is written down instead:** `vault.create_secret`
-   takes the key as a literal and psql does not bind parameters, so the key is in the
-   statement text sent to the server. If the project logs statements it lands in the
-   Postgres log. Check first, and expect `none` or a duration long enough not to catch it:
-   ```sql
-   select name, setting from pg_settings
-    where name in ('log_statement', 'log_min_duration_statement');
+   # Which failures burn the key and which do not. psql's exit status says, mostly, and the
+   # difference matters: treating every failure as fatal to the key teaches you to ignore
+   # the warning, and treating none as fatal stores a credential you know is in a log.
+   #
+   # Exit 2 is the one that cannot be resolved from the exit code alone, and it was wrong
+   # here. It was reported as "the statement did not reach the server, so nothing was
+   # logged", which is true when the connection fails before the statement is sent and
+   # false when it drops in the middle of one. Measured: terminating the backend mid
+   # statement on a throwaway server with log_statement = none gave exit 2 and this in the
+   # server log,
+   #
+   #   STATEMENT:  select vault.create_secret('op_DUMMY_...', 'ops_monitor_admin_key',
+   #
+   # because log_min_error_statement = error logs the text of whatever was running. So exit
+   # 2 is ambiguous, and the only safe default for an ambiguous case is to check.
+   case "$rc" in
+     0) echo "stored." ;;
+     3) echo "FAILED (exit 3): the statement reached the server and raised, so its full" >&2
+        echo "  text, key included, is in the Postgres log. BURN THIS KEY: revoke it (see" >&2
+        echo "  \"Revoking the monitor's key\" below), mint another, run this again." >&2
+        echo "  Most likely cause: the name is taken. select name from vault.secrets;" >&2 ;;
+     2) echo "FAILED (exit 2): the connection went bad. AMBIGUOUS, and treat it as burnt" >&2
+        echo "  until you have shown otherwise: if it dropped before the statement was" >&2
+        echo "  sent, nothing was logged, but if it dropped mid-statement the server has" >&2
+        echo "  logged the statement text with the key in it. Before reusing this key:" >&2
+        echo "    1. check the Postgres log (Supabase: Logs -> Postgres) for a STATEMENT" >&2
+        echo "       line mentioning vault.create_secret. If it is there, the key is" >&2
+        echo "       logged: revoke it and mint another." >&2
+        echo "    2. select name, created_at from vault.secrets" >&2
+        echo "          where name = 'ops_monitor_admin_key';" >&2
+        echo "       If it is there, the create committed and there is nothing to redo." >&2 ;;
+     1) echo "FAILED (exit 1): psql failed on its own account and will have said how, for" >&2
+        echo "  instance an unreadable input or a bad option. That happens before anything" >&2
+        echo "  is sent, so the key is not burnt: fix the cause and re-run with it." >&2
+        echo "  If the message names the server rather than psql, follow the exit 2" >&2
+        echo "  instructions instead." >&2 ;;
+     *) echo "FAILED (exit $rc): unrecognised psql status. Assume the statement was sent" >&2
+        echo "  and burn the key." >&2 ;;
+   esac
+   exit "$rc"
    ```
+
+   **If it fails, the key is burnt. Do not retry with the same one.** The statement that
+   raised has already been written to the Postgres log with the key in it, so retrying
+   stores a credential you know to be logged. Instead: revoke it (see "Revoking the
+   monitor's key" below), find out why the call failed, mint a new key, and run this again.
+   The most likely cause is that the name is already taken, which
+   `select name from vault.secrets` answers without decrypting anything.
+
+### Revoking the monitor's key
+
+Two calls, both **root key only**, and the first is how you find the id for the second.
+There is no `DELETE` route: revocation is a `POST` carrying the id in a JSON body.
+
+```bash
+# 1. Find the operator's id. Returns id, name, email, active, created_at, last_used_at —
+#    never a key or a hash.
+curl -s https://api.senebiclabs.com/api/v1/project/admin/operators \
+  -H "X-Admin-Key: $ADMIN_API_KEY"
+
+# 2. Revoke that one operator. 404 if the id is unknown.
+curl -s -X POST https://api.senebiclabs.com/api/v1/project/admin/operators/revoke \
+  -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"operator_id":"<the id from step 1>"}'
+```
+
+It answers `{"ok": true, "message": "Revoked. The key stops working on its next use."}`.
+That wording is exact: the row is marked `active = false` and the next request carrying
+that key is refused, so a revocation takes effect on use rather than immediately.
+
+Both calls require the **root** `ADMIN_API_KEY`. An operator key gets 403, including the
+monitor's own, so a compromised monitor key cannot revoke anything.
+
+`name` has no unique constraint; only `key_hash` does. So minting twice with the same name
+leaves two live operators called the same thing and no way to tell from the list which key
+the monitor holds. Mint once, and use step 1 to check before minting again.
+
+   **The residual risk this does not remove, stated plainly.** `vault.create_secret` takes
+   the key as a SQL literal and psql does not bind parameters, so the key is in the
+   statement text sent to the server. That text is exposed in three ways this procedure
+   cannot close:
+
+   - **if it errors, it is logged**, as above;
+   - **while it runs**, the full text is in `pg_stat_activity.query`, readable by any role
+     that can see other sessions' queries, which on this project includes `postgres`
+     through `pg_monitor`. The window is milliseconds, but it is not zero;
+   - **the settings above are today's settings**, verified once. Anyone setting
+     `log_statement = 'all'`, or a short `log_min_duration_statement`, makes the successful
+     path log the key too, and nothing here would notice.
+
+   This procedure keeps the key out of shell history, out of every process's argument list
+   and off the disk. It does not and cannot keep it out of the statement text. The reason to
+   use it anyway is that the SQL editor's exposure is worse and permanent.
 3. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
    missing, if 012 has not been applied, if the Vault secret is absent, or if it **can see**
    that `net` or `vault` has been added to the Data API's exposed schemas. It switches the
@@ -332,7 +560,7 @@ No deploy, and nothing else in the platform reads this record, so nothing else c
 `ops_monitor_stalled` returns to the warning it reported before 013, which does not make the
 endpoint answer 503. To undo 012 as well, `drop function ops_monitor_tick()` and
 `drop table ops_monitor_state`, after which the check reports the missing table as a warning.
-The key is separate: revoke it with `DELETE /project/admin/operators/{id}` so it stops
+The key is separate: revoke it as in "Revoking the monitor's key" above so it stops
 working everywhere, and delete its row from `vault.secrets`.
 
 ## Measured capacity
