@@ -209,10 +209,19 @@ begin
     -- Not established, so not passed. PostgREST can also be configured from its own
     -- environment rather than from a role setting, in which case there is nothing here to
     -- read and this is the honest answer.
-    raise notice 'Could not establish PostgREST''s exposed schemas from the database '
-                 '(no pgrst.db_schemas setting on the authenticator role). Confirm by hand '
-                 'that neither "net" nor "vault" is listed under Settings -> API -> Exposed '
-                 'schemas before relying on this monitor.';
+    raise notice E'UNKNOWN, NOT PASSED: Could not establish the effective exposed schemas '
+                 'from the database (no pgrst.db_schemas setting on the authenticator role '
+                 'in any scope). This is the state of the production project as of '
+                 '2026-11-01, where PostgREST is configured from the platform rather than '
+                 'from a role setting.\n'
+                 '  * This check has therefore verified NOTHING, and the schedule below is '
+                 'being installed WITHOUT it. Do not read this installation succeeding as '
+                 'evidence that "net" and "vault" are not exposed.\n'
+                 '  * Confirm by hand, now, in Supabase Dashboard -> Settings -> API -> '
+                 'Exposed schemas, that neither "net" nor "vault" is listed. If either is, '
+                 'roll this back (see the footer of this file) until it is removed.\n'
+                 '  * Record who confirmed it and when, in the activation checklist in '
+                 'docs/operations.md. Nothing re-checks this afterwards.';
   elsif offending is not null then
     raise exception 'a schema holding this monitor''s key is exposed through the Data API: %',
                     array_to_string(offending, ', ')

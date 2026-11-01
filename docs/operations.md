@@ -155,15 +155,21 @@ would report `ok` for a platform nothing is watching.
     where name in ('log_statement', 'log_min_duration_statement');
    ```
 3. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
-   missing, if 012 has not been applied, if the Vault secret is absent, or if `net` has been
-   added to the Data API's exposed schemas. It switches the monitor on last, so a refusal
-   leaves it off.
+   missing, if 012 has not been applied, if the Vault secret is absent, or if it **can see**
+   that `net` or `vault` has been added to the Data API's exposed schemas. It switches the
+   monitor on last, so a refusal leaves it off.
 
-   That exposed-schema check is **install-time only**. Nothing re-checks it: exposing `net`
-   later is a dashboard setting no migration and no scheduled check here will notice, so it
-   belongs on the list of things to confirm by hand below. It also depends on Supabase
-   storing `pgrst.db_schemas` as a role setting; where PostgREST is configured from its own
-   environment the check cannot establish an answer and says so rather than passing.
+   **Read that last condition carefully, because it is weaker than it sounds.** The check
+   depends on Supabase storing `pgrst.db_schemas` as a role setting, and on the production
+   project it does not: there is no such setting in any scope (checked 2026-11-01), so the
+   check establishes nothing and 013 installs anyway, printing a notice that says so. A
+   successful installation is therefore **not** evidence that those schemas are unexposed.
+   Step 1 of the smoke test below is what actually answers it, by hand, and the activation
+   record is where that answer is written down.
+
+   It is also **install-time only** even when it does work. Nothing re-checks it: exposing
+   either schema later is a dashboard setting no migration and no scheduled check here will
+   notice, which is why it is on the by-hand watch list further down.
 
 ### The activation smoke test
 
@@ -173,17 +179,39 @@ interfaces. **Neither has been tested against Supabase.** Run these once after a
 before trusting the monitor. Everything here is read-only except the ticks pg_cron runs
 itself.
 
-1. **`vault` is not exposed through the Data API.** This one is already answered, and the
-   answer is why the check matters: `service_role` **can** read `vault.decrypted_secrets`
-   (checked 2026-11-01), by a direct Supabase grant that `postgres` cannot revoke. So do not
-   re-check the grant, check the thing that keeps it harmless:
+1. **Neither `vault` nor `net` is exposed through the Data API.** Do not re-check the Vault
+   grant: that is already answered and cannot be changed. `service_role` **can** read
+   `vault.decrypted_secrets` (checked 2026-11-01), by a direct Supabase grant `postgres`
+   cannot revoke. Check the thing that keeps it harmless instead.
+
+   Read every applicable row, not one of them, because a role has a cluster-wide row and a
+   per-database row and either may carry the setting:
+
    ```sql
-   select unnest(setconfig) from pg_db_role_setting s
-     join pg_roles r on r.oid = s.setrole where r.rolname = 'authenticator';
-   -- neither "vault" nor "net" may appear in pgrst.db_schemas
+   select r.rolname as role,
+          case when s.setdatabase = 0 then '(cluster-wide)' else d.datname end as scope,
+          e as setting
+     from pg_db_role_setting s
+     join pg_roles r on r.oid = s.setrole
+     left join pg_database d on d.oid = s.setdatabase
+    cross join lateral unnest(s.setconfig) as e
+    where e like 'pgrst.db_schemas=%'
+    order by r.rolname, scope;
    ```
-   013 refuses to install while either does, but only at install time. Re-run this whenever
-   the Data API's exposed schemas are changed.
+
+   **Three outcomes, and only one of them is a pass:**
+
+   | What came back | Verdict | What to do |
+   |---|---|---|
+   | One or more rows, and neither `vault` nor `net` appears in any of them as an exact comma-separated token | **PASS** | Proceed. Compare tokens exactly: `network_logs` and `vaults` are different schemas and not hits |
+   | **No rows** | **UNKNOWN — not a pass** | PostgREST is configured from the platform, not from a role setting, so the database cannot answer and 013's guard verified nothing. **Confirm by hand in Supabase Dashboard → Settings → API → Exposed schemas**, then record it in the checklist below. This is the state of production as of 2026-11-01 |
+   | `vault` or `net` appears in any row | **STOP** | Do not activate. Remove it from Settings → API → Exposed schemas first, then re-run this query. 013 refuses to install while it can see either one, but see the row above: it cannot always see |
+
+   An empty result is the easiest thing here to misread as a clean bill of health. It is the
+   opposite: it means nothing was checked.
+
+   Re-run this whenever the Data API's exposed schemas change. 013's guard is an
+   install-time check and nothing re-checks it.
 2. **pg_net's worker is really running.** 013 confirms the extension is installed, which is
    not the same thing. Wait two ticks, up to twenty minutes:
    ```sql
@@ -204,6 +232,24 @@ itself.
    0. A number that grows is the worker again.
 5. **End to end**, with your own key: `GET /project/admin/ops-health` and confirm
    `ops_monitor_stalled` reads `ok` rather than the warning it showed before activation.
+
+### The activation record
+
+Fill this in when you activate, in this file, in the commit that activates it. Step 1 is the
+only one here a query cannot settle on its own, so it is the only one that needs a name
+against it: an unattributed "confirmed" is not a record of anything.
+
+| | Checked | By | Date | Result |
+|---|---|---|---|---|
+| Exposed schemas, from the database | | | | PASS / UNKNOWN / STOP |
+| Exposed schemas, **by hand** in Dashboard → Settings → API | | | | required when the row above is UNKNOWN |
+| `pg_net` installed and its worker answering | | | | |
+| Secret created, and the call did **not** error | | | | an error logs the key: see step 2 of "Switching it on" |
+| `last_reported_status` is `ok`, not null | | | | null means something answered that was not ops-health |
+| `ops-health` reports `ops_monitor_stalled` as `ok` | | | | |
+
+The dashboard row exists because the database cannot answer that question on this project
+and 013 installs anyway. Whoever signs that row is the only check that happened.
 
 **What the reply is exposed to.** `net._http_response` holds the whole body of each reply,
 and an `ops-health` body carries operational identifiers: project ids, task numbers and
@@ -357,17 +403,23 @@ What the runs establish, and what they do not:
 **Not covered by this check**, so watch these on the providers' own dashboards:
 - error rates and latency per route (Render and Vercel);
 - database connection exhaustion and storage quota (Supabase);
-- **whether `net` or `vault` has been added to Settings -> API -> Exposed schemas.**
-  Migration 013 refuses to install while either is, but that is an install-time check and
-  nothing re-checks it. While `net` is exposed, `anon` and `authenticated` can read
-  `net.http_request_queue`, which holds the monitor's key in a request header until the
-  worker sends it. While `vault` is exposed it is worse: `service_role` holds a direct
-  SELECT and DELETE grant on `vault.decrypted_secrets` that `postgres` cannot revoke, so
-  the service key would read and delete every secret in the Vault. Check it with
-  ```sql
-  select unnest(setconfig) from pg_db_role_setting s
-    join pg_roles r on r.oid = s.setrole where r.rolname = 'authenticator';
-  ```
+- **whether `net` or `vault` has been added to Settings -> API -> Exposed schemas.** This
+  is the one item on this list that no code here will ever notice. Migration 013 refuses to
+  install while it can *see* either one, but on this project it cannot see at all: there is
+  no `pgrst.db_schemas` role setting in any scope, so the check reports UNKNOWN and installs
+  anyway. Even where it works it runs once, at install time.
+
+  The two schemas fail differently, and `net` is the broader of the two:
+  - `net` exposed: `anon` and `authenticated` can read `net.http_request_queue`, which
+    holds the monitor's key in a request header until the worker sends it. pg_net's grants
+    are to `PUBLIC` and `postgres` cannot revoke them;
+  - `vault` exposed: `anon` and `authenticated` have no `USAGE` on `vault` (checked
+    2026-11-01), so this one reaches `service_role` only. That is still the service key,
+    which holds a direct SELECT and DELETE grant on `vault.decrypted_secrets` that
+    `postgres` cannot revoke, so it could read and delete every secret in the Vault.
+
+  Use the query and the three-outcome table in "The activation smoke test" above, which
+  handles the empty result properly. Re-check it whenever the exposed schemas change.
 - the Supabase free plan's pause after 7 days without activity. `pg_cron` ticking every five
   minutes (migration 011) prevents that pause whether or not anything else is running, which
   the GitHub workflow could not be relied on for.
