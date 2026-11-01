@@ -307,8 +307,8 @@ would report `ok` for a platform nothing is watching.
    case "$rc" in
      0) echo "stored." ;;
      3) echo "FAILED (exit 3): the statement reached the server and raised, so its full" >&2
-        echo "  text, key included, is in the Postgres log. BURN THIS KEY: revoke it with" >&2
-        echo "  DELETE /project/admin/operators/{id}, mint another, and run this again." >&2
+        echo "  text, key included, is in the Postgres log. BURN THIS KEY: revoke it (see" >&2
+        echo "  \"Revoking the monitor's key\" below), mint another, run this again." >&2
         echo "  Most likely cause: the name is taken. select name from vault.secrets;" >&2 ;;
      2) echo "FAILED (exit 2): the connection went bad. AMBIGUOUS, and treat it as burnt" >&2
         echo "  until you have shown otherwise: if it dropped before the statement was" >&2
@@ -333,10 +333,38 @@ would report `ok` for a platform nothing is watching.
 
    **If it fails, the key is burnt. Do not retry with the same one.** The statement that
    raised has already been written to the Postgres log with the key in it, so retrying
-   stores a credential you know to be logged. Instead: revoke it
-   (`DELETE /project/admin/operators/{id}`), find out why the call failed, mint a new key,
-   and run this again. The most likely cause is that the name is already taken, which
+   stores a credential you know to be logged. Instead: revoke it (see "Revoking the
+   monitor's key" below), find out why the call failed, mint a new key, and run this again.
+   The most likely cause is that the name is already taken, which
    `select name from vault.secrets` answers without decrypting anything.
+
+### Revoking the monitor's key
+
+Two calls, both **root key only**, and the first is how you find the id for the second.
+There is no `DELETE` route: revocation is a `POST` carrying the id in a JSON body.
+
+```bash
+# 1. Find the operator's id. Returns id, name, email, active, created_at, last_used_at —
+#    never a key or a hash.
+curl -s https://api.senebiclabs.com/api/v1/project/admin/operators \
+  -H "X-Admin-Key: $ADMIN_API_KEY"
+
+# 2. Revoke that one operator. 404 if the id is unknown.
+curl -s -X POST https://api.senebiclabs.com/api/v1/project/admin/operators/revoke \
+  -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"operator_id":"<the id from step 1>"}'
+```
+
+It answers `{"ok": true, "message": "Revoked. The key stops working on its next use."}`.
+That wording is exact: the row is marked `active = false` and the next request carrying
+that key is refused, so a revocation takes effect on use rather than immediately.
+
+Both calls require the **root** `ADMIN_API_KEY`. An operator key gets 403, including the
+monitor's own, so a compromised monitor key cannot revoke anything.
+
+`name` has no unique constraint; only `key_hash` does. So minting twice with the same name
+leaves two live operators called the same thing and no way to tell from the list which key
+the monitor holds. Mint once, and use step 1 to check before minting again.
 
    **The residual risk this does not remove, stated plainly.** `vault.create_secret` takes
    the key as a SQL literal and psql does not bind parameters, so the key is in the
@@ -532,7 +560,7 @@ No deploy, and nothing else in the platform reads this record, so nothing else c
 `ops_monitor_stalled` returns to the warning it reported before 013, which does not make the
 endpoint answer 503. To undo 012 as well, `drop function ops_monitor_tick()` and
 `drop table ops_monitor_state`, after which the check reports the missing table as a warning.
-The key is separate: revoke it with `DELETE /project/admin/operators/{id}` so it stops
+The key is separate: revoke it as in "Revoking the monitor's key" above so it stops
 working everywhere, and delete its row from `vault.secrets`.
 
 ## Measured capacity
