@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from _fakedb import FakeDB
 from app.api.v1 import project as proj
 from app.services import ops_health
@@ -789,3 +791,150 @@ def test_the_stall_notes_point_at_the_record_not_at_return_message():
         for promise in ("nothing pending", "answered 200", "answered 503"):
             assert promise not in note, \
                 f"{label}: the note implies return_message carries the tick's result"
+
+
+# ── the timestamp parser (workstream A) ────────────────────────────────────────
+#
+# Postgres trims trailing zeros when it serialises a timestamptz to JSON, so a column
+# holding .087200 arrives as ".0872". Python's fromisoformat before 3.11 takes only three or
+# six fractional digits, and production runs python:3.10-slim. 9.93% of microsecond values
+# render at a width it rejects, and every caller read the resulting None as "no timestamp".
+
+PROD_REGRESSION = "2026-11-01T17:53:00.0872+00:00"   # the exact value that alerted in prod
+
+
+def _pg(dt):
+    """Render a datetime the way Postgres serialises a timestamptz to JSON.
+
+    Trailing zeros in the fraction are trimmed, and an exact second loses the fraction
+    altogether. Measured against Postgres 17:
+
+        17:53:00.087200  ->  "2026-11-01T17:53:00.0872+00:00"
+        12:00:00.100000  ->  "2026-11-01T12:00:00.1+00:00"
+        12:00:00.000000  ->  "2026-11-01T12:00:00+00:00"
+
+    Writing the fixtures through this rather than through `isoformat()` is the point: a
+    test built on Python's own rendering cannot reproduce the defect, because Python emits
+    six digits or none and both of those parse.
+    """
+    frac = f"{dt.microsecond:06d}".rstrip("0")
+    base = dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{base}{'.' + frac if frac else ''}+00:00"
+
+
+def test_the_pg_helper_really_produces_a_width_python_310_rejects():
+    """A guard on the fixtures: if this ever starts parsing, the tests below prove nothing."""
+    trimmed = _pg(datetime(2026, 11, 1, 17, 53, 0, 87200, tzinfo=timezone.utc))
+    assert trimmed == PROD_REGRESSION, trimmed
+    with pytest.raises(ValueError):
+        datetime.fromisoformat(trimmed)
+
+
+@pytest.mark.parametrize("text, expect_us", [
+    ("2026-11-01T17:53:00+00:00",        0),          # 0 digits: Postgres omits an exact second
+    ("2026-11-01T17:53:00.1+00:00",      100000),     # 1
+    ("2026-11-01T17:53:00.12+00:00",     120000),     # 2
+    ("2026-11-01T17:53:00.087+00:00",    87000),      # 3
+    (PROD_REGRESSION,                    87200),      # 4 -- the production regression
+    ("2026-11-01T17:53:00.08720+00:00",  87200),      # 5
+    ("2026-11-01T17:53:00.056226+00:00", 56226),      # 6
+])
+def test_every_fractional_width_postgres_can_emit_is_parsed(text, expect_us):
+    got = ops_health._parse(text)
+    assert got is not None, f"{text} did not parse: this is the production defect"
+    assert got.microsecond == expect_us, (text, got.microsecond)
+    assert got.tzinfo is not None and got.utcoffset().total_seconds() == 0
+
+
+def test_the_production_regression_value_round_trips_exactly():
+    """The value `ops_monitor_state.last_success_at` held when the monitor alerted at 17:53.
+
+    Recorded before the row was overwritten: 2026-11-01 17:53:00.087200+00, which Postgres
+    renders with the trailing zeros trimmed.
+    """
+    got = ops_health._parse(PROD_REGRESSION)
+    assert got == datetime(2026, 11, 1, 17, 53, 0, 87200, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("text, offset_hours", [
+    ("2026-11-01T17:53:00.0872+00:00", 0),
+    ("2026-11-01T18:53:00.0872+01:00", 1),
+    ("2026-11-01T12:53:00.0872-05:00", -5),
+    ("2026-11-01T17:53:00.0872Z", 0),                 # PostgREST's Z form
+])
+def test_timezone_offsets_survive_the_normalisation(text, offset_hours):
+    got = ops_health._parse(text)
+    assert got is not None, text
+    assert got.utcoffset().total_seconds() == offset_hours * 3600
+    # And they all name the same instant as the UTC one.
+    assert got == datetime(2026, 11, 1, 17, 53, 0, 87200, tzinfo=timezone.utc)
+
+
+def test_a_naive_timestamp_is_still_read_as_utc():
+    got = ops_health._parse("2026-11-01T17:53:00.0872")
+    assert got == datetime(2026, 11, 1, 17, 53, 0, 87200, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("value", [None, "", 0, "not a date", "2026-13-45T99:99:99+00:00",
+                                   "2026-11-01T17:53:00.0872+99:99"])
+def test_absent_and_malformed_still_come_back_as_none(value):
+    """The contract the callers rely on is unchanged: None for absent or malformed.
+
+    What must never happen is a malformed value turning into a *plausible* datetime, which
+    would make a check silently pass. A caller that treats None as "recent" is a separate
+    defect in the caller, not in this function.
+    """
+    assert ops_health._parse(value) is None
+
+
+def test_more_than_six_digits_is_truncated_rather_than_refused():
+    """Postgres will not emit this, but a hand-written or re-serialised value might, and
+    refusing it would be the same failure in a different costume."""
+    got = ops_health._parse("2026-11-01T17:53:00.123456789+00:00")
+    assert got is not None and got.microsecond == 123456
+
+
+def test_ops_monitor_stalled_is_ok_when_the_heartbeat_has_a_trimmed_fraction():
+    """The production symptom, end to end through the check that reported it.
+
+    With the old parser this read `last_success_at` as absent and alerted that the monitor
+    had never had an answer, while the monitor was in fact two minutes old.
+    """
+    fresh = _pg((NOW - timedelta(minutes=2)).replace(microsecond=87200))
+    out = ops_health.run(_db(ops_monitor_state=_monitor(last_success_at=fresh)), NOW)
+    c = _mon(out)
+    assert c["status"] == "ok", f"a trimmed fraction still reads as never-succeeded: {c}"
+    assert out["status"] == "ok"
+
+
+def test_reservations_sweep_stalled_is_ok_when_the_record_has_a_trimmed_fraction():
+    """The same defect in the other fail-closed check. The sweep writes this row every five
+    minutes, so it had the same roughly one-in-ten chance of a false alert."""
+    fresh = _pg((NOW - timedelta(minutes=2)).replace(microsecond=87200))
+    out = ops_health.run(_db(ops_sweep_state=[
+        {"name": "reservations", "last_run_at": fresh, "last_expired": 0, "runs": 9}]), NOW)
+    c = _by_name(out)["reservations_sweep_stalled"]
+    assert c["status"] == "ok", f"a trimmed fraction still reads as never-swept: {c}"
+
+
+def test_a_genuinely_stale_record_with_a_trimmed_fraction_is_still_reported():
+    """The direction that matters more than the false alarm.
+
+    Eleven of the thirteen call sites read `_parse(x) or now`, so an unparseable timestamp
+    was treated as *now* and the row dropped from the list. A stale row must be reported
+    whether or not its fraction was trimmed.
+    """
+    stale = _pg((NOW - timedelta(hours=30)).replace(microsecond=87200))
+
+    out = ops_health.run(_db(review_items=[
+        {"id": 1, "ls_task_id": "T-1", "state": "needs_review", "authored_at": stale}]), NOW)
+    c = _by_name(out)["second_readings_waiting"]
+    assert c["status"] == "warn" and c["count"] == 1, \
+        f"a stale second reading with a trimmed fraction was dropped: {c}"
+
+    out = ops_health.run(_db(project_items=[
+        {"id": 1, "project_id": "p1", "task_no": 7, "status": "needs_adjudication",
+         "labeled_at": stale}]), NOW)
+    c = _by_name(out)["adjudication_waiting"]
+    assert c["status"] == "warn" and c["count"] == 1, \
+        f"a stale adjudication with a trimmed fraction was dropped: {c}"
