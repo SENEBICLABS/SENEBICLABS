@@ -281,18 +281,38 @@ commit;
 -- To verify, after the first two ticks have passed (up to twenty minutes):
 --
 --   select jobname, schedule, active from cron.job where jobname = 'ops-monitor';
---   select status, return_message, start_time from cron.job_run_details
+--   select name, enabled, runs, last_run_at, last_success_at, last_status_code,
+--          last_reported_status, last_failing_checks, last_error, consecutive_failures,
+--          pending_request_id
+--     from ops_monitor_state;
+--   select status, start_time from cron.job_run_details
 --     where jobid = (select jobid from cron.job where jobname = 'ops-monitor')
 --     order by start_time desc limit 5;
---   select name, enabled, last_run_at, last_success_at, last_status_code,
---          last_reported_status, last_failing_checks, last_error, consecutive_failures, runs
---     from ops_monitor_state;
 --
--- The first tick returns `nothing pending; sent <id>`: it had no previous reply to collect.
--- The second returns `answered 200: ok; sent <id>`, or `answered 503: alert` with the
--- failing check names in `last_failing_checks`, which is the monitor working rather than
--- failing. `GET /project/admin/ops-health` reports the same thing as `ops_monitor_stalled`
--- and `ops_monitor_probe`.
+-- `ops_monitor_state` IS THE RECORD. `ops_monitor_tick()` returns a description of what it
+-- did, but pg_cron stores the row count of a `SELECT`, so `cron.job_run_details.
+-- return_message` reads `1 row` on every tick whatever happened, and the return value is
+-- discarded. Measured on production on 2026-11-01: both the first tick and the second
+-- recorded `1 row`, and `sweep-reservations` from 011 does the same. What that table is
+-- still good for is `status`, which says whether the function raised at all.
+--
+-- The first two ticks look alarming and are not. pg_net cannot return a reply inside the
+-- call that sent the request, so each tick collects the previous tick's:
+--
+--   after tick 1  runs=1, pending_request_id set, last_success_at still null: there was
+--                 nothing to collect yet
+--   after tick 2  last_success_at set, last_status_code=503, last_reported_status=alert,
+--                 last_failing_checks={ops_monitor_stalled} -- the first probe caught this
+--                 monitor before it had ever succeeded, so ops-health was correctly
+--                 alerting about it
+--   after tick 3  last_status_code=200, last_reported_status=ok, last_failing_checks empty:
+--                 writing last_success_at cleared ops_monitor_stalled
+--
+-- That bootstrap 503 is the monitor reporting on itself, and it is the reason a 503 with a
+-- valid `checks` array counts as a successful probe rather than a failure. The field that
+-- says a probe succeeded is `consecutive_failures` staying at 0, not the status code.
+-- `GET /project/admin/ops-health` reports the same thing as `ops_monitor_stalled` and
+-- `ops_monitor_probe`.
 --
 -- TO ROLL BACK
 --
