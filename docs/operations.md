@@ -173,14 +173,17 @@ interfaces. **Neither has been tested against Supabase.** Run these once after a
 before trusting the monitor. Everything here is read-only except the ticks pg_cron runs
 itself.
 
-1. **Vault's real grants.** Asserted nowhere in this repository, and Supabase's
-   documentation does not state it either way. If the service key can read the secret, the
-   API's own key can read this monitor's operator key:
+1. **`vault` is not exposed through the Data API.** This one is already answered, and the
+   answer is why the check matters: `service_role` **can** read `vault.decrypted_secrets`
+   (checked 2026-11-01), by a direct Supabase grant that `postgres` cannot revoke. So do not
+   re-check the grant, check the thing that keeps it harmless:
    ```sql
-   select has_table_privilege('service_role', 'vault.decrypted_secrets', 'select') as svc,
-          has_table_privilege('anon', 'vault.decrypted_secrets', 'select') as anon;
-   -- both must be false
+   select unnest(setconfig) from pg_db_role_setting s
+     join pg_roles r on r.oid = s.setrole where r.rolname = 'authenticator';
+   -- neither "vault" nor "net" may appear in pgrst.db_schemas
    ```
+   013 refuses to install while either does, but only at install time. Re-run this whenever
+   the Data API's exposed schemas are changed.
 2. **pg_net's worker is really running.** 013 confirms the extension is installed, which is
    not the same thing. Wait two ticks, up to twenty minutes:
    ```sql
@@ -208,6 +211,43 @@ event ids. No clinical content, no clinician names, no client URLs and no secret
 deletes the row as soon as it has read it, and a monitor switched off releases a reply it
 will never collect, so the window is one tick rather than pg_net's six hour prune. It lives
 in the same `net` schema under the same grants as the queue below.
+
+**The Vault grant, which is not ours to remove.** Checked read-only against production on
+2026-11-01:
+
+```
+has_table_privilege('service_role','vault.decrypted_secrets','select')  ->  true
+has_table_privilege('anon',        'vault.decrypted_secrets','select')  ->  false
+```
+
+Supabase grants `service_role` **SELECT and DELETE** on that view when it creates the
+extension. It is a direct grant from `supabase_admin`, not something inherited through role
+membership, and `postgres` cannot revoke a grant it did not make: the statement raises
+nothing and removes nothing, so it looks as though it worked. Supabase documents this and
+says that if a role must not be able to read a credential at all, the credential should not
+be in Vault.
+
+**The monitor's key stays in Vault anyway**, and this is why that is the right call rather
+than a resigned one:
+
+- `service_role` is `NOLOGIN`. The service key is a JWT against the Data API, which only
+  reaches exposed schemas, and `vault` is not one. **A holder of the service key cannot read
+  this secret.** The privilege is standing, not reachable.
+- the alternative, a private schema no API role can reach, puts a **live operator key in
+  plaintext into every `pg_dump`**. `operators` stores only a SHA-256 hash, so the dumps in
+  `~/senebiclabs-backups` contain no usable credential today. Vault's root key is held
+  outside the database by Supabase, so a captured dump of `vault.secrets` yields ciphertext.
+  Moving the key would trade a privilege nothing can currently exercise for a plaintext
+  credential that anyone holding a backup file can.
+
+So the control is not the grant, it is **keeping `vault` out of the Data API**. Migration 013
+refuses to install while either `vault` or `net` is exposed, and names whichever it found.
+
+**That is an installation-time check and not monitoring.** It runs once, when 013 is applied.
+Nothing re-checks it: exposing either schema afterwards is a dashboard setting that no
+migration, no scheduled job and no check in `ops-health` will notice. It is on the by-hand
+watch list below, and it is the one item there that would turn a standing privilege into a
+live credential leak.
 
 **What the key is exposed to.** `pg_net` parks the request, headers included, in
 `net.http_request_queue` until its worker sends it, which is seconds. Supabase grants
@@ -317,11 +357,17 @@ What the runs establish, and what they do not:
 **Not covered by this check**, so watch these on the providers' own dashboards:
 - error rates and latency per route (Render and Vercel);
 - database connection exhaustion and storage quota (Supabase);
-- **whether `net` has been added to Settings -> API -> Exposed schemas.** Migration 013
-  refuses to install while it is, but that is an install-time check and nothing re-checks
-  it. While `net` is exposed, `anon` and `authenticated` can read
+- **whether `net` or `vault` has been added to Settings -> API -> Exposed schemas.**
+  Migration 013 refuses to install while either is, but that is an install-time check and
+  nothing re-checks it. While `net` is exposed, `anon` and `authenticated` can read
   `net.http_request_queue`, which holds the monitor's key in a request header until the
-  worker sends it;
+  worker sends it. While `vault` is exposed it is worse: `service_role` holds a direct
+  SELECT and DELETE grant on `vault.decrypted_secrets` that `postgres` cannot revoke, so
+  the service key would read and delete every secret in the Vault. Check it with
+  ```sql
+  select unnest(setconfig) from pg_db_role_setting s
+    join pg_roles r on r.oid = s.setrole where r.rolname = 'authenticator';
+  ```
 - the Supabase free plan's pause after 7 days without activity. `pg_cron` ticking every five
   minutes (migration 011) prevents that pause whether or not anything else is running, which
   the GitHub workflow could not be relied on for.

@@ -610,7 +610,7 @@ def test_013_names_each_missing_piece_separately(db):
     text = M013.read_text()
     for needed in ("pg_cron is not enabled", "pg_net is not enabled",
                    "ops_monitor_tick() is missing", "the operator key is not in Vault yet",
-                   "the net schema is exposed through the Data API"):
+                   "a schema holding this monitor''s key is exposed through the Data API"):
         assert needed in text, needed
     # And each refusal says the same thing about state, which is what makes re-running safe.
     assert text.count("Nothing in 013 has been applied") == 5
@@ -721,20 +721,28 @@ def test_a_failure_clears_the_verdict_the_last_answer_left(db, reply):
 # running the file: the query under test is the one that ships, not a copy of it.
 
 def _guard_sql():
-    """The two halves of the guard, as written in 013."""
+    """The guard's two reads, lifted out of 013 as written.
+
+    `exposed` is what `pgrst.db_schemas` says, across every row that carries it, and
+    `offending` is which of the schemas holding this monitor's key appear in it. They are
+    kept apart in the migration because "could not establish" and "says net" are different
+    answers with different remedies, and the first must never read as a pass.
+    """
     text = M013.read_text()
-    reader = re.search(r"(select string_agg\(split_part.*?)\s*;", text, re.S).group(1)
-    reader = reader.replace("into exposed", "")
-    predicate = re.search(r"exists \(select 1 from unnest\(string_to_array\(exposed, ','\)\)"
-                          r".*?btrim\(sch\) = 'net'\)", text, re.S).group(0)
-    return reader, predicate
+    exposed = re.search(r"(select string_agg\(split_part.*?)\s*;", text, re.S).group(1)
+    offending = re.search(r"(select array_agg\(distinct btrim\(sch\).*?)\s*;", text, re.S).group(1)
+    return exposed.replace("into exposed", ""), offending.replace("into offending", "")
 
 
 def _ask_the_guard(db):
-    """What 013 would conclude: the value it read, and whether it refuses."""
-    reader, predicate = _guard_sql()
-    return db.execute(f"with v(exposed) as ({reader})"
-                      f" select exposed, {predicate} as refuses from v").fetchone()
+    """What 013 would conclude: the setting it read, which schemas offend, and whether it
+    refuses. Composed from the migration's own SQL so the query under test is the one that
+    ships rather than a copy that can drift away from it."""
+    exposed, offending = _guard_sql()
+    return db.execute(
+        f"with v(exposed) as ({exposed}), o(offending) as (select ({offending}) from v)"
+        f" select v.exposed, o.offending, o.offending is not null as refuses"
+        f"   from v cross join o").fetchone()
 
 
 def _authenticator(db, *, cluster_wide=None, in_this_database=None):
@@ -765,8 +773,9 @@ def test_the_guard_reads_the_setting_from_whichever_row_holds_it(db):
                       " on r.oid = s.setrole where r.rolname = 'authenticator'").fetchone()[0]
     assert rows == 2, "the two-row shape this test is about was not created"
 
-    exposed, refuses = _ask_the_guard(db)
+    exposed, offending, refuses = _ask_the_guard(db)
     assert exposed == "public,net"
+    assert offending == ["net"]
     assert refuses is True, "the guard passed while net was exposed"
 
     # And what the old query did with the same database, so the regression is on the record.
@@ -777,25 +786,43 @@ def test_the_guard_reads_the_setting_from_whichever_row_holds_it(db):
         "this database no longer reproduces the wrong-row case, so the test proves nothing"
 
 
-@pytest.mark.parametrize("label, settings, exposed, refuses", [
-    ("net exposed, cluster-wide row only", ['"pgrst.db_schemas" = \'public,net\''],
-     "public,net", True),
-    ("net exposed with spaces", ['"pgrst.db_schemas" = \'public, net, graphql_public\''],
-     "public, net, graphql_public", True),
-    ("net alone", ['"pgrst.db_schemas" = \'net\''], "net", True),
+@pytest.mark.parametrize("label, settings, exposed, offending, refuses", [
+    # ── neither exposed ───────────────────────────────────────────────────────
     ("the ordinary safe setting", ['"pgrst.db_schemas" = \'public, graphql_public\''],
-     "public, graphql_public", False),
-    # The old regex matched any `net` token anywhere in the whole setting string, so a
-    # lookalike schema was a hazard in one direction and an unrelated setting in the other.
+     "public, graphql_public", None, False),
+    # ── net exposed ───────────────────────────────────────────────────────────
+    ("net exposed", ['"pgrst.db_schemas" = \'public,net\''], "public,net", ["net"], True),
+    ("net exposed with spaces", ['"pgrst.db_schemas" = \'public, net, graphql_public\''],
+     "public, net, graphql_public", ["net"], True),
+    ("net alone", ['"pgrst.db_schemas" = \'net\''], "net", ["net"], True),
+    # ── vault exposed: service_role already holds select and delete on
+    #    vault.decrypted_secrets, so exposing it hands the service key every secret ──
+    ("vault exposed", ['"pgrst.db_schemas" = \'public,vault\''],
+     "public,vault", ["vault"], True),
+    ("vault exposed with spaces", ['"pgrst.db_schemas" = \'public, vault\''],
+     "public, vault", ["vault"], True),
+    ("vault alone", ['"pgrst.db_schemas" = \'vault\''], "vault", ["vault"], True),
+    # ── both exposed: named together, so one refusal is not fixed twice ───────
+    ("both exposed", ['"pgrst.db_schemas" = \'public,net,vault\''],
+     "public,net,vault", ["net", "vault"], True),
+    ("both exposed, vault first", ['"pgrst.db_schemas" = \'vault, net\''],
+     "vault, net", ["net", "vault"], True),
+    ("both exposed and duplicated", ['"pgrst.db_schemas" = \'net,public,net,vault\''],
+     "net,public,net,vault", ["net", "vault"], True),
+    # ── lookalikes: exact tokens, so neither of these is a hit. The old regex
+    #    matched any `net` token anywhere in the whole setting string. ─────────
     ("a lookalike schema name", ['"pgrst.db_schemas" = \'public,network_logs\''],
-     "public,network_logs", False),
+     "public,network_logs", None, False),
+    ("a lookalike vault name", ['"pgrst.db_schemas" = \'public,vaults,my_vault\''],
+     "public,vaults,my_vault", None, False),
     ("an unrelated setting whose value is net",
      ['"pgrst.db_schemas" = \'public\'', '"pgrst.db_extra_search_path" = \'net\''],
-     "public", False),
+     "public", None, False),
 ])
-def test_the_guard_decides_on_exact_schema_tokens(db, label, settings, exposed, refuses):
+def test_the_guard_decides_on_exact_schema_tokens(db, label, settings, exposed, offending,
+                                                  refuses):
     _authenticator(db, cluster_wide=settings)
-    assert _ask_the_guard(db) == (exposed, refuses), label
+    assert _ask_the_guard(db) == (exposed, offending, refuses), label
 
 
 def test_an_unestablished_setting_is_not_a_pass(db):
@@ -804,9 +831,9 @@ def test_an_unestablished_setting_is_not_a_pass(db):
     old version treated finding *a* row as having established the answer, which skipped the
     manual-confirmation notice at the same moment it failed open."""
     _authenticator(db, cluster_wide=["statement_timeout = '8s'"])
-    exposed, refuses = _ask_the_guard(db)
+    exposed, offending, refuses = _ask_the_guard(db)
     assert exposed is None, "the guard claimed to have read a setting that is not there"
-    assert refuses is False
+    assert offending is None and refuses is False
 
     text = M013.read_text()
     assert "if exposed is null then" in text
@@ -821,3 +848,77 @@ def test_the_guard_never_runs_after_installation(db):
     this repository will notice."""
     assert "That check runs once" in M013.read_text()
     assert "install-time" in (HEALTH / "docs" / "operations.md").read_text().lower()
+
+
+@pytest.mark.parametrize("label, cluster_wide, per_database, offending", [
+    # The setting in the per-database row, which is where Supabase puts it, with an
+    # unrelated cluster-wide row alongside. This is the shape the `limit 1` version read
+    # the wrong half of.
+    ("per-database holds it, cluster-wide row first",
+     ["statement_timeout = '8s'"], ['"pgrst.db_schemas" = \'public,vault\''], ["vault"]),
+    # The same two rows with the roles reversed, so the answer cannot depend on which row
+    # the planner happens to return.
+    ("cluster-wide holds it, per-database row unrelated",
+     ['"pgrst.db_schemas" = \'public,net\''], ["statement_timeout = '8s'"], ["net"]),
+    # Both rows carry a db_schemas setting. Aggregating reads both, so a schema exposed in
+    # either one is found rather than whichever row came back first.
+    ("both rows carry the setting, net in one and vault in the other",
+     ['"pgrst.db_schemas" = \'public,net\''], ['"pgrst.db_schemas" = \'public,vault\''],
+     ["net", "vault"]),
+    # Several unrelated settings in the row that also carries db_schemas.
+    ("the setting buried among others",
+     ["statement_timeout = '8s'", "idle_in_transaction_session_timeout = '30s'"],
+     ['"pgrst.db_schemas" = \'public, net\'', "work_mem = '4MB'"], ["net"]),
+    ("neither row exposes anything that matters",
+     ["statement_timeout = '8s'"], ['"pgrst.db_schemas" = \'public, graphql_public\''], None),
+])
+def test_the_guard_reads_every_role_setting_row_whatever_the_order(
+        db, label, cluster_wide, per_database, offending):
+    """The BLOCKER this guard was rewritten for, in every row arrangement.
+
+    A role routinely has two rows in `pg_db_role_setting`: one cluster-wide
+    (`setdatabase = 0`) and one per database, and `limit 1` without an `order by` returns an
+    arbitrary one. The first version of this guard read whichever it got, and where that was
+    not the row carrying `pgrst.db_schemas` it found nothing, installed, and skipped the
+    manual-confirmation notice as well, because having read *a* row made `exposed` non-null.
+    """
+    _authenticator(db, cluster_wide=cluster_wide, in_this_database=per_database)
+    rows = db.execute("select count(*) from pg_db_role_setting s join pg_roles r"
+                      " on r.oid = s.setrole where r.rolname = 'authenticator'").fetchone()[0]
+    assert rows == 2, f"{label}: the two-row shape under test was not created"
+
+    _, got, refuses = _ask_the_guard(db)
+    assert got == offending, label
+    assert refuses is (offending is not None), label
+
+
+def test_both_schemas_are_named_together_in_one_refusal(db):
+    """Exposing both is one dashboard change, and a refusal naming only the first would be
+    fixed, re-run, and refuse again."""
+    _authenticator(db, cluster_wide=['"pgrst.db_schemas" = \'public,net,vault\''])
+    _, offending, refuses = _ask_the_guard(db)
+    assert refuses is True and offending == ["net", "vault"]
+
+    text = M013.read_text()
+    assert "array_to_string(offending, ', ')" in text, \
+        "the refusal should name what it found, not just that it found something"
+    for reason in ("net.http_request_queue", "vault.decrypted_secrets",
+                   "postgres cannot revoke"):
+        assert reason in text, f"the hint should explain {reason}"
+
+
+def test_the_guard_covers_vault_because_service_role_can_already_read_it(db):
+    """Why `vault` is in this check at all, recorded where it will be read.
+
+    Checked read-only against production on 2026-11-01:
+    `has_table_privilege('service_role','vault.decrypted_secrets','select')` is **true**, and
+    `anon` is false. Supabase grants that directly from `supabase_admin` when it creates the
+    extension, SELECT and DELETE, and `postgres` cannot revoke a grant it did not make. It
+    is harmless only because `service_role` is NOLOGIN and `vault` is not exposed through the
+    Data API. This check is what keeps the second half of that true.
+    """
+    text = M013.read_text()
+    assert "'net', 'vault'" in text, "the guard must test both schemas"
+    assert "SELECT *and DELETE*" in text or "select *and DELETE*" in text.lower(), \
+        "the comment should record that the grant includes DELETE, not only SELECT"
+    assert "NOLOGIN" in text, "the comment should say why this is not already a breach"

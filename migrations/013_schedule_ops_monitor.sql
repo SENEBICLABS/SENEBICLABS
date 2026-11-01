@@ -91,13 +91,15 @@
 --     extension is installed, which is not the same thing. A worker that is not running
 --     leaves requests in the queue, never writes a reply, and the monitor then records a
 --     lost reply every twenty minutes;
---   * **that `vault.decrypted_secrets` is not readable by `service_role` or by `anon`.**
---     That is asserted nowhere in this repository and Supabase's documentation does not
---     state it either way. If it is readable by the service key, the API's own key can read
---     this monitor's operator key.
+--   * **that the Data API is still not exposing `net` or `vault`.** The check below answers
+--     this once, when 013 is applied, and nothing re-checks it afterwards.
 --
--- Both are in the activation smoke test in docs/operations.md, and the second one is a
--- single read-only query that should be run before this monitor is trusted.
+-- The question that used to be here, whether `service_role` can read
+-- `vault.decrypted_secrets`, has been answered: it can, it is a direct Supabase grant that
+-- `postgres` cannot revoke, and the comment on the check below records what that does and
+-- does not mean. There is nothing left to test about it.
+--
+-- Both are in the activation smoke test in docs/operations.md.
 
 begin;
 
@@ -105,7 +107,9 @@ begin;
 -- its own remedy, because "it did not work" is not a useful thing to read at the end of a
 -- release.
 do $$
-declare exposed text;
+declare
+  exposed   text;
+  offending text[];
 begin
   if not exists (select 1 from pg_extension where extname = 'pg_cron') then
     raise exception 'pg_cron is not enabled on this database'
@@ -145,8 +149,25 @@ begin
                    'save. Then run this migration again. Nothing in 013 has been applied.';
   end if;
 
-  -- What PostgREST is told to expose. If `net` is in that list, the request queue is
-  -- readable with an API key and the header above stops being a bounded exposure.
+  -- What PostgREST is told to expose. Two schemas here hold this monitor's key, and
+  -- exposing either one through the Data API turns a bounded exposure into a public one:
+  --
+  --   `net`    `net.http_request_queue` holds the key in a request header until pg_net's
+  --            worker sends it, and Supabase's PUBLIC grants on that schema cannot be
+  --            revoked by `postgres`.
+  --   `vault`  worse, and the reason this check covers it. Checked read-only against the
+  --            production project on 2026-11-01:
+  --
+  --              has_table_privilege('service_role','vault.decrypted_secrets','select') = true
+  --              has_table_privilege('anon',        'vault.decrypted_secrets','select') = false
+  --
+  --            Supabase grants `service_role` SELECT *and DELETE* on that view when it
+  --            creates the extension, as a direct grant from `supabase_admin`, not through
+  --            role membership. `postgres` did not make that grant and so cannot revoke it:
+  --            the statement raises nothing and removes nothing. It is harmless only
+  --            because `service_role` is NOLOGIN and the Data API does not expose `vault`,
+  --            so the service key cannot reach it. Expose `vault` and the service key reads
+  --            and deletes every secret in it, this monitor's key included.
   --
   -- Read from every row rather than from one of them, because `limit 1` without an
   -- `order by` is not a choice, it is a coin toss. A role routinely has two rows in
@@ -166,7 +187,8 @@ begin
   -- So: pull the value of `pgrst.db_schemas` itself out of every row, and keep whether it
   -- was found at all separate from what it said. Comparing exact comma-separated tokens
   -- rather than matching a pattern over the whole setting string also drops the one false
-  -- positive the old regex had, an unrelated setting whose value happened to be `net`.
+  -- positive the old regex had, an unrelated setting whose value happened to be `net`, and
+  -- keeps a lookalike schema such as `network_logs` or `vaults` from reading as a hit.
   select string_agg(split_part(e, '=', 2), ',')
     into exposed
     from pg_db_role_setting s
@@ -175,22 +197,33 @@ begin
    where r.rolname = 'authenticator'
      and e like 'pgrst.db_schemas=%';
 
+  -- Both schemas are checked in one pass and both are named in the refusal, because
+  -- exposing both is one dashboard change and a refusal that mentioned only the first
+  -- would be fixed once and then refuse again.
+  select array_agg(distinct btrim(sch) order by btrim(sch))
+    into offending
+    from unnest(string_to_array(exposed, ',')) sch
+   where btrim(sch) in ('net', 'vault');
+
   if exposed is null then
     -- Not established, so not passed. PostgREST can also be configured from its own
     -- environment rather than from a role setting, in which case there is nothing here to
     -- read and this is the honest answer.
     raise notice 'Could not establish PostgREST''s exposed schemas from the database '
                  '(no pgrst.db_schemas setting on the authenticator role). Confirm by hand '
-                 'that "net" is not listed under Settings -> API -> Exposed schemas before '
-                 'relying on this monitor.';
-  elsif exists (select 1 from unnest(string_to_array(exposed, ',')) sch
-                 where btrim(sch) = 'net') then
-    raise exception 'the net schema is exposed through the Data API'
+                 'that neither "net" nor "vault" is listed under Settings -> API -> Exposed '
+                 'schemas before relying on this monitor.';
+  elsif offending is not null then
+    raise exception 'a schema holding this monitor''s key is exposed through the Data API: %',
+                    array_to_string(offending, ', ')
       using errcode = 'insufficient_privilege',
-            hint = 'Remove "net" from Settings -> API -> Exposed schemas first. While it is '
+            hint = 'Remove it from Settings -> API -> Exposed schemas first. While "net" is '
                    'exposed, anon and authenticated can read net.http_request_queue, which '
-                   'holds this monitor''s key in a request header until the worker sends '
-                   'it. Nothing in 013 has been applied.';
+                   'holds this monitor''s key in a request header until the worker sends it. '
+                   'While "vault" is exposed it is worse: service_role holds a direct SELECT '
+                   'and DELETE grant on vault.decrypted_secrets that postgres cannot revoke, '
+                   'so the service key reads and deletes every secret in the Vault. '
+                   'Nothing in 013 has been applied.';
   end if;
 end $$;
 
