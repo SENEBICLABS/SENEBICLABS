@@ -47,10 +47,49 @@ To switch it on (needs approval), add three repository secrets:
 - `OPS_ADMIN_KEY`, a **dedicated operator key** from `POST /project/admin/operators`, so it
   can be revoked on its own.
 
-Until then the workflow skips itself, which is what it had been doing on every run since it
-was written: `ops secrets not set; skipping`. Nothing had ever read `ops-health`. Setting
-those three secrets is still the only thing that puts the **scoring drain** on a schedule
-and sends a failure to somebody's inbox; the in-database monitor below does neither.
+### Switching the scheduled check on
+
+**It no longer skips. It fails.** Until these secrets exist, every scheduled run is red and
+GitHub e-mails the repository owner. That is deliberate and it is the fix for the defect that
+sat here for the life of this workflow: the missing-configuration branch ended in `exit 0`, so
+every run since the file was written was **green while nothing had ever read `ops-health`**.
+The Actions tab said the platform was being watched. It was not.
+
+Red every ten minutes is the honest cost of an unconfigured monitor, and it stops the moment
+the secrets are set. That is a one-time action.
+
+| Secret | | |
+|---|---|---|
+| `OPS_API_BASE` | **required** | `https://api.senebiclabs.com` |
+| `OPS_ADMIN_KEY` | **required** | a **dedicated operator key** from `POST /project/admin/operators`, revocable on its own. **Never the root key** — this one only needs to read `ops-health` and run the drain |
+| `OPS_APP_URL` | optional | `https://app.senebiclabs.com`. Without it the clinician-app check is skipped and the run says so, rather than failing for a reason that is not about health |
+
+Set them under **Settings → Secrets and variables → Actions → New repository secret**. They are
+never written to a file in this repository, and `ops_check.py` prints names, counts, ids and
+notes — nothing that came out of a secret, which `test_ops_check.py` asserts with a sentinel.
+
+**What each exit code means**, because "the job failed" is not something you can act on:
+
+| Code | Meaning | What it is not |
+|---|---|---|
+| 0 | healthy, and this run established that | |
+| 1 | a check is in **alert**: the platform needs a person | |
+| 2 | **not configured**: nothing was established | not "healthy", not "broken" |
+| 3 | the platform **could not be read**: nothing was established | a monitoring failure, **not** a platform alert — the platform may be perfectly well |
+
+3 is the one that is easiest to misread. A 403 from `ops-health` means `OPS_ADMIN_KEY` has been
+revoked or replaced, and the run says so rather than sending you to look at Render.
+
+Every run writes its findings to the job summary, so the failure e-mail carries the failing
+check names and notes instead of requiring a log dive.
+
+**To verify the setup without waiting for a schedule:** run the workflow by hand from the
+Actions tab (`workflow_dispatch`). Expect **green** with "healthy" in the summary. To see the
+unconfigured path deliberately, run it from a fork or branch with the secrets absent and expect
+**exit 2** with "Nothing was checked" in the summary.
+
+Setting these is still the only thing that puts the **scoring drain** on a schedule and sends a
+failure to somebody's inbox; the in-database monitor below does neither.
 
 The same `ops-health` endpoint answers `503` when anything is in alert. Any uptime monitor
 pointed at it with the admin key header raises the same alarm without parsing the body.

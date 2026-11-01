@@ -2,10 +2,17 @@
 # failed client deliveries, and fails when anything is down, stuck or failing. A failed run
 # emails the repository owner, which is the alert.
 #
-# Needs three repository secrets before it does anything (it skips cleanly without them):
-#   OPS_API_BASE   https://api.senebiclabs.com
-#   OPS_APP_URL    https://app.senebiclabs.com
-#   OPS_ADMIN_KEY  a dedicated operator key (POST /project/admin/operators), revocable alone
+# Needs two repository secrets to do anything, and FAILS LOUDLY without them rather than
+# skipping, because a monitor that is not configured is not monitoring:
+#
+#   OPS_API_BASE   required   https://api.senebiclabs.com
+#   OPS_ADMIN_KEY  required   a dedicated operator key (POST /project/admin/operators),
+#                             revocable on its own, never the root key
+#   OPS_APP_URL    optional   https://app.senebiclabs.com -- without it the clinician app
+#                             is not checked and the run says so, rather than failing
+#
+# The key is read from the environment and never echoed: ops_check.py prints names, counts,
+# ids and notes, and nothing that came out of a secret.
 name: ops
 
 on:
@@ -36,7 +43,25 @@ jobs:
           OPS_APP_URL: ${{ secrets.OPS_APP_URL }}
           OPS_ADMIN_KEY: ${{ secrets.OPS_ADMIN_KEY }}
         run: |
-          if [ -z "$OPS_API_BASE" ] || [ -z "$OPS_ADMIN_KEY" ]; then
-            echo "ops secrets not set; skipping"; exit 0
-          fi
-          python scripts/ops_check.py
+          # No skip, and no `exit 0` on missing configuration. That is what this used to do,
+          # and it is why every scheduled run was green from the day the workflow was written
+          # while nothing had ever read ops-health: the Actions tab said the platform was
+          # being watched, and the secrets had never been set. scripts/ops_check.py returns
+          # 2 for "not configured", which fails the job and e-mails the owner.
+          #
+          # Until those secrets exist this job fails on every run. That is the intended cost
+          # of an unconfigured monitor and it stops the moment they are set. Setting them is
+          # a one-time action: docs/operations.md, "Switching the scheduled check on".
+          # `|| rc=$?` and not a bare call followed by `$?`: Actions runs this under
+          # `bash -e`, so a non-zero exit would abort the step before the case below ever
+          # ran, and the reason would never be printed.
+          rc=0
+          python scripts/ops_check.py || rc=$?
+          case "$rc" in
+            0) echo "healthy" ;;
+            1) echo "::error::the platform needs a person: see the run summary" ;;
+            2) echo "::error::this check is not configured, so nothing was established" ;;
+            3) echo "::error::the platform could not be read, so nothing was established" ;;
+            *) echo "::error::ops_check.py exited $rc, which this workflow does not know" ;;
+          esac
+          exit "$rc"
