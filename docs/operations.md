@@ -382,7 +382,21 @@ the monitor holds. Mint once, and use step 1 to check before minting again.
    This procedure keeps the key out of shell history, out of every process's argument list
    and off the disk. It does not and cannot keep it out of the statement text. The reason to
    use it anyway is that the SQL editor's exposure is worse and permanent.
-3. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
+3. **Apply migration 014.** One revoke and one grant, so the service key holds `select` on
+   `ops_monitor_state` and nothing else. 012 grants `select` without revoking first, and a
+   grant adds to a privilege set rather than replacing it, so Supabase's default `Dxtm` for
+   new tables in `public` survives and the service key keeps **TRUNCATE**. Measured on
+   production right after 012 was applied:
+   ```
+   select=True insert=False update=False delete=False TRUNCATE=True refs=True trigger=True
+   ```
+   Truncating that table would remove the configuration row, after which `ops-health`
+   reports `ops_monitor_stalled` as a *warning* about a missing row rather than an alert —
+   destroying the monitor's record would make monitoring quieter instead of louder. It is
+   bounded today because `service_role` is NOLOGIN and PostgREST has no TRUNCATE verb, but
+   the grant is where it belongs closed. Order does not matter against 013; before is tidier.
+
+4. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
    missing, if 012 has not been applied, if the Vault secret is absent, or if it **can see**
    that `net` or `vault` has been added to the Data API's exposed schemas. It switches the
    monitor on last, so a refusal leaves it off.
@@ -469,6 +483,8 @@ against it: an unattributed "confirmed" is not a record of anything.
 
 | | Checked | By | Date | Result |
 |---|---|---|---|---|
+| Migrations 012, 014, 013 applied, in that order | | | | 013 last: it is what starts outbound requests |
+| `service_role` has `select` only on `ops_monitor_state` | | | | the verification query in 014's footer |
 | Exposed schemas, from the database | | | | PASS / UNKNOWN / STOP |
 | Exposed schemas, **by hand** in Dashboard → Settings → API | | | | required when the row above is UNKNOWN |
 | `pg_net` installed and its worker answering | | | | |
