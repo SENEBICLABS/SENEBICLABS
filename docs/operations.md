@@ -159,61 +159,154 @@ would report `ok` for a platform nothing is watching.
 
    ```bash
    #!/usr/bin/env bash
+   # Store the monitor's operator key in Vault.
    # Requires bash, and the repo root as the working directory (for .venv).
    #   bash store-monitor-key.sh
    [ -n "${BASH_VERSION:-}" ] || { echo "run this with bash, not sh" >&2; exit 1; }
    set -uo pipefail
    umask 077
-   KEYFILE=/dev/shm/opskey          # must match the path in the \set line below
-   PASSFILE=/dev/shm/opspass
+   DSN_FILE=${DSN_FILE:-$HOME/.config/senebiclabs/backup-db.url}
 
-   # Whatever happens next, including Ctrl-C and a failed psql, both files go. The EXIT
-   # trap deliberately does not call `exit` itself: doing so would return shred's status
-   # and mask psql's, which is the one thing this script has to report accurately.
-   cleanup() { shred -u "$KEYFILE" "$PASSFILE" 2>/dev/null || true; }
+   # A private directory: 0700, uniquely named, on tmpfs where there is one, so the key
+   # never touches a disk. `mktemp -d` cannot be pre-created or symlinked by anyone else,
+   # which a fixed name in /dev/shm can be, because /dev/shm is mode 1777. Two kernel
+   # settings usually block that attack (fs.protected_symlinks, fs.protected_regular) but
+   # this should not be relying on sysctls it never checks.
+   PRIV=
+   for d in /dev/shm "${TMPDIR:-/tmp}"; do
+     if [ -d "$d" ] && [ -w "$d" ]; then PRIV=$(mktemp -d "$d/opsprep.XXXXXXXX") && break; fi
+   done
+   [ -n "$PRIV" ] || { echo "could not create a private temporary directory" >&2; exit 1; }
+   export KEYFILE="$PRIV/key"     # exported: psql's backtick shell reads it, see below
+   PASSFILE="$PRIV/pgpass"
+
+   # Everything secret dies with that directory, on every exit path: success, SQL failure,
+   # Ctrl-C, kill, and a closed terminal. HUP matters because its default action kills the
+   # shell *without* running the EXIT trap, which would leave the key behind until reboot.
+   #
+   # The EXIT trap deliberately does not call `exit` itself: that would return shred's
+   # status and mask psql's, which is the one thing this script must report accurately.
+   cleanup() {
+     for f in "$KEYFILE" "$PASSFILE"; do [ -e "$f" ] && shred -u "$f" 2>/dev/null; done
+     rm -rf "$PRIV" 2>/dev/null
+     return 0
+   }
    trap cleanup EXIT
-   trap 'cleanup; exit 130' INT TERM
+   trap 'cleanup; exit 130' INT TERM HUP
 
    # Split the stored connection string once, the same way backup_verify.py does: the
    # non-secret parts into the environment, the password into a mode-600 password file.
-   # Neither the password nor the full URI ever reaches a command line. This runs before
-   # the key is asked for, so a configuration problem cannot leave a key lying in a file.
-   eval "$(.venv/bin/python - "$PASSFILE" <<'PY'
-   import sys
+   # Neither the password nor the full URI ever reaches a command line. Every value is
+   # shell-quoted, because an unquoted `export PGHOST=db host.example.com` sets PGHOST to
+   # "db" and carries on, which would connect somewhere unintended. The OPSPREP_OK sentinel
+   # is how the shell knows the whole thing ran: any failure leaves it unset and aborts,
+   # rather than continuing with a half-populated environment.
+   eval "$(.venv/bin/python - "$PASSFILE" "$DSN_FILE" <<'PY'
+   import shlex, sys
    from pathlib import Path
    from psycopg.conninfo import conninfo_to_dict
-   p = conninfo_to_dict(Path("~/.config/senebiclabs/backup-db.url").expanduser().read_text().strip())
+
+   passfile, dsnfile = Path(sys.argv[1]), Path(sys.argv[2]).expanduser()
+   try:
+       p = conninfo_to_dict(dsnfile.read_text().strip())
+   except Exception as exc:
+       # Deliberately does not echo what it failed to parse: that is the connection string.
+       sys.exit(f"cannot parse {dsnfile}: {type(exc).__name__}")
+   pw = p.get("password")
+   absent = [k for k in ("host", "user") if not p.get(k)] + ([] if pw else ["password"])
+   if absent:
+       sys.exit("the connection string has no " + ", ".join(absent))
+   if "\n" in pw or "\r" in pw:
+       # .pgpass is line-based and has no escape for a newline, so such a password cannot
+       # be represented at all. Fail rather than write a file libpq will silently misread.
+       sys.exit("the password contains a newline, which .pgpass cannot represent; "
+                "rotate it to one without, or connect another way")
    esc = lambda v: str(v).replace("\\", "\\\\").replace(":", "\\:")
-   f = Path(sys.argv[1])
-   f.write_text(":".join(esc(p.get(k, "*")) for k in ("host", "port", "dbname", "user"))
-                + ":" + esc(p["password"]) + "\n")
-   f.chmod(0o600)
-   print("export " + " ".join(f"{k}={v}" for k, v in (
+   passfile.write_text(":".join(esc(p.get(k, "*")) for k in ("host", "port", "dbname", "user"))
+                       + ":" + esc(pw) + "\n")
+   passfile.chmod(0o600)
+   print("export " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in (
        ("PGHOST", p["host"]), ("PGPORT", p.get("port", "5432")),
        ("PGDATABASE", p.get("dbname", "postgres")), ("PGUSER", p["user"]),
-       ("PGSSLMODE", p.get("sslmode", "require")), ("PGPASSFILE", sys.argv[1])) if v))
+       ("PGSSLMODE", p.get("sslmode", "require")), ("PGPASSFILE", str(passfile)),
+       ("PGCONNECT_TIMEOUT", "15")) if v))
+   print("OPSPREP_OK=1")
    PY
    )"
-   # An empty eval means the python above failed, and PG* is unset. Stop before asking for
-   # a key rather than after.
-   [ -n "${PGPASSFILE:-}" ] || { echo "could not read the connection settings" >&2; exit 1; }
+   [ "${OPSPREP_OK:-}" = 1 ] || { echo "aborting: connection settings not prepared" >&2; exit 1; }
 
-   read -rsp 'operator key: ' K; echo     # builtin: no process, no argv, no echo
-   printf '%s' "$K" > "$KEYFILE"          # builtin, tmpfs: never on disk, never in argv
+   # Preflight, BEFORE the key is asked for. Two jobs: prove the connection works, and read
+   # the logging settings. A key typed into a session that then cannot connect is a key that
+   # has to be thrown away for no reason, and a key stored on a server that logs statements
+   # is a key in a log file.
+   pre=$(psql -q -At -v ON_ERROR_STOP=1 -v VERBOSITY=terse -c "
+     select (select setting from pg_settings where name = 'log_statement') || '|' ||
+            (select setting from pg_settings where name = 'log_min_duration_statement') || '|' ||
+            (select setting from pg_settings where name = 'log_min_error_statement')")
+   prc=$?
+   if [ "$prc" -ne 0 ]; then
+     echo "preflight failed (psql exit $prc): could not connect or read pg_settings." >&2
+     echo "No key has been asked for, so there is nothing to revoke. Fix this and re-run." >&2
+     exit 1
+   fi
+   IFS='|' read -r LOG_STMT LOG_DUR LOG_ERR <<<"$pre"
+
+   # `pg_settings.setting` is the raw value in base units, so this is a plain integer in ms.
+   # current_setting() would have returned "250ms" and broken the comparison.
+   case "$LOG_STMT" in
+     all|mod) echo "refusing: log_statement = $LOG_STMT, so a SUCCESSFUL create would be" >&2
+              echo "  written to the Postgres log with the key in it. Set it to ddl or none." >&2
+              exit 1 ;;
+   esac
+   case "$LOG_DUR" in
+     ''|*[!0-9-]*) echo "refusing: could not read log_min_duration_statement ($LOG_DUR)" >&2
+                   exit 1 ;;
+   esac
+   if [ "$LOG_DUR" -ge 0 ]; then
+     echo "refusing: log_min_duration_statement = ${LOG_DUR}ms, so the create would be" >&2
+     echo "  logged with the key in it. Set it to -1 for the duration of this." >&2
+     exit 1
+   fi
+   # Not a refusal, because it cannot be fixed: `error` is Supabase's default and governs
+   # only the failing path, which the exit-code handling below acts on instead.
+   echo "note: log_min_error_statement = $LOG_ERR. A create that FAILS is logged in full," >&2
+   echo "      key included. That is what makes a failed attempt burn the key." >&2
+
+   read -rsp 'operator key (not echoed): ' K; echo   # builtin: no process, no argv, no echo
+   [ -n "$K" ] || { echo "no key entered" >&2; exit 1; }
+   printf '%s' "$K" > "$KEYFILE"                     # builtin: never in argv, never on disk
    unset K
 
-   # The heredoc is quoted, so the shell expands nothing in it: the backtick is psql's own
-   # and runs there. That is why the path is written out rather than "$KEYFILE".
-   psql -q -v ON_ERROR_STOP=1 <<'SQL'
-   \set k `cat /dev/shm/opskey`
+   # The heredoc is quoted, so this shell expands nothing in it. The backtick is psql's own
+   # and runs through /bin/sh, which expands the exported $KEYFILE there. VERBOSITY=terse is
+   # load-bearing: at the default verbosity psql prints the offending statement back, which
+   # for a SQL error means printing `LINE 1: select vault.create_secret('op_...` to the
+   # terminal.
+   psql -q -v ON_ERROR_STOP=1 -v VERBOSITY=terse <<'SQL'
+   \set k `cat "$KEYFILE"`
    select vault.create_secret(:'k', 'ops_monitor_admin_key',
                               'Operator key used by ops_monitor_tick()') is not null as stored;
    SQL
    rc=$?
-   if [ "$rc" -ne 0 ]; then
-     echo "FAILED (psql exit $rc). Treat this key as logged: revoke it and mint a new one." >&2
-     echo "Do NOT run this again with the same key." >&2
-   fi
+
+   # Which failures burn the key and which do not. psql's exit status says, and the
+   # difference matters: treating every failure as fatal to the key teaches you to ignore
+   # the warning, and treating none as fatal stores a credential you know is in a log.
+   case "$rc" in
+     0) echo "stored." ;;
+     3) echo "FAILED (exit 3): the statement reached the server and raised, so its full" >&2
+        echo "  text, key included, is in the Postgres log. BURN THIS KEY: revoke it with" >&2
+        echo "  DELETE /project/admin/operators/{id}, mint another, and run this again." >&2
+        echo "  Most likely cause: the name is taken. select name from vault.secrets;" >&2 ;;
+     1|2) echo "FAILED (exit $rc): psql did not get the statement to the server, so nothing" >&2
+        echo "  was logged and the key is not burnt on that account. Fix the cause and" >&2
+        echo "  re-run with the same key." >&2
+        echo "  One exception: exit 2 is also what a connection dropping mid-statement" >&2
+        echo "  looks like. If the server may have received it, check the log and" >&2
+        echo "  select name from vault.secrets before reusing the key." >&2 ;;
+     *) echo "FAILED (exit $rc): unrecognised psql status. Assume the statement was sent" >&2
+        echo "  and burn the key." >&2 ;;
+   esac
    exit "$rc"
    ```
 
