@@ -289,21 +289,42 @@ would report `ok` for a platform nothing is watching.
    SQL
    rc=$?
 
-   # Which failures burn the key and which do not. psql's exit status says, and the
+   # Which failures burn the key and which do not. psql's exit status says, mostly, and the
    # difference matters: treating every failure as fatal to the key teaches you to ignore
    # the warning, and treating none as fatal stores a credential you know is in a log.
+   #
+   # Exit 2 is the one that cannot be resolved from the exit code alone, and it was wrong
+   # here. It was reported as "the statement did not reach the server, so nothing was
+   # logged", which is true when the connection fails before the statement is sent and
+   # false when it drops in the middle of one. Measured: terminating the backend mid
+   # statement on a throwaway server with log_statement = none gave exit 2 and this in the
+   # server log,
+   #
+   #   STATEMENT:  select vault.create_secret('op_DUMMY_...', 'ops_monitor_admin_key',
+   #
+   # because log_min_error_statement = error logs the text of whatever was running. So exit
+   # 2 is ambiguous, and the only safe default for an ambiguous case is to check.
    case "$rc" in
      0) echo "stored." ;;
      3) echo "FAILED (exit 3): the statement reached the server and raised, so its full" >&2
         echo "  text, key included, is in the Postgres log. BURN THIS KEY: revoke it with" >&2
         echo "  DELETE /project/admin/operators/{id}, mint another, and run this again." >&2
         echo "  Most likely cause: the name is taken. select name from vault.secrets;" >&2 ;;
-     1|2) echo "FAILED (exit $rc): psql did not get the statement to the server, so nothing" >&2
-        echo "  was logged and the key is not burnt on that account. Fix the cause and" >&2
-        echo "  re-run with the same key." >&2
-        echo "  One exception: exit 2 is also what a connection dropping mid-statement" >&2
-        echo "  looks like. If the server may have received it, check the log and" >&2
-        echo "  select name from vault.secrets before reusing the key." >&2 ;;
+     2) echo "FAILED (exit 2): the connection went bad. AMBIGUOUS, and treat it as burnt" >&2
+        echo "  until you have shown otherwise: if it dropped before the statement was" >&2
+        echo "  sent, nothing was logged, but if it dropped mid-statement the server has" >&2
+        echo "  logged the statement text with the key in it. Before reusing this key:" >&2
+        echo "    1. check the Postgres log (Supabase: Logs -> Postgres) for a STATEMENT" >&2
+        echo "       line mentioning vault.create_secret. If it is there, the key is" >&2
+        echo "       logged: revoke it and mint another." >&2
+        echo "    2. select name, created_at from vault.secrets" >&2
+        echo "          where name = 'ops_monitor_admin_key';" >&2
+        echo "       If it is there, the create committed and there is nothing to redo." >&2 ;;
+     1) echo "FAILED (exit 1): psql failed on its own account and will have said how, for" >&2
+        echo "  instance an unreadable input or a bad option. That happens before anything" >&2
+        echo "  is sent, so the key is not burnt: fix the cause and re-run with it." >&2
+        echo "  If the message names the server rather than psql, follow the exit 2" >&2
+        echo "  instructions instead." >&2 ;;
      *) echo "FAILED (exit $rc): unrecognised psql status. Assume the statement was sent" >&2
         echo "  and burn the key." >&2 ;;
    esac
