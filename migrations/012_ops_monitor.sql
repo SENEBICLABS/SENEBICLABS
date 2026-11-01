@@ -112,8 +112,10 @@ on conflict (name) do nothing;
 
 -- Collect the previous tick's reply, then issue the next request.
 --
--- Returns a short word for `cron.job_run_details.return_message`, so reading back what
--- happened needs no second query. It is written to *record* failures rather than raise them:
+-- Returns a short description of what it did, for a human calling it by hand. That value
+-- does NOT reach `cron.job_run_details.return_message`: pg_cron stores the row count of a
+-- `SELECT`, so that column reads `1 row` on every tick whatever happened. `ops_monitor_state`
+-- is the record, and it is written to *record* failures rather than raise them:
 -- pg_cron runs each tick in its own transaction, and an exception would roll the record back
 -- with it, leaving the one table that is supposed to say what went wrong saying nothing at
 -- all. Where a failure is also worth seeing in the Postgres log it is raised as a warning,

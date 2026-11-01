@@ -455,14 +455,42 @@ itself.
    Re-run this whenever the Data API's exposed schemas change. 013's guard is an
    install-time check and nothing re-checks it.
 2. **pg_net's worker is really running.** 013 confirms the extension is installed, which is
-   not the same thing. Wait two ticks, up to twenty minutes:
+   not the same thing. Wait two ticks, up to twenty minutes, then read the record:
    ```sql
-   select status, return_message, start_time from cron.job_run_details
+   select runs, last_run_at, last_success_at, last_status_code, last_reported_status,
+          last_failing_checks, last_error, consecutive_failures, pending_request_id
+     from ops_monitor_state where name = 'ops-health';
+   ```
+   **`ops_monitor_state` is the authoritative record of what each tick found. Do not look
+   for it in `cron.job_run_details`.** `ops_monitor_tick()` returns a short description of
+   what it did, but pg_cron records the *row count* of a `SELECT`, so `return_message` reads
+   `1 row` on every tick, whatever happened. Measured on production: both the first tick and
+   the second recorded `1 row`, and `sweep-reservations` does the same. The function's
+   return value is discarded.
+
+   What `cron.job_run_details` is still good for is `status`, which says whether the
+   function raised at all:
+   ```sql
+   select status, start_time from cron.job_run_details
     where jobid = (select jobid from cron.job where jobname = 'ops-monitor')
     order by start_time desc limit 3;
    ```
-   Expect `nothing pending; sent <id>` then `answered 200: ok; sent <id>`. A repeated
-   `failed: no reply recorded` means the worker is not draining the queue.
+   `succeeded` on every row and `queued = 0` in `net.http_request_queue` between ticks is
+   what says the worker is draining. A `consecutive_failures` that climbs with
+   `last_error` reading `no reply was ever recorded` is what says it is not.
+
+   **The first two ticks look alarming and are not.** pg_net cannot return a reply inside
+   the call that sent the request, so each tick collects the previous tick's reply:
+
+   | After | What the record says | Why |
+   |---|---|---|
+   | tick 1 | `runs=1`, `pending_request_id` set, **`last_success_at` null** | nothing to collect yet |
+   | tick 2 | `last_success_at` set, `last_status_code=503`, `last_reported_status=alert`, `last_failing_checks={ops_monitor_stalled}` | the first probe caught the monitor before it had ever succeeded, so `ops-health` was correctly alerting about it |
+   | tick 3 | `last_status_code=200`, `last_reported_status=ok`, `last_failing_checks` empty | writing `last_success_at` cleared `ops_monitor_stalled` |
+
+   That bootstrap 503 is the monitor reporting on itself, and it is why a 503 carrying a
+   valid `checks` array counts as a successful probe. **`consecutive_failures` staying at 0
+   is what tells you the probe succeeded**, not the status code.
 3. **It really reached `ops-health`**, and not something else answering on that URL:
    ```sql
    select last_success_at, last_status_code, last_reported_status, consecutive_failures
@@ -633,10 +661,10 @@ What the runs establish, and what they do not:
 | `reservations_lapsed_unswept` | Warning: leases past expiry still marked active for over 15 minutes | Serving is unaffected: an expired lease stops counting by itself. It says the tidy-up is not running. `select expire_reservations()`, then check the scheduled job |
 | `reservations_overlong` | Alert | A lease has lived past the longest a renewal can carry it, which is five hours: 60 minutes per renewal and four renewals, because a renewal is refused once the lease has expired. `renew_reservation` cannot produce that, so something wrote to `item_reservations` around it. Find the writer |
 | `reservations_starving_work` | Alert: a project's every open case held for over 90 minutes | Clinicians are being told there is no work while the work is there. Usually abandoned sessions. `select expire_reservations()` frees them; if it recurs, look for a client that reserves without submitting |
-| `reservations_sweep_stalled` | Alert: the sweep has never succeeded, or last succeeded over 20 minutes ago | The sweep runs every 5 minutes inside Postgres (migration 011), so this is four missed ticks. Either the schedule stopped or every run since has failed, because a failed run preserves the previous timestamp rather than writing its own. Serving is unaffected, but `reservations_lapsed_unswept` follows. `select jobname, schedule, active from cron.job`, then `select status, return_message from cron.job_run_details order by start_time desc limit 5`. The scoring drain's own `expire_reservations()` call is the fallback while you fix it |
+| `reservations_sweep_stalled` | Alert: the sweep has never succeeded, or last succeeded over 20 minutes ago | The sweep runs every 5 minutes inside Postgres (migration 011), so this is four missed ticks. Either the schedule stopped or every run since has failed, because a failed run preserves the previous timestamp rather than writing its own. Serving is unaffected, but `reservations_lapsed_unswept` follows. `select jobname, schedule, active from cron.job`, then `select status from cron.job_run_details order by start_time desc limit 5` (`return_message` reads `1 row` for a SELECT and says nothing; `ops_sweep_state` is the record). The scoring drain's own `expire_reservations()` call is the fallback while you fix it |
 | `reservations_sweep_stalled` (warning) | Warning | `ops_sweep_state` could not be read, so nothing was checked. Before migration 010 is applied that is expected, and it is a warning rather than an alert so that deploying the code ahead of the migration cannot turn this endpoint into a 503 |
 | `reservations` | Warning | The lease table could not be read, so none of the above was checked. If migration 009 is not applied yet, that is why, and cases are being served without being held |
-| `ops_monitor_stalled` | Alert: the monitor is switched on and the endpoint has not answered it for over 35 minutes | Three missed ticks plus most of a fourth, allowing for every result being one tick old. Either the schedule stopped or every probe since has failed, so nothing inside the platform is watching it. `select jobname, schedule, active from cron.job where jobname = 'ops-monitor'`, then `select status, return_message from cron.job_run_details order by start_time desc limit 5`. `ops_monitor_probe` below says which of the two it is |
+| `ops_monitor_stalled` | Alert: the monitor is switched on and the endpoint has not answered it for over 35 minutes | Three missed ticks plus most of a fourth, allowing for every result being one tick old. Either the schedule stopped or every probe since has failed, so nothing inside the platform is watching it. `select jobname, schedule, active from cron.job where jobname = 'ops-monitor'`, then `select status from cron.job_run_details order by start_time desc limit 5`. Read what the ticks found from `ops_monitor_state`, not from `return_message`, which reads `1 row` for a SELECT. `ops_monitor_probe` below says which of the two it is |
 | `ops_monitor_stalled` (warning) | Warning | The monitor is not switched on, has no seeded row, or its table could not be read. Before migrations 012 and 013 that is expected. It is a warning rather than an alert so that deploying the code ahead of the migration cannot turn this endpoint into a 503, and not a pass because a platform nothing is watching is not healthy. Follow "Switching it on" above |
 | `ops_monitor_probe` | Alert after 3 failures in a row, warning after 1 | What the probes got. A revoked key is the common one and says so in the note, which is an `operators` problem with the schedule running perfectly; the other causes are the API being down, a timeout, or `pg_net` not being installed. The note carries the recorded reason. A 503 from the endpoint is **not** a probe failure: the endpoint answered, and the alert it carried belongs to the check that raised it |
 | `deliveries_failing` | Warning | The client's webhook is failing. It is retried on a growing schedule with the same event id; nothing to do yet |
