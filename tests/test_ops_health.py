@@ -26,7 +26,15 @@ def _db(**rows):
     base = {"project_submissions": [], "project_items": [], "answer_events": [],
             "review_items": [], "item_reservations": [],
             "ops_sweep_state": [{"name": "reservations", "last_expired": 0, "runs": 7,
-                                 "last_run_at": datetime.now(timezone.utc).isoformat()}]}
+                                 "last_run_at": datetime.now(timezone.utc).isoformat()}],
+            # Likewise a working platform is one something is watching: the monitor from
+            # migrations 012 and 013 switched on and getting answers. Pass
+            # ops_monitor_state explicitly to say otherwise.
+            "ops_monitor_state": [{"name": "ops-health", "enabled": True, "runs": 12,
+                                   "last_run_at": datetime.now(timezone.utc).isoformat(),
+                                   "last_success_at": datetime.now(timezone.utc).isoformat(),
+                                   "last_status_code": 200, "last_reported_status": "ok",
+                                   "last_error": None, "consecutive_failures": 0}]}
     health = rows.pop("_reservation_health", [])
     rpcs = {"reservation_health": lambda _params, out=health: out}
     base.update(rows)
@@ -475,3 +483,271 @@ def test_the_drain_must_not_be_the_thing_that_records_a_sweep():
         "the API calls sweep_reservations(), which would mask a stalled schedule"
     assert src.count('db.rpc("expire_reservations"') == 1, \
         "the drain's own fallback sweep should still be exactly one call"
+
+
+# ── the in-database monitor (migrations 012 and 013) ───────────────────────────
+#
+# The check that answers "is anything watching this platform at all". It exists because
+# nothing was: the scheduled workflow had been skipping every run for want of three secrets,
+# and no record said so, so every alarm above was being raised to nobody.
+
+def _mon(out):
+    return _by_name(out)["ops_monitor_stalled"]
+
+
+def _probe(out):
+    return _by_name(out)["ops_monitor_probe"]
+
+
+def _monitor(**over):
+    row = {"name": "ops-health", "enabled": True, "runs": 12,
+           "last_run_at": AGO(minutes=2), "last_success_at": AGO(minutes=2),
+           "last_status_code": 200, "last_reported_status": "ok",
+           "last_error": None, "consecutive_failures": 0}
+    row.update(over)
+    return [row]
+
+
+def test_a_monitor_that_answered_minutes_ago_is_ok():
+    out = ops_health.run(_db(ops_monitor_state=_monitor()), NOW)
+    assert _mon(out)["status"] == "ok" and _mon(out)["count"] == 0
+    assert _probe(out)["status"] == "ok"
+    assert out["status"] == "ok"
+
+
+def test_a_probe_that_got_a_503_is_still_a_working_monitor():
+    """The one way this check could poison the whole endpoint, asserted shut.
+
+    `ops-health` answers 503 whenever anything is in alert. If the monitor counted that as
+    a failed probe, any alert anywhere would make the monitor alert too, and the monitor's
+    own alert would keep the 503 alive after the original fault was fixed. A probe succeeds
+    when it reaches the endpoint, whatever the endpoint said.
+    """
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        last_status_code=503, last_reported_status="alert")), NOW)
+    assert _mon(out)["status"] == "ok"
+    assert _probe(out)["status"] == "ok"
+    assert "503" in _probe(out)["note"]
+    assert "belongs to the checks above" in _probe(out)["note"]
+    assert out["status"] == "ok", "a 503 the monitor merely heard must not become an alert"
+
+
+def test_a_monitor_past_the_thirty_five_minute_bound_alerts():
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        last_success_at=AGO(minutes=36), last_run_at=AGO(minutes=36))), NOW)
+    c = _mon(out)
+    assert c["status"] == "alert" and c["count"] == 1
+    assert "36 minutes ago" in c["note"] and "35 minute bound" in c["note"]
+    assert "cron.job" in c["note"], "the note must say where to look"
+    assert out["status"] == "alert"
+
+
+def test_a_stalled_monitor_turns_the_endpoint_into_a_503():
+    """What makes this reach a person rather than a log.
+
+    The in-database monitor cannot report its own death to itself. An external poller can,
+    and this is what it sees: a 503 without parsing the body.
+    """
+    stale = _db(ops_monitor_state=_monitor(last_success_at=AGO(minutes=90)))
+    with patch.object(proj, "get_client", return_value=stale), patch.object(proj, "_require_admin"):
+        assert proj.admin_ops_health(x_admin_key="k").status_code == 503
+    with patch.object(proj, "get_client", return_value=_db()), patch.object(proj, "_require_admin"):
+        assert proj.admin_ops_health(x_admin_key="k").status_code == 200
+
+
+def test_a_monitor_just_inside_the_bound_is_not_an_alarm():
+    """Three missed ticks plus most of a fourth, and every result is one tick old by design,
+    because pg_net cannot return a reply inside the call that sent the request."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(last_success_at=AGO(minutes=34))), NOW)
+    assert _mon(out)["status"] == "ok"
+
+
+def test_a_monitor_switched_on_that_has_never_answered_alerts():
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        last_success_at=None, last_run_at=AGO(minutes=5), runs=3)), NOW)
+    c = _mon(out)
+    assert c["status"] == "alert"
+    assert "never had an answer" in c["note"]
+    assert out["status"] == "alert"
+
+
+def test_a_monitor_that_is_not_switched_on_warns_rather_than_alerting():
+    """Deliberately not an alert, and deliberately not a pass.
+
+    012 seeds the row with enabled = false, because switching it on needs two owner actions
+    a migration must not take: enabling pg_net, and putting a key in Vault. An alert would
+    make this endpoint answer 503 about its own unfinished installation, during a release.
+    A pass would report ok for a platform nothing is watching, which is the condition this
+    check exists to end.
+    """
+    off = _db(ops_monitor_state=_monitor(enabled=False, last_success_at=None,
+                                         last_run_at=None, last_status_code=None,
+                                         last_reported_status=None, runs=0))
+    out = ops_health.run(off, NOW)
+    c = _mon(out)
+    assert c["status"] == "warn", "an unfinished installation must not be an alert"
+    assert "not switched on" in c["note"] and "migration 013" in c["note"]
+    assert out["status"] == "warn"
+    assert "ops_monitor_probe" not in _by_name(out), \
+        "there are no probes to report on when nothing is probing"
+
+    with patch.object(proj, "get_client", return_value=off), patch.object(proj, "_require_admin"):
+        assert proj.admin_ops_health(x_admin_key="k").status_code == 200, \
+            "a release must not be able to 503 on a migration that is not finished"
+
+
+def test_a_missing_monitor_table_warns_and_names_the_migration():
+    """The state of production between deploying this code and applying 012."""
+    class NoTable(FakeDB):
+        def table(self, name):
+            if name == "ops_monitor_state":
+                raise RuntimeError(f'relation "{name}" does not exist (42P01)')
+            return super().table(name)
+
+    out = ops_health.run(NoTable({"project_submissions": [], "project_items": [],
+                                  "answer_events": [], "review_items": [],
+                                  "item_reservations": [],
+                                  "ops_sweep_state": [{"name": "reservations", "runs": 1,
+                                                       "last_expired": 0,
+                                                       "last_run_at": AGO(minutes=1)}]}),
+                         NOW)
+    c = _mon(out)
+    assert c["status"] == "warn", "an unapplied migration must not be an alert"
+    assert "migration 012" in c["note"]
+    assert out["status"] == "warn"
+
+
+def test_an_empty_monitor_table_warns_and_says_how_to_seed_it():
+    out = ops_health.run(_db(ops_monitor_state=[]), NOW)
+    c = _mon(out)
+    assert c["status"] == "warn" and "migration 012" in c["note"]
+
+
+def test_probes_failing_in_a_row_escalate_from_a_warning_to_an_alert():
+    seen = {}
+    for n in (0, 1, 2, 3, 9):
+        out = ops_health.run(_db(ops_monitor_state=_monitor(
+            consecutive_failures=n,
+            last_error="the endpoint answered HTTP 502" if n else None)), NOW)
+        seen[n] = _probe(out)["status"]
+    assert seen == {0: "ok", 1: "warn", 2: "warn", 3: "alert", 9: "alert"}, seen
+
+
+def test_a_revoked_monitor_key_says_so_rather_than_sending_an_operator_to_cron():
+    """The two ways this fails are not the same job.
+
+    A dead schedule is a cron problem. A refused key is an `operators` problem, and the
+    schedule is running perfectly while it happens. The heartbeat goes stale either way, so
+    the reason has to come from the probe.
+    """
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=4, last_status_code=403, last_success_at=AGO(minutes=50),
+        last_error="the monitor key was refused (HTTP 403): the operator key in the Vault "
+                   "secret has probably been revoked or replaced")), NOW)
+    assert _probe(out)["status"] == "alert"
+    assert "revoked or replaced" in _probe(out)["note"]
+    assert _mon(out)["status"] == "alert", "a key nobody accepts is also a dead heartbeat"
+    assert out["status"] == "alert"
+
+
+def test_a_failed_probe_note_never_carries_the_key():
+    """`last_error` is written by the migration and read straight into a note, so this is
+    the place to hold the line: whatever the database recorded, it is truncated, and the
+    migration is asserted never to write the secret into it (tests/sql)."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=3, last_error="x" * 5000)), NOW)
+    assert len(_probe(out)["note"]) < 600, "an unbounded database string reached the body"
+
+
+def test_the_monitor_severity_follows_the_age_across_the_boundary():
+    seen = {}
+    for minutes in (0, 10, 34, 35, 36, 120, 24 * 60):
+        out = ops_health.run(_db(ops_monitor_state=_monitor(
+            last_success_at=AGO(minutes=minutes))), NOW)
+        seen[minutes] = _mon(out)["status"]
+    assert seen == {0: "ok", 10: "ok", 34: "ok", 35: "ok",
+                    36: "alert", 120: "alert", 24 * 60: "alert"}, seen
+
+
+def test_the_monitor_check_breaking_is_an_alert_and_is_named():
+    class Broken(FakeDB):
+        def table(self, name):
+            if name == "ops_monitor_state":
+                raise RuntimeError("connection reset by peer")
+            return super().table(name)
+
+    out = ops_health.run(Broken({"project_submissions": [], "project_items": [],
+                                 "answer_events": [], "review_items": [],
+                                 "item_reservations": [],
+                                 "ops_sweep_state": [{"name": "reservations", "runs": 1,
+                                                      "last_expired": 0,
+                                                      "last_run_at": AGO(minutes=1)}]}),
+                        NOW)
+    c = _by_name(out)["ops_monitor"]
+    assert c["status"] == "alert" and "check itself failed" in c["note"]
+
+
+def test_nothing_in_the_api_writes_the_monitors_record():
+    """A guard on the design, the same one the lease sweep has.
+
+    `ops_monitor_state` is trustworthy only because the application never writes it. If any
+    route touched it, a request that happened to arrive would refresh the heartbeat and hide
+    a dead schedule from the check that exists to notice one. The application reads this row
+    and nothing else.
+    """
+    src = (Path(__file__).resolve().parents[1] / "app").rglob("*.py")
+    writes = []
+    for path in src:
+        text = path.read_text()
+        if "ops_monitor_state" not in text:
+            continue
+        for verb in (".insert(", ".update(", ".upsert(", ".delete("):
+            if verb in text and "ops_monitor_state" in text:
+                # Crude on purpose: the only mention anywhere in the application is the one
+                # read in ops_health, so any write verb in the same file is worth a look.
+                writes.append((path.name, verb))
+    assert writes == [], writes
+    assert "ops_monitor_tick" not in (
+        Path(__file__).resolve().parents[1] / "app" / "api" / "v1" / "project.py").read_text(), \
+        "the API calls ops_monitor_tick(), which would mask a stalled schedule"
+
+
+def test_how_long_it_has_been_failing_comes_from_the_clock_not_the_count():
+    """This arithmetic was wrong, and wrong in the reassuring direction.
+
+    It multiplied the failure count by the ten minute cadence. A lost reply makes the tick
+    return without sending a new probe, so those failures arrive one per twenty minutes, and
+    three of them would have been reported as "about 30 minutes" when an hour had passed.
+    `last_success_at` is what actually knows.
+    """
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=3, last_success_at=AGO(minutes=60),
+        last_error="no reply was ever recorded for the request")), NOW)
+    note = _probe(out)["note"]
+    assert "60 minutes" in note, note
+    assert "30 minutes" not in note, "the duration is still being inferred from the count"
+
+
+def test_a_monitor_that_has_never_succeeded_states_no_duration_at_all():
+    """Rather than reporting a made-up one from the count."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=4, last_success_at=None,
+        last_error="the Vault secret named in secret_name does not exist")), NOW)
+    note = _probe(out)["note"]
+    assert "never read this endpoint successfully" in note
+    assert "minutes" not in note.split("never read")[0], note
+
+
+def test_an_answer_that_was_not_ops_health_reaches_the_operator_as_itself():
+    """The failure the body validation added. It must arrive naming the url column, because
+    a monitor pointed at the wrong host looks exactly like an outage otherwise."""
+    out = ops_health.run(_db(ops_monitor_state=_monitor(
+        consecutive_failures=3, last_status_code=200, last_reported_status=None,
+        last_success_at=None,
+        last_error="something answered HTTP 200 at the configured URL but not with an "
+                   "ops-health body (no checks array), so nothing here has confirmed this "
+                   "platform. Check the url column of ops_monitor_state")), NOW)
+    assert _probe(out)["status"] == "alert"
+    assert "not with an ops-health body" in _probe(out)["note"]
+    assert "url column" in _probe(out)["note"]
+    assert _mon(out)["status"] == "alert", "nothing has confirmed the platform, so it is stalled"
