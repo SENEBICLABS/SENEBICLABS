@@ -47,10 +47,108 @@ To switch it on (needs approval), add three repository secrets:
 - `OPS_ADMIN_KEY`, a **dedicated operator key** from `POST /project/admin/operators`, so it
   can be revoked on its own.
 
-Until then the workflow skips itself.
+Until then the workflow skips itself, which is what it had been doing on every run since it
+was written: `ops secrets not set; skipping`. Nothing had ever read `ops-health`. Setting
+those three secrets is still the only thing that puts the **scoring drain** on a schedule
+and sends a failure to somebody's inbox; the in-database monitor below does neither.
 
 The same `ops-health` endpoint answers `503` when anything is in alert. Any uptime monitor
 pointed at it with the admin key header raises the same alarm without parsing the body.
+
+## The in-database monitor
+
+Everything above notices faults. Until migrations 012 and 013 nothing noticed whether
+*anything was reading them*: the workflow had been printing `ops secrets not set; skipping`
+on every run since it was written, and because nothing recorded that, every alert in
+`ops_health.py` was being raised to nobody and no query could tell you so.
+
+`ops_monitor_tick()` closes that. `pg_cron` calls it every ten minutes inside Postgres, it
+calls `GET /project/admin/ops-health` through `pg_net` with a dedicated operator key from
+Supabase Vault, and it writes what came back into `ops_monitor_state`. One query answers the
+question that had no answer:
+
+```sql
+select enabled, last_success_at, last_status_code, last_reported_status,
+       last_failing_checks, last_error, consecutive_failures, runs
+  from ops_monitor_state;
+```
+
+**It does not email anybody.** Postgres has nowhere to send mail. The record exists so that
+something which can raise an alarm has something truthful to read, and the two halves cover
+each other:
+
+- if the **API** is down, this record says so from inside the database, which an external
+  poller cannot distinguish from its own network being down;
+- if this **schedule** dies, `ops-health` reports `ops_monitor_stalled` as an alert, so it
+  answers `503` to the workflow or to any uptime monitor pointed at it with the key.
+
+Neither half alone is enough and neither is asked to be. Point something at `ops-health`, or
+set the workflow's three secrets, or both.
+
+`pg_net` is asynchronous: `net.http_get` queues a request and a background worker sends it
+after the transaction commits, so no single call can see its own reply. Each tick therefore
+collects the *previous* tick's reply and then sends a new one, which is why every result is
+one tick old and why the staleness bound is 35 minutes rather than 20.
+
+**A 503 from the endpoint counts as a successful probe.** The endpoint answered, which is
+what the heartbeat is about; the alert it carried belongs to the check that raised it. If a
+503 counted as a probe failure, any alert anywhere would make the monitor alert too, and the
+monitor's own alert would keep the 503 alive after the original fault was fixed.
+
+### Switching it on
+
+Three steps, in this order. Until all three are done, `ops_monitor_stalled` is reported as a
+**warning** saying exactly which one is outstanding, which is deliberate: a warning does not
+turn this endpoint into a 503 over an installation that is simply unfinished, and a pass
+would report `ok` for a platform nothing is watching.
+
+1. **Enable `pg_net`** once, as the project owner: Supabase dashboard, Database ->
+   Extensions, search for `pg_net`. A migration does not do this, for the same reason 011
+   does not enable `pg_cron`: the `postgres` role here is not a superuser.
+2. **Mint a dedicated operator key and put it in Vault.** Dedicated so it can be revoked on
+   its own:
+   ```
+   curl -s -X POST https://api.senebiclabs.com/api/v1/project/admin/operators \
+     -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"name":"in-database monitor"}'
+   ```
+   then, in the SQL editor, **in a query you do not save**, because the editor keeps a
+   history of what was run:
+   ```sql
+   select vault.create_secret('op_...', 'ops_monitor_admin_key',
+                              'Operator key used by ops_monitor_tick()');
+   ```
+3. **Apply migration 013.** It refuses, with nothing applied, if `pg_cron` or `pg_net` is
+   missing, if 012 has not been applied, if the Vault secret is absent, or if `net` has been
+   added to the Data API's exposed schemas. It switches the monitor on last, so a refusal
+   leaves it off.
+
+Verify after twenty minutes: the first tick returns `nothing pending; sent <id>` because it
+had no reply to collect, and the second returns `answered 200: ok; sent <id>`.
+
+**What the key is exposed to.** `pg_net` parks the request, headers included, in
+`net.http_request_queue` until its worker sends it, which is seconds. Supabase grants
+privileges on the `net` schema to `PUBLIC` as `supabase_admin`, and `postgres` cannot revoke
+a grant it did not make, so those seconds cannot be closed off. What it means here: `anon`,
+`authenticated` and `service_role` cannot open a direct connection and the Data API does not
+expose `net`, so no API key reaches it; the roles that *can* connect already read every table
+in the database, `operators` included, so the key tells them nothing new; and it is a
+dedicated operator key, revocable on its own. Keep `net` out of Settings -> API -> Exposed
+schemas, which 013 refuses to install without.
+
+### Turning it off
+
+```sql
+select cron.unschedule('ops-monitor');
+update ops_monitor_state set enabled = false where name = 'ops-health';
+```
+
+No deploy, and nothing else in the platform reads this record, so nothing else changes:
+`ops_monitor_stalled` returns to the warning it reported before 013, which does not make the
+endpoint answer 503. To undo 012 as well, `drop function ops_monitor_tick()` and
+`drop table ops_monitor_state`, after which the check reports the missing table as a warning.
+The key is separate: revoke it with `DELETE /project/admin/operators/{id}` so it stops
+working everywhere, and delete its row from `vault.secrets`.
 
 ## Measured capacity
 
@@ -109,6 +207,9 @@ What the runs establish, and what they do not:
 | `reservations_sweep_stalled` | Alert: the sweep has never succeeded, or last succeeded over 20 minutes ago | The sweep runs every 5 minutes inside Postgres (migration 011), so this is four missed ticks. Either the schedule stopped or every run since has failed, because a failed run preserves the previous timestamp rather than writing its own. Serving is unaffected, but `reservations_lapsed_unswept` follows. `select jobname, schedule, active from cron.job`, then `select status, return_message from cron.job_run_details order by start_time desc limit 5`. The scoring drain's own `expire_reservations()` call is the fallback while you fix it |
 | `reservations_sweep_stalled` (warning) | Warning | `ops_sweep_state` could not be read, so nothing was checked. Before migration 010 is applied that is expected, and it is a warning rather than an alert so that deploying the code ahead of the migration cannot turn this endpoint into a 503 |
 | `reservations` | Warning | The lease table could not be read, so none of the above was checked. If migration 009 is not applied yet, that is why, and cases are being served without being held |
+| `ops_monitor_stalled` | Alert: the monitor is switched on and the endpoint has not answered it for over 35 minutes | Three missed ticks plus most of a fourth, allowing for every result being one tick old. Either the schedule stopped or every probe since has failed, so nothing inside the platform is watching it. `select jobname, schedule, active from cron.job where jobname = 'ops-monitor'`, then `select status, return_message from cron.job_run_details order by start_time desc limit 5`. `ops_monitor_probe` below says which of the two it is |
+| `ops_monitor_stalled` (warning) | Warning | The monitor is not switched on, has no seeded row, or its table could not be read. Before migrations 012 and 013 that is expected. It is a warning rather than an alert so that deploying the code ahead of the migration cannot turn this endpoint into a 503, and not a pass because a platform nothing is watching is not healthy. Follow "Switching it on" above |
+| `ops_monitor_probe` | Alert after 3 failures in a row, warning after 1 | What the probes got. A revoked key is the common one and says so in the note, which is an `operators` problem with the schedule running perfectly; the other causes are the API being down, a timeout, or `pg_net` not being installed. The note carries the recorded reason. A 503 from the endpoint is **not** a probe failure: the endpoint answered, and the alert it carried belongs to the check that raised it |
 | `deliveries_failing` | Warning | The client's webhook is failing. It is retried on a growing schedule with the same event id; nothing to do yet |
 | `deliveries_given_up` | Alert | The client refused it (4xx) or the retries ran out. Tell the client; they can poll `/results` or call `/webhook/redeliver` |
 | `deliveries_awaiting_sign_off` | Warning: reviewed two days ago, not delivered | Deliver it: `/project/admin/advance` |
@@ -117,8 +218,15 @@ What the runs establish, and what they do not:
 **Not covered by this check**, so watch these on the providers' own dashboards:
 - error rates and latency per route (Render and Vercel);
 - database connection exhaustion and storage quota (Supabase);
-- the Supabase free plan's pause after 7 days without activity. The scheduled check's
-  activity also prevents that pause.
+- the Supabase free plan's pause after 7 days without activity. `pg_cron` ticking every five
+  minutes (migration 011) prevents that pause whether or not anything else is running, which
+  the GitHub workflow could not be relied on for.
+
+Two side effects of the in-database monitor worth knowing, because they are not what it is
+for: probing every ten minutes keeps the API's free web plan from spinning down after
+fifteen minutes of quiet, so the first clinician of the morning does not pay for a cold
+start, and `last_failing_checks` gives the alert state a history rather than only a value at
+the moment somebody asks.
 
 ## Backups
 

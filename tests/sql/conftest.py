@@ -35,10 +35,11 @@ WORKFORCE = Path(os.environ.get(
     HEALTH.parent / "workforce" / "senebiclabs-workforce-platform"))
 
 # Migrations that need a Postgres extension this disposable server does not have, so they
-# cannot be part of a template. 011 schedules the lease sweep through pg_cron and is written
-# to refuse rather than half-apply, which is itself asserted in
-# tests/sql/test_reservation_sweep_sql.py. Everything the application reads is in 010.
-NEEDS_EXTENSIONS = {"011_schedule_reservation_sweep.sql"}
+# cannot be part of a template. 011 schedules the lease sweep through pg_cron and 013
+# schedules the operations monitor through pg_cron and pg_net; both are written to refuse
+# rather than half-apply, which is itself asserted in tests/sql/test_reservation_sweep_sql.py
+# and tests/sql/test_ops_monitor_sql.py. Everything the application reads is in 010 and 012.
+NEEDS_EXTENSIONS = {"011_schedule_reservation_sweep.sql", "013_schedule_ops_monitor.sql"}
 
 TEMPLATE_BEFORE = "senebi_tpl_before_native"   # everything except the native store
 TEMPLATE_BEFORE_008 = "senebi_tpl_before_008"   # the native store, Label Studio not yet removed

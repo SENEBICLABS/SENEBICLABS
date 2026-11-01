@@ -48,6 +48,18 @@ LEASE_STARVATION_ALERT = timedelta(minutes=90)  # a project blocked on leases th
 # printed in a log nobody reads rather than sent to anyone.
 SWEEP_STALLED_ALERT = timedelta(minutes=20)
 
+# The in-database monitor (migrations 012 and 013), which probes this endpoint every ten
+# minutes from inside Postgres and records what it got.
+#
+# 35 minutes is three missed ticks plus most of a fourth. The extra half tick is not slack
+# for its own sake: every result the monitor records is one tick old by design, because
+# pg_net cannot return a reply inside the call that sent the request, so the heartbeat
+# legitimately lags.
+MONITOR_STALLED_ALERT = timedelta(minutes=35)
+# How many probes in a row may fail before it stops being bad luck. At ten minutes apart,
+# three is half an hour of the endpoint not answering.
+MONITOR_FAILURES_ALERT = 3
+
 
 def _parse(stamp) -> datetime | None:
     if not stamp:
@@ -293,6 +305,115 @@ def reservation_sweep(db, now):
                    note=f"The lease sweep succeeded within the last {bound} minutes")]
 
 
+def ops_monitor(db, now):
+    """Is anything actually watching this platform, and is what watches it working?
+
+    Everything else in this module answers "is the platform healthy". This one answers "did
+    anybody ask", which until migrations 012 and 013 nothing could. The scheduled GitHub
+    workflow had been skipping every run for want of three secrets, and because nothing
+    recorded whether the check had run, every alarm in this file was being raised to nobody
+    and there was no way to see that from inside the system.
+
+    `ops_monitor_state` is written only by `ops_monitor_tick()`, on the schedule 013
+    installs, which calls this very endpoint from inside Postgres. Two checks come out of it:
+
+      ops_monitor_stalled  when did the endpoint last answer the monitor
+      ops_monitor_probe    what the recent probes got, when they did not answer
+
+    The circularity is real and is the point. This endpoint reporting on its own monitor is
+    useless to the monitor and useful to everything else: an uptime monitor pointed here
+    with the key sees a 503 when the in-database schedule dies, and the record in Postgres
+    survives the API being down, which is the one failure an external poller cannot
+    distinguish from its own network. Each half covers the other's blind spot; neither is
+    asked to cover its own.
+
+    Not switched on is a **warning**, not an alert, and not a pass. 012 seeds the row with
+    `enabled = false` because switching it on needs two owner actions it deliberately does
+    not take, so an alert here would make this endpoint answer 503 about its own unfinished
+    installation. A pass would be worse: it would report "ok" for a platform nothing is
+    watching, which is the exact condition this check exists to end.
+
+    A probe that reaches the endpoint counts as a success whatever the endpoint said. 503 is
+    `ops-health` doing its job; the alert it carries belongs to the check that raised it, not
+    to the monitor for having heard it. Counting it as a probe failure would make any alert
+    anywhere self-sustaining.
+    """
+    missing = ("ops_monitor_state could not be read, so nothing here says whether anything "
+               "is watching this platform. It comes with migration 012")
+    try:
+        # One row, looked up by primary key, so this is not paged.
+        rows = (db.table("ops_monitor_state")
+                .select("name,enabled,last_run_at,last_success_at,last_status_code,"
+                        "last_reported_status,last_error,consecutive_failures,runs")
+                .eq("name", "ops-health").limit(1).execute().data) or []
+    except Exception as exc:
+        if _missing_object(exc):
+            # Same rule as everywhere else here: a check that could not run is reported,
+            # never passed, and never escalated. It is also the state of production between
+            # deploying this code and applying 012.
+            return [_check("ops_monitor_stalled", "warn", 1, note=missing)]
+        raise
+
+    if not rows:
+        return [_check("ops_monitor_stalled", "warn", 1,
+                       note="The table exists but holds no ops-health row, so the monitor has "
+                            "no URL and no secret name to work from. Re-run migration 012, "
+                            "which seeds it")]
+
+    row = rows[0]
+    if not row.get("enabled"):
+        return [_check("ops_monitor_stalled", "warn", 1,
+                       note="The in-database monitor is installed but not switched on, so "
+                            "nothing inside the platform is reading this endpoint. Enable "
+                            "pg_net, put a dedicated operator key in Vault and apply "
+                            "migration 013: see docs/operations.md")]
+
+    out = []
+    bound = int(MONITOR_STALLED_ALERT.total_seconds() // 60)
+    where_to_look = ("Check select jobname, schedule, active from cron.job where jobname = "
+                     "'ops-monitor', then select status, return_message from "
+                     "cron.job_run_details order by start_time desc limit 5")
+    last = _parse(row.get("last_success_at"))
+
+    if last is None:
+        out.append(_check("ops_monitor_stalled", "alert", 1,
+                          note="The monitor is switched on and has never had an answer from this "
+                               f"endpoint. {where_to_look}"))
+    elif last < now - MONITOR_STALLED_ALERT:
+        out.append(_check("ops_monitor_stalled", "alert", 1,
+                          note=f"The monitor last got an answer "
+                               f"{int((now - last).total_seconds() // 60)} minutes ago, past the "
+                               f"{bound} minute bound. Either the schedule has stopped or every "
+                               "probe since has failed, so nothing inside the platform is "
+                               f"watching it. {where_to_look}"))
+    else:
+        out.append(_check("ops_monitor_stalled", "ok", 0,
+                          note=f"The monitor got an answer within the last {bound} minutes "
+                               f"(probe {row.get('runs') or 0})"))
+
+    # What the probes got. Separate from the heartbeat because the two fail differently: a
+    # revoked key fails every probe while the schedule runs perfectly, and the remedy is a
+    # new key rather than a look at cron.
+    fails = int(row.get("consecutive_failures") or 0)
+    err = str(row.get("last_error") or "").strip()[:300]
+    if fails >= MONITOR_FAILURES_ALERT:
+        out.append(_check("ops_monitor_probe", "alert", fails,
+                          note=f"{fails} probes in a row failed, so for about "
+                               f"{fails * 10} minutes nothing inside the platform has been "
+                               f"able to read this endpoint. {err}"))
+    elif fails:
+        out.append(_check("ops_monitor_probe", "warn", fails,
+                          note=f"{fails} probe(s) failed since the last success. {err}"))
+    else:
+        code, said = row.get("last_status_code"), row.get("last_reported_status")
+        out.append(_check("ops_monitor_probe", "ok", 0,
+                          note=f"The last probe reached this endpoint"
+                               + (f" (HTTP {code}" + (f", reporting {said}" if said else "") + ")"
+                                  if code else "")
+                               + ". Anything it reported belongs to the checks above"))
+    return out
+
+
 def database(db):
     started = time.monotonic()
     db.table("project_submissions").select("id").limit(1).execute()
@@ -309,6 +430,7 @@ def run(db, now: datetime | None = None) -> dict:
                      ("review_queues", lambda: review_queues(db, now)),
                      ("reservations", lambda: reservations(db, now)),
                      ("reservations_sweep_stalled", lambda: reservation_sweep(db, now)),
+                     ("ops_monitor", lambda: ops_monitor(db, now)),
                      ("deliveries", lambda: deliveries(db, now))):
         try:
             checks.extend(fn())
