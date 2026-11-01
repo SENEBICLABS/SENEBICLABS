@@ -52,6 +52,45 @@ Until then the workflow skips itself.
 The same `ops-health` endpoint answers `503` when anything is in alert. Any uptime monitor
 pointed at it with the admin key header raises the same alarm without parsing the body.
 
+## Measured capacity
+
+`scripts/load_rehearsal.py` pushes a client-sized batch through the whole pipeline on the
+throwaway stack and times each leg. It is not a pass/fail test: it reports where the
+platform bends, so a turnaround can be promised from measurements rather than from hope.
+
+```
+scripts/native_e2e_stack.sh up
+NATIVE_E2E_API=... NATIVE_E2E_APP=... NATIVE_E2E_DSN=... \
+NATIVE_E2E_ADMIN_KEY=... NATIVE_E2E_JWT_SECRET=... \
+python3 scripts/load_rehearsal.py --items 2000 --readers 8
+```
+
+Measured on the throwaway stack, with the clinician app in dev mode (a production build is
+faster, so the serving figures are pessimistic):
+
+| Leg | 2,000 items | 10,000 items |
+|---|---|---|
+| `POST /ingest` | 1.0s in 4 calls of 500 | 5.1s in 10 calls of 1,000 |
+| release to servable | under a second | under a second |
+| reserve + submit | median 1.4s, p95 2.1s per case | paced by people, not measured |
+| scoring settles after the last answer | about a second | — |
+| `GET /admin/report` | 0.8s | 1.2s |
+| client's `GET /results`, delivered | 1.2s, 1.7 MiB | — |
+
+What the runs establish, and what they do not:
+
+- **Serving is correct under concurrency.** 2,000 cases through 8 clinicians at once: no
+  case served twice, no errors, and the work split evenly (248 to 252 each).
+- **Paging is right past 1,000 rows.** The report counted 2,000 of 2,000 and 10,000 of
+  10,000. A truncated read here would quietly score a fraction of the batch and look fine,
+  which is why `services/paging.py: fetch_all` exists.
+- **A client may post the whole batch at once.** One 5,000-item body, 1.1 MiB, accepted in
+  1.05s.
+- **Throughput is clinicians, not the platform.** Every leg the platform owns is seconds;
+  the only slow leg is people reading cases. Capacity planning is a roster question.
+- **Not covered**: this runs against a local Postgres, not the hosted database on its
+  plan's connection and CPU limits, and not against a free web plan's cold starts.
+
 ## What each check means
 
 | Check | Alert or warning | What to do |
