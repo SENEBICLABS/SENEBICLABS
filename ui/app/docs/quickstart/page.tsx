@@ -21,7 +21,7 @@ export default function Page() {
           <Code>{`BASE="${BASE}"
 API_KEY="your_api_key"`}</Code>
 
-          <h3>1 · Create a project</h3>
+          <h2>1 · Create a project</h2>
           <p>Start from a template and there is no config to author:</p>
           <Code>{`curl -s -X POST "$BASE/projects" \\
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
@@ -36,7 +36,7 @@ API_KEY="your_api_key"`}</Code>
             path if you would rather author the config yourself.
           </p>
 
-          <h3>2 · Push items</h3>
+          <h2>2 · Push items</h2>
           <Code>{`curl -s -X POST "$BASE/ingest" \\
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -H "Idempotency-Key: batch-1" \\
@@ -48,7 +48,7 @@ API_KEY="your_api_key"`}</Code>
     ]
   }'`}</Code>
 
-          <h3>3 · Poll for results</h3>
+          <h2>3 · Poll for results</h2>
           <Code>{`curl -s "$BASE/results?project_id=YOUR_PROJECT_ID" -H "Authorization: Bearer $API_KEY"`}</Code>
           <p>
             <C>status</C> becomes <C>delivered</C> when the report and the reviewed items are ready.

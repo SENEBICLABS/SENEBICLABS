@@ -23,7 +23,7 @@ export default function Page() {
             future release is tested against. Tag a run with{' '}
             <C>model_version</C> on <C>POST /projects</C>.
           </p>
-          <h3>Record a finished evaluation</h3>
+          <h2>Record a finished evaluation</h2>
           <Code>{`curl -X POST "$BASE/failures/capture" \\
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \\
   -d '{ "project_id": "...", "model_version": "v2.3" }'
@@ -37,7 +37,7 @@ export default function Page() {
             plain <C>open</C> — a fix that did not hold is the most important thing the library
             knows.
           </p>
-          <h3>Query and aggregate</h3>
+          <h2>Query and aggregate</h2>
           <Code>{`GET $BASE/failures?severity=Critical&clinical_domain=Respiratory&status=open
 GET $BASE/failures/patterns
 
@@ -47,7 +47,7 @@ GET $BASE/failures/patterns
   "serious_by_domain": { "Respiratory": 12, "Cardiac": 9 },
   "recurring": [ { "case_key": "PMX-47", "occurrences": 3, "status": "regressed" } ]
 }}`}</Code>
-          <h3>Promote, then re-run</h3>
+          <h2>Promote, then re-run</h2>
           <Code>{`POST $BASE/benchmark/promote  { "min_severity": "High" }
 POST $BASE/benchmark/run      { "model_version": "v2.4" }
 
@@ -63,7 +63,7 @@ POST $BASE/benchmark/run      { "model_version": "v2.4" }
             <C>runs</C>, each with its own <C>compare_with</C>, and the top-level <C>project_id</C> is
             omitted.
           </p>
-          <h3>The release gate, end to end</h3>
+          <h2>The release gate, end to end</h2>
           <Code>{`POST /benchmark/run      { "model_version": "v2.4" }   -> project_id, compare_with
 GET  /results?project_id=...                           -> poll until delivered
 GET  /compare?baseline=<compare_with>&candidate=<project_id>

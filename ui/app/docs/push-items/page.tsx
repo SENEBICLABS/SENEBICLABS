@@ -33,7 +33,7 @@ export default function Page() {
       { "case_id": "case_002", "scenario": "patient message...", "prediction": "Urgent" }
     ]
   }'`}</Code>
-          <h3>Idempotency</h3>
+          <h2>Idempotency</h2>
           <p>
             Send an <C>Idempotency-Key</C> header with each batch. If a request times out and
             you retry with the same key, we recognise it and skip the insert, so a retry never
@@ -44,9 +44,9 @@ export default function Page() {
             Use a fresh key per distinct batch. Without a key, each call appends its items, so
             two identical calls would create duplicates.
           </p>
-          <h3>Response</h3>
+          <h2>Response</h2>
           <Code>{`{ "ok": true, "message": "Ingested 2 items." }`}</Code>
-          <h3>Bulk (data in your storage)</h3>
+          <h2>Bulk (data in your storage)</h2>
           <p>
             For large volumes, don&rsquo;t push the data through the API at all. Leave it in your
             storage (e.g. S3) and send a <C>manifest_url</C> instead of <C>items</C>. A manifest is a

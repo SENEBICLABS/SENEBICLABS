@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:docs": "node scripts/test-docs.mjs",
+    "test:e2e": "cd .. && PYTHONPATH=. python3 -m pytest tests/e2e/test_docs_reference.py -q --browser chromium"
   },
   "dependencies": {
     "next": "^16.4.3",
