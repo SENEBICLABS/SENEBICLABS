@@ -6,3 +6,6 @@ node_modules/
 out/
 .vercel
 tsconfig.tsbuildinfo
+
+# compiled output for npm run test:docs
+.docs-test-build/

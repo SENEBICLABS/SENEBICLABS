@@ -33,7 +33,7 @@ X-Senebiclabs-Event-Id: 6f1c2a9e-...
   "items": [ ... ]
 }`}</Code>
 
-          <h3>Verify the signature</h3>
+          <h2>Verify the signature</h2>
           <p>
             Every webhook carries three headers. <C>X-Senebiclabs-Signature</C> is an
             HMAC-SHA256, keyed with your <C>webhook_secret</C>, over the timestamp and the

@@ -22,7 +22,7 @@ export default function Page() {
             Create a project and get back a <C>project_id</C> to push items to.
           </p>
 
-          <h3>Start from a template (recommended)</h3>
+          <h2>Start from a template (recommended)</h2>
           <p>
             Pick what you want to achieve and we build the project for you — no config to author.
             List the outcomes with <C>GET /templates</C>:
@@ -81,7 +81,7 @@ export default function Page() {
             <C>template</C> — so you start from a working, validated config, not a blank page.
           </p>
 
-          <h3>Custom config (advanced)</h3>
+          <h2>Custom config (advanced)</h2>
           <p>Define your own task from scratch:</p>
           <Code>{`curl -X POST "$BASE/projects" \\
   -H "Authorization: Bearer $API_KEY" \\
@@ -109,7 +109,7 @@ export default function Page() {
     },
     "webhook_url": "https://your-app.com/hooks/senebiclabs"
   }'`}</Code>
-          <h3>Response</h3>
+          <h2>Response</h2>
           <Code>{`{
   "ok": true,
   "project_id": "fc64fb22-...",

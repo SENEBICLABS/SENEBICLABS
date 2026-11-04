@@ -27,9 +27,9 @@ export default function Page() {
           </p>
           <Code>{`curl "$BASE/results?project_id=YOUR_PROJECT_ID" \\
   -H "Authorization: Bearer $API_KEY"`}</Code>
-          <h3>While in review</h3>
+          <h2>While in review</h2>
           <Code>{`{ "ok": true, "project_id": "...", "status": "in_review", "total": 200, "done": 142 }`}</Code>
-          <h3>When delivered</h3>
+          <h2>When delivered</h2>
           <Code>{`{
   "ok": true,
   "project_id": "...",

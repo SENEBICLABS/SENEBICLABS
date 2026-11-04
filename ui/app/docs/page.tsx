@@ -49,7 +49,7 @@ export default function Page() {
             </a>
           </div>
 
-          <h3>Base URL</h3>
+          <h2>Base URL</h2>
           <Code>{BASE}</Code>
         </section>
     </>

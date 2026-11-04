@@ -52,6 +52,60 @@ environment is correct and **you can write
 and test most changes without any credentials at all.** `tests/e2e` is excluded because it
 drives a real browser against a running server.
 
+### Testing the reference UI
+
+The `/docs` reference has two suites of its own, neither of which CI runs yet.
+
+From a clean checkout, once:
+
+```bash
+pip install -r requirements-dev.txt     # pytest-playwright, playwright
+playwright install chromium             # the browser binary
+cd ui && npm ci                         # the frontend dependencies
+```
+
+The first suite is hermetic and takes a second. It covers the language detection
+and the syntax highlighter the code blocks are rendered with:
+
+```bash
+cd ui && npm run test:docs
+```
+
+The second drives a real browser against the built site, because the behaviour it
+covers only exists after hydration: the contents rail rebuilding across client side
+navigation, a malformed URL fragment not taking the page down, keyboard access to
+code blocks that overflow, copy, the 390px layout, focus rings and contrast.
+
+```bash
+cd ui && npm run test:e2e
+```
+
+Run it from `ui/`, which is where that script lives; there is no package.json at
+the repository root. It builds `ui/` and serves it on a free port for the run, so
+the first invocation takes a couple of minutes. Point it at a server you already
+have to skip the build while iterating:
+
+```bash
+cd ui && npm run build && npm run start -- -p 3000     # in one shell
+cd "$(git rev-parse --show-toplevel)"                  # in another: pytest's
+DOCS_BASE_URL=http://127.0.0.1:3000 PYTHONPATH=. \
+  pytest -q tests/e2e/test_docs_reference.py --browser chromium
+```
+
+**A missing prerequisite fails the run.** It used to skip, and a run in which
+every test skips exits 0, so the suite reported success having executed nothing.
+If you do not have the browser stack and are working on something else, ask for
+the skip explicitly:
+
+```bash
+cd ui && DOCS_E2E_OPTIONAL=1 npm run test:e2e
+```
+
+Several tests deliberately open a **fresh** browser context. The reference loads
+its font with `display: swap`, so a reader arriving with a cold cache measures a
+code block against fallback metrics; reusing one warm context hides that whole
+class of first-visit bug, and once did.
+
 ### Run the API
 
 ```bash
