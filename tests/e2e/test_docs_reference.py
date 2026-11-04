@@ -307,9 +307,20 @@ def test_a_restored_scroll_position_is_not_overridden(cold, base_url):
     settle(page)
     page.evaluate("() => window.scrollTo(0, 300)")
     page.wait_for_timeout(300)
+    target = page.evaluate("""() => {
+      const t = document.getElementById('response');
+      return Math.round(t.getBoundingClientRect().top + window.scrollY);
+    }""")
     page.reload()
     settle(page)
-    assert page.evaluate("() => Math.round(window.scrollY)") == 300
+    y = page.evaluate("() => Math.round(window.scrollY)")
+    # Near where it was, and nowhere near the fragment. Not an exact equality:
+    # the font swaps in after restoration and reflows the page under it, which
+    # moves the restored offset by a few tens of pixels without the retry having
+    # fired at all. What this guards is that the retry did not override the
+    # reader's position, and that is a question of which end of the page we are.
+    assert abs(y - 300) < 120, f"the restored position moved to {y}, not near 300"
+    assert abs(y - target) > 300, f"the fragment retry overrode restoration: {y} vs target {target}"
 
 
 # ── Finding 2: keyboard access to code that scrolls ──────────────────────────

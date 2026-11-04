@@ -1056,6 +1056,194 @@
   .docs-card:hover { transform: none; }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   COMPOSITION LAYER
+
+   A pass over rhythm, hierarchy and furniture, after studying how a well made
+   hosted reference composes a page. Appended, so the layers above stay readable
+   as the record of what each component was for.
+
+   THE PALETTE DOES NOT CHANGE HERE. Every colour below resolves through the
+   tokens declared at the top of the refinement layer: --d-bg, --d-raised,
+   --d-sunken, --d-line, --d-line-firm and the four ink steps. No hex is edited,
+   no token added, no hue introduced. tests/e2e asserts that block is unchanged.
+
+   What changes is size, weight, spacing and shape.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The page opening ───────────────────────────────────────────────────────── */
+/* Eyebrow, title, one sentence saying what the page is for, then a deliberate
+   gap. The gap is the point: it separates "what this page is" from "here is the
+   detail", and a reader who only wants the first can stop there. */
+
+.docs-main h1 {
+  /* 44px at this width was nearly half again the body scale and shouted. The
+     page is introduced by the block as a whole, not by the size of one word. */
+  font-size: clamp(27px, 2.3vw, 33px);
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+  font-weight: 620;
+  margin: 0 0 10px;
+  align-items: baseline;
+}
+
+/* The lead was set to 17px and rendered at 15px: `.docs-main p` is one class and
+   one element, `.docs-lead` is one class, so the body rule out-specified it and
+   every page opened with a sentence indistinguishable from its own body copy.
+   Matched on both now, which also keeps it correct if the body rule moves. */
+/* `h1 + p` as well as the explicit class: only two pages carry `.docs-lead`,
+   and the rest open with an ordinary paragraph that is doing exactly the same
+   job. Styling the position rather than the class gives every page the same
+   opening without a word of content being edited. */
+.docs-main .docs-lead,
+.docs-main p.docs-lead,
+.docs-main h1 + p {
+  font-size: 18px;
+  line-height: 1.58;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  /* ink-2, the same step as body copy: on a dark ground a dimmer lead reads as
+     less important than the paragraph under it, which inverts the hierarchy the
+     larger size is there to create. Size carries it; brightness stays level. */
+  color: var(--d-ink-2);
+  max-width: 62ch;
+  margin: 0 0 34px;
+}
+
+.docs-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--d-ink-3);
+  margin-bottom: 12px;
+}
+
+/* The opening block used to be tightened against the first heading here. The
+   lead now closes with a rule of its own, which does that job, and the override
+   out-specified later spacing rules. Left out deliberately. */
+
+/* ── Sections are separated by space, not by a line ─────────────────────────── */
+/* A rule above every heading is furniture a reader has to look past. Removing it
+   and spending the same pixels on space reads quieter and groups better. */
+
+.docs-main h2 {
+  font-size: 19.5px;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+  font-weight: 620;
+  margin: 62px 0 16px;
+  padding-top: 0;
+  border-top: 0;
+}
+.docs-main h3 {
+  font-size: 15.5px;
+  font-weight: 620;
+  margin: 34px 0 10px;
+}
+.docs-main h2 + h3 { margin-top: 20px; }
+
+/* ── Body copy ──────────────────────────────────────────────────────────────── */
+/* 300 is a display weight. At 15px on a near-black ground the stems thin out and
+   the reader pays for it over a long reference page. */
+
+.docs-main p,
+.docs-main li {
+  font-size: 15.5px;
+  font-weight: 400;
+  line-height: 1.72;
+}
+.docs-main p { margin: 0 0 18px; }
+.docs-main li { margin: 0 0 9px; }
+.docs-main ul { margin: 0 0 22px; }
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+/* The group label is the organising device: it says which part of the reference
+   you are in. At 9.5px and weight 300 it was doing none of that work. */
+
+.docs-nav .grp {
+  font-family: var(--docs-sans), 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--d-ink);
+  margin: 26px 0 8px;
+  padding-left: 10px;
+}
+/* Each item is wrapped in a `display: contents` span, so a `.grp:first-child`
+   would match the label in every wrapper, not the first in the column. The
+   wrapper is the thing to count. */
+.docs-nav > span:first-child .grp { margin-top: 0; }
+
+.docs-nav a {
+  font-size: 13.5px;
+  font-weight: 450;
+  padding: 7px 10px;
+  border-radius: var(--d-radius-sm);
+  /* The active item is a filled block, not a hairline on one edge. It reads as
+     "you are here" at a glance down the column, which a 1px edge does not. */
+  border-left: 0;
+  margin-left: 0;
+}
+.docs-nav a.active {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--d-ink);
+  font-weight: 550;
+  border-left: 0;
+}
+.docs-nav a:hover { background: rgba(255, 255, 255, 0.035); }
+
+.docs-side { padding: 44px 16px 72px 20px; }
+
+/* ── On this page ───────────────────────────────────────────────────────────── */
+/* The same thinking: no rail down the edge, space and ink do the ranking. */
+
+.docs-toc a {
+  border-left: 0;
+  padding: 6px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.docs-toc a.active,
+.docs-toc a.lvl3.active { color: var(--d-ink); font-weight: 550; border-left: 0; }
+.docs-toc a.lvl3 { padding-left: 14px; }
+.docs-toc-t { margin-bottom: 14px; }
+.docs-toc { padding-top: 56px; }
+
+/* ── Start-here cards ───────────────────────────────────────────────────────── */
+/* Three across rather than two: the cards are signposts, and three fits the
+   measure without any of them becoming a paragraph. */
+
+.docs-cards {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  max-width: none;
+  margin: 30px 0 10px;
+}
+.docs-card { padding: 18px 18px 20px; border-radius: var(--d-radius); }
+.docs-card .t { font-size: 14.5px; font-weight: 600; margin-bottom: 6px; }
+.docs-card .d { font-size: 13.5px; line-height: 1.6; color: var(--d-ink-3); }
+
+@media (max-width: 1080px) { .docs-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px)  { .docs-cards { grid-template-columns: 1fr; } }
+
+/* ── Code blocks ────────────────────────────────────────────────────────────── */
+/* The header strip was a raised bar sitting on top of the block, which reads as
+   two components rather than one. Same information, same controls, no seam. */
+
+.docs-pre .pre-head {
+  background: transparent;
+  border-bottom: 0;
+  height: 30px;
+  padding: 0 8px 0 16px;
+}
+.docs-pre code { padding: 2px 18px 18px; }
+.docs-pre .pre-lang { font-size: 9.5px; letter-spacing: 0.15em; }
+
+/* ── Room ───────────────────────────────────────────────────────────────────── */
+
+.docs-main { padding: 46px 60px 110px; }
+.docs-pre { margin: 0 0 26px; }
+
 /* ── Narrower viewports ─────────────────────────────────────────────────────── */
 
 @media (max-width: 1180px) {
@@ -1076,7 +1264,9 @@
     padding: 16px 20px;
   }
   .docs-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
-  .docs-nav .grp { width: 100%; margin: 10px 0 2px; padding-left: 0; }
+  /* 10px, matching the item padding, so the label and the items it introduces
+     share a left edge once the column becomes a wrapped row. */
+  .docs-nav .grp { width: 100%; margin: 14px 0 4px; padding-left: 10px; }
   .docs-main { padding: 34px 20px 72px; }
   .docs-main h2 { margin-top: 42px; }
 }
@@ -1093,3 +1283,237 @@
   /* The brand and the call to action then fit on one row at 390px. */
   .docs-topbar .docs-brand-sub { display: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PRESENCE
+
+   The composition pass took furniture away: borders off the code blocks, the
+   rule off every heading, the rail off the contents list, the edge off the
+   sidebar. Space was left to do all the work, and uniform space with nothing
+   to measure it against reads as flat rather than calm.
+
+   This puts structure back, deliberately. Three grounds instead of one, so a
+   region is legible as a region. Borders where two things meet. Spacing with
+   rhythm: a heading sits close to the paragraph it introduces, and sections
+   are pushed well apart. Nothing here is a new colour: --d-bg, --d-raised and
+   --d-sunken already existed for exactly this and were going unused.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Three grounds ──────────────────────────────────────────────────────────── */
+
+.docs-side {
+  background: var(--d-sunken);
+  border-right: 1px solid var(--d-line);
+  padding: 32px 14px 72px 18px;
+}
+.docs-shell { background: var(--d-bg); }
+.docs-toc { padding: 48px 26px 72px 22px; border-left: 1px solid var(--d-line); }
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+
+.docs-nav .grp {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--d-ink-3);
+  margin: 28px 0 6px;
+  padding-left: 11px;
+}
+.docs-nav > span:first-child .grp { margin-top: 4px; }
+
+.docs-nav a {
+  font-size: 13.5px;
+  font-weight: 450;
+  color: var(--d-ink-3);
+  padding: 6.5px 11px;
+  border-radius: 6px;
+  transition: color 0.12s var(--d-ease), background 0.12s var(--d-ease);
+}
+.docs-nav a:hover { color: var(--d-ink-2); background: rgba(255, 255, 255, 0.04); }
+.docs-nav a.active {
+  color: var(--d-ink);
+  font-weight: 560;
+  background: rgba(255, 255, 255, 0.075);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* ── Rhythm ─────────────────────────────────────────────────────────────────── */
+/* Tight inside a group, wide between groups. That difference is the rhythm the
+   uniform version had none of. */
+
+.docs-main { padding: 44px 64px 120px; }
+
+.docs-main h1 {
+  font-size: clamp(26px, 2.2vw, 31px);
+  letter-spacing: -0.028em;
+  font-weight: 640;
+  margin: 0 0 12px;
+  gap: 11px;
+}
+/* The sentence directly under the title is the lead, and it is the one that
+   gets the rule under it. The overview also carries a longer `.docs-lead`
+   paragraph after that one; giving both a rule drew the opening twice. */
+.docs-main h1 + p {
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--d-ink-3);
+  margin: 0 0 30px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--d-line);
+  max-width: 68ch;
+}
+/* An intro paragraph, set a touch larger than body, with no rule of its own. */
+.docs-main p.docs-lead {
+  font-size: 15.5px;
+  line-height: 1.68;
+  color: var(--d-ink-2);
+  border-bottom: 0;
+  padding-bottom: 0;
+  margin: 0 0 22px;
+  max-width: 70ch;
+}
+
+/* A block whose language could not be detected has an empty label, which left a
+   34px bar holding nothing but the copy button. Collapse it onto the code. */
+.docs-pre .pre-head:has(.pre-lang:empty) {
+  height: 0;
+  border-bottom: 0;
+  background: transparent;
+  overflow: visible;
+  padding: 0;
+}
+.docs-pre .pre-head:has(.pre-lang:empty) .copy-btn {
+  position: relative;
+  top: 9px;
+  z-index: 2;
+}
+.docs-pre:has(.pre-lang:empty) code { padding-top: 16px; }
+
+/* Cards are a group; the heading after them needs the full section gap. */
+.docs-cards + h2, .docs-cards + * + h2 { margin-top: 58px; }
+
+.docs-main h2 {
+  font-size: 17.5px;
+  font-weight: 650;
+  letter-spacing: -0.014em;
+  margin: 54px 0 12px;          /* wide above, tight below: the heading belongs
+                                   to what follows it, not to what precedes */
+}
+.docs-main h3 { font-size: 14.5px; font-weight: 640; margin: 30px 0 8px; }
+.docs-main p, .docs-main li { font-size: 15px; line-height: 1.7; }
+.docs-main p { margin: 0 0 14px; }
+
+/* ── The endpoint line ──────────────────────────────────────────────────────── */
+/* A method badge, a path and a label. It is the first thing on the page and it
+   should look made rather than defaulted. */
+
+.docs-main h1 .m {
+  font-family: var(--d-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--d-ink);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--d-line-firm);
+  border-radius: 5px;
+  padding: 4px 8px;
+  position: relative;
+  top: -2px;
+}
+.docs-main h1 .ep {
+  font-family: var(--d-mono);
+  font-size: 0.76em;
+  font-weight: 500;
+  color: var(--d-ink);
+  letter-spacing: -0.01em;
+}
+.docs-main h1 .tag {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--d-ink-3);
+  letter-spacing: 0;
+  position: relative;
+  top: -2px;
+}
+
+.docs-kicker {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  color: var(--d-ink-3);
+  margin-bottom: 14px;
+}
+
+/* ── Code ───────────────────────────────────────────────────────────────────── */
+/* Raised off the page, outlined, with a header that is part of the block. This
+   is the component a reader's eye lands on most, and it was dissolving into
+   the background. */
+
+.docs-pre {
+  background: var(--d-raised);
+  border: 1px solid var(--d-line-firm);
+  border-radius: 10px;
+  margin: 0 0 22px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+}
+.docs-pre .pre-head {
+  background: rgba(255, 255, 255, 0.022);
+  border-bottom: 1px solid var(--d-line);
+  height: 34px;
+  padding: 0 9px 0 15px;
+}
+/* ink-3, not ink-4: ink-4 measures 3.03:1 here and AA wants 4.5. */
+.docs-pre .pre-lang { font-size: 10px; letter-spacing: 0.15em; color: var(--d-ink-3); }
+.docs-pre code { padding: 15px 16px 16px; font-size: 12.6px; line-height: 1.75; }
+
+/* Inline code reads as a token, not as a word in a box. */
+.ic {
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  padding: 1.5px 5px;
+  color: var(--d-ink-2);
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────────── */
+
+.docs-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 26px 0 8px; }
+.docs-card {
+  background: var(--d-raised);
+  border: 1px solid var(--d-line);
+  border-radius: 10px;
+  padding: 16px 17px 17px;
+}
+.docs-card:hover { border-color: var(--d-line-firm); background: #101010; }
+.docs-card .t { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
+.docs-card .d { font-size: 13px; line-height: 1.55; color: var(--d-ink-3); }
+
+/* ── Contents ───────────────────────────────────────────────────────────────── */
+/* ink-3 throughout, not ink-4: ink-4 is 2.89:1 against this ground and the rail
+   is text a reader navigates by, not decoration. Rank is carried by the border
+   and by weight on the active item instead. */
+
+.docs-toc-t {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.13em;
+  color: var(--d-ink-3); margin-bottom: 12px;
+}
+.docs-toc a {
+  font-size: 12.5px; color: var(--d-ink-3); padding: 5.5px 0 5.5px 12px;
+  border-left: 1px solid var(--d-line);
+}
+.docs-toc a:hover { color: var(--d-ink-2); border-left-color: var(--d-line-firm); }
+.docs-toc a.active, .docs-toc a.lvl3.active {
+  color: var(--d-ink); font-weight: 520; border-left-color: var(--d-ink);
+}
+
+@media (max-width: 900px) {
+  .docs-side { background: var(--d-sunken); border-right: 0; }
+  .docs-toc { border-left: 0; }
+  .docs-main { padding: 34px 20px 80px; }
+  .docs-main .docs-lead, .docs-main p.docs-lead, .docs-main h1 + p {
+    margin-bottom: 30px; padding-bottom: 26px;
+  }
+}
+
