@@ -21,6 +21,61 @@ function detectLang(code: string): string {
   return 'text'
 }
 
+const esc = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+// Tokens are emitted as spans with a class; the colours live in docs.css and are
+// graded in white, because the brand has no hue. Ranking the key above the value
+// above the aside is what a reader needs from a payload, and weight does that.
+//
+// The raw text is tokenised first and escaped on the way out, never the other way
+// round: escaping first turns every quote into &quot; and the string rule stops
+// matching, which is the usual way a hand-rolled highlighter mangles its input.
+const RULES: Array<[RegExp, string]> = [
+  [/(^|\n)\s*(#|\/\/)[^\n]*/g, 'tk-com'],          // comment to end of line
+  [/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, 'tk-str'],  // quoted string
+  [/\b(true|false|null|None|True|False)\b/g, 'tk-bool'],
+  [/\b\d+(?:\.\d+)?\b/g, 'tk-num'],
+  // No lookbehind: a regex literal using one is a *parse-time* SyntaxError on iOS
+  // Safari before 16.4, which would take this whole component down rather than
+  // just the highlighting. The leading space is matched and then skipped by the
+  // trimStart offset below, which the comment rule already needed.
+  [/(?:^|\s)--?[A-Za-z][\w-]*/g, 'tk-flag'],         // -H, --data-raw
+]
+
+function highlight(code: string, lang: string): string {
+  if (lang === 'text') return esc(code)
+
+  // One pass, left to right, longest-first by rule order. Overlapping matches are
+  // impossible because each match consumes its span.
+  type Hit = { start: number; end: number; cls: string }
+  const hits: Hit[] = []
+  for (const [re, cls] of RULES) {
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(code))) {
+      const start = m.index + (m[0].length - m[0].trimStart().length)
+      const end = m.index + m[0].length
+      if (hits.some(h => start < h.end && end > h.start)) continue
+      hits.push({ start, end, cls })
+      if (m[0].length === 0) re.lastIndex++
+    }
+  }
+  hits.sort((a, b) => a.start - b.start)
+
+  let out = '', at = 0
+  for (const h of hits) {
+    if (h.start < at) continue
+    out += esc(code.slice(at, h.start))
+    const text = code.slice(h.start, h.end)
+    // A quoted string that a colon follows is a key, not a value.
+    const isKey = h.cls === 'tk-str' && /^\s*:/.test(code.slice(h.end))
+    out += `<span class="${isKey ? 'tk-key' : h.cls}">${esc(text)}</span>`
+    at = h.end
+  }
+  return out + esc(code.slice(at))
+}
+
 export default function DocsEnhance() {
   useEffect(() => {
     // ── Code blocks: header strip with a language label and the copy button ──
@@ -50,6 +105,14 @@ export default function DocsEnhance() {
 
       head.append(lang, btn)
       pre.prepend(head)
+
+      // Highlighting after the header is in place, so the copy button keeps
+      // handing over the original text rather than the marked-up version.
+      const codeEl = pre.querySelector('code')
+      if (codeEl && !codeEl.dataset.hl) {
+        codeEl.innerHTML = highlight(code, detected)
+        codeEl.dataset.hl = '1'
+      }
     })
 
     // ── Headings: ids and a hover anchor, so any subsection is linkable ─────
@@ -75,6 +138,46 @@ export default function DocsEnhance() {
         h.prepend(a)
       }
     })
+
+    // ── On this page: built from the headings above, so it cannot drift ─────
+    // Generated from the DOM rather than declared per page, which is what keeps
+    // all eleven content pages untouched by this.
+    const tocHost = document.querySelector('.docs-toc')
+    let tocObserver: IntersectionObserver | null = null
+
+    if (tocHost && heads.length > 1) {
+      const title = document.createElement('div')
+      title.className = 'docs-toc-t'
+      title.textContent = 'On this page'
+      tocHost.append(title)
+
+      const links = new Map<string, HTMLAnchorElement>()
+      heads.forEach(h => {
+        if (!h.id) return
+        const a = document.createElement('a')
+        a.href = `#${h.id}`
+        if (h.tagName === 'H3') a.className = 'lvl3'
+        // The anchor the heading carries is a '#', so read the heading's own text.
+        a.textContent = (h.textContent ?? '').replace(/^#/, '').trim()
+        tocHost.append(a)
+        links.set(h.id, a)
+      })
+
+      // Whichever heading is highest on screen wins, so scrolling up marks the
+      // section you are entering rather than the one you just left.
+      tocObserver = new IntersectionObserver(
+        entries => {
+          const onScreen = entries.filter(e => e.isIntersecting)
+          if (!onScreen.length) return
+          const top = onScreen.reduce((a, b) =>
+            a.boundingClientRect.top < b.boundingClientRect.top ? a : b)
+          links.forEach(l => l.classList.remove('active'))
+          links.get((top.target as HTMLElement).id)?.classList.add('active')
+        },
+        { rootMargin: '-64px 0px -70% 0px', threshold: 0 },
+      )
+      heads.forEach(h => { if (h.id) tocObserver?.observe(h) })
+    }
 
     // ── Search ───────────────────────────────────────────────────────────────
     // Built from the page itself, so it indexes whatever is published rather than
@@ -189,6 +292,7 @@ export default function DocsEnhance() {
     triggers.forEach(b => b.addEventListener('click', open))
 
     return () => {
+      tocObserver?.disconnect()
       document.removeEventListener('keydown', onKey)
       input?.removeEventListener('input', onInput)
       overlay?.removeEventListener('click', onOverlayClick)

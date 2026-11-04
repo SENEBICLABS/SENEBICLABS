@@ -56,6 +56,10 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
             <span className="docs-eyebrow">Questions? support@senebiclabs.com</span>
           </div>
         </main>
+
+        {/* Filled by DocsEnhance from the headings of whichever page is rendered,
+            so no content page declares its own contents. Hidden under 1180px. */}
+        <aside className="docs-toc" aria-label="On this page" />
       </div>
 
       <div id="docs-search" role="dialog" aria-modal="true" aria-label="Search the reference">

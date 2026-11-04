@@ -612,3 +612,467 @@
   .docs-actions { position: static; justify-content: flex-end; margin-bottom: 14px; }
   .da-menu { top: calc(100% + 7px); }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ENTERPRISE REFINEMENT LAYER
+
+   Appended rather than folded into the rules above, so this pass reads as one
+   deliberate change and the original intent of each component stays visible in
+   the diff. Later rules win, which is how the refinements below take effect.
+
+   The palette stays strictly monochrome because the brand is: globals.css sets
+   --navy to #000000 and every accent token to #FFFFFF. Nothing here introduces a
+   hue. Hierarchy is carried by ink weight, type scale and whitespace, which is
+   also why the code highlighting further down is graded in white rather than
+   coloured.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.docs-shell,
+.docs-topbar {
+  /* Surfaces: three steps, all near-black, so a raised panel reads as raised
+     without a border doing the whole job. */
+  --d-bg:        #000000;
+  --d-raised:    #0B0B0B;
+  --d-sunken:    #070707;
+
+  /* Hairlines at two weights. The weak one is for rules inside a component, the
+     strong one for the edges between regions. One weight for both is what makes
+     a dense reference look busy. */
+  --d-line:      rgba(255, 255, 255, 0.07);
+  --d-line-firm: rgba(255, 255, 255, 0.13);
+
+  /* Ink in four steps. Four is enough to rank a heading, body copy, a label and
+     a disabled state, and few enough that each step is visibly distinct. */
+  --d-ink:    #FFFFFF;
+  --d-ink-2:  rgba(255, 255, 255, 0.74);
+  --d-ink-3:  rgba(255, 255, 255, 0.50);
+  --d-ink-4:  rgba(255, 255, 255, 0.34);
+
+  --d-radius:    8px;
+  --d-radius-sm: 5px;
+
+  /* A measure, not a width. Technical prose stops being readable past about 75
+     characters, whatever room the viewport has. */
+  --d-measure: 74ch;
+
+  --d-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --d-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ── Shell: a third column for the page's own contents ──────────────────────── */
+
+.docs-shell {
+  grid-template-columns: 252px minmax(0, 1fr) 210px;
+  max-width: 1320px;
+  column-gap: 0;
+  align-items: start;
+}
+
+.docs-main {
+  padding: 52px 56px 96px;
+  max-width: none;
+}
+.docs-main > section { max-width: var(--d-measure); }
+
+/* ── Typography: one scale, and room to breathe ─────────────────────────────── */
+
+.docs-main h1 {
+  font-size: clamp(28px, 3.1vw, 36px);
+  line-height: 1.16;
+  letter-spacing: -0.021em;
+  font-weight: 640;
+  color: var(--d-ink);
+  margin: 0 0 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.docs-main h2 {
+  font-size: 21px;
+  line-height: 1.3;
+  letter-spacing: -0.013em;
+  font-weight: 620;
+  color: var(--d-ink);
+  margin: 56px 0 14px;
+  padding-top: 26px;
+  border-top: 1px solid var(--d-line);
+}
+.docs-main h3 {
+  font-size: 15.5px;
+  line-height: 1.4;
+  letter-spacing: -0.006em;
+  font-weight: 600;
+  color: var(--d-ink);
+  margin: 38px 0 10px;
+}
+.docs-main h2 + h3 { margin-top: 22px; }
+
+.docs-main p,
+.docs-main li {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--d-ink-2);
+}
+.docs-main p { margin: 0 0 16px; }
+.docs-main ul { margin: 0 0 18px; padding-left: 20px; }
+.docs-main li { margin: 0 0 7px; }
+.docs-main li::marker { color: var(--d-ink-4); }
+.docs-main strong, .docs-main li b { color: var(--d-ink); font-weight: 600; }
+
+.docs-lead { font-size: 17px; line-height: 1.68; color: var(--d-ink-2); margin-bottom: 26px; }
+
+.docs-kicker {
+  display: inline-block;
+  font-family: var(--d-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--d-ink-4);
+  margin-bottom: 14px;
+}
+
+/* ── Endpoint presentation: badge, path and label on one baseline ───────────── */
+
+.docs-main h1 .m {
+  font-family: var(--d-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 5px 8px;
+  border-radius: var(--d-radius-sm);
+  border: 1px solid var(--d-line-firm);
+  background: var(--d-raised);
+  color: var(--d-ink);
+  text-transform: uppercase;
+  line-height: 1;
+  flex: none;
+}
+.docs-main h1 .ep {
+  font-family: var(--d-mono);
+  font-size: clamp(17px, 2vw, 22px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--d-ink);
+}
+.docs-main h1 .tag {
+  font-size: 12.5px;
+  font-weight: 450;
+  color: var(--d-ink-3);
+  letter-spacing: 0;
+  padding-left: 2px;
+}
+
+/* ── Inline code ────────────────────────────────────────────────────────────── */
+
+.docs-main .ic {
+  font-family: var(--d-mono);
+  font-size: 0.875em;
+  padding: 0.14em 0.36em;
+  border-radius: 4px;
+  border: 1px solid var(--d-line);
+  background: var(--d-raised);
+  color: var(--d-ink);
+  white-space: nowrap;
+}
+
+/* ── Code blocks ────────────────────────────────────────────────────────────── */
+
+.docs-pre {
+  background: var(--d-sunken);
+  border: 1px solid var(--d-line);
+  border-radius: var(--d-radius);
+  margin: 0 0 22px;
+  /* The padding moves to the `code` element, because the header strip has to run
+     edge to edge. Left on the `pre` it is added to the code's own padding and the
+     block gains a band of empty space above and below the first and last line. */
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+.docs-pre .pre-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* The earlier rule pulls the strip outside the box with a negative margin, to
+     escape the padding the `pre` used to carry. The padding is gone, so the
+     margin would push the label under `overflow: hidden` and cut it off. */
+  margin: 0;
+  padding: 0 10px 0 13px;
+  height: 36px;
+  background: var(--d-raised);
+  border-bottom: 1px solid var(--d-line);
+}
+.docs-pre .pre-lang {
+  font-family: var(--d-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--d-ink-4);
+}
+.docs-pre code {
+  display: block;
+  padding: 16px 18px;
+  font-family: var(--d-mono);
+  font-size: 12.9px;
+  line-height: 1.72;
+  color: var(--d-ink-2);
+  overflow-x: auto;
+  tab-size: 2;
+}
+.docs-pre .copy-btn {
+  /* Static, not absolute: the button is a child of the header strip now, and the
+     inherited `position: absolute` placed it over the code instead of in the bar. */
+  position: static;
+  font-family: var(--d-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--d-ink-4);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--d-radius-sm);
+  padding: 5px 8px;
+  transition: color 0.16s var(--d-ease), border-color 0.16s var(--d-ease);
+}
+.docs-pre .copy-btn:hover { color: var(--d-ink); border-color: var(--d-line-firm); }
+
+/* Monochrome highlighting. Graded in white because the brand has no hue, and
+   because rank is what a reader needs here: the key, then the value, then the
+   aside. Classes are applied by DocsEnhance after render. */
+.docs-pre .tk-key  { color: var(--d-ink); font-weight: 500; }
+.docs-pre .tk-str  { color: rgba(255, 255, 255, 0.80); }
+.docs-pre .tk-num,
+.docs-pre .tk-bool { color: var(--d-ink); font-weight: 500; }
+.docs-pre .tk-fn   { color: var(--d-ink); font-weight: 500; }
+.docs-pre .tk-flag { color: rgba(255, 255, 255, 0.62); }
+.docs-pre .tk-com  { color: var(--d-ink-4); font-style: italic; }
+
+/* ── Tables ─────────────────────────────────────────────────────────────────── */
+/* Bare `table` as well as `.docs-table`, so a page that adds one gets the
+   refined treatment without being edited. */
+
+.docs-main table,
+.docs-main .docs-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 24px;
+  font-size: 14px;
+  border: 1px solid var(--d-line);
+  border-radius: var(--d-radius);
+  overflow: hidden;
+}
+.docs-main th {
+  text-align: left;
+  font-family: var(--d-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--d-ink-4);
+  background: var(--d-raised);
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--d-line-firm);
+  white-space: nowrap;
+}
+.docs-main td {
+  padding: 12px 14px;
+  color: var(--d-ink-2);
+  border-bottom: 1px solid var(--d-line);
+  vertical-align: top;
+  line-height: 1.6;
+}
+.docs-main tbody tr:last-child td { border-bottom: 0; }
+.docs-main tbody tr { transition: background 0.14s var(--d-ease); }
+.docs-main tbody tr:hover { background: rgba(255, 255, 255, 0.022); }
+.docs-main td:first-child { color: var(--d-ink); font-family: var(--d-mono); font-size: 13px; white-space: nowrap; }
+
+/* ── Field lists, for request and response shapes ───────────────────────────── */
+
+.docs-params { border-top: 1px solid var(--d-line); margin: 0 0 24px; }
+.docs-param {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--d-line);
+}
+.docs-param .n { font-family: var(--d-mono); font-size: 13px; color: var(--d-ink); }
+.docs-param .meta {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--d-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--d-ink-4);
+}
+.docs-param .req { color: var(--d-ink-2); border-bottom: 1px solid var(--d-line-firm); padding-bottom: 1px; }
+.docs-param .d { grid-column: 1 / -1; font-size: 14px; line-height: 1.65; color: var(--d-ink-2); }
+
+/* ── Callouts and cards ─────────────────────────────────────────────────────── */
+
+.docs-callout {
+  border: 1px solid var(--d-line);
+  border-left: 2px solid var(--d-line-firm);
+  background: var(--d-raised);
+  border-radius: var(--d-radius);
+  padding: 15px 18px;
+  margin: 0 0 22px;
+}
+.docs-callout p { font-size: 14px; line-height: 1.68; margin: 0; color: var(--d-ink-2); }
+
+.docs-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(228px, 1fr)); gap: 12px; margin: 0 0 26px; }
+.docs-card {
+  border: 1px solid var(--d-line);
+  border-radius: var(--d-radius);
+  background: var(--d-raised);
+  padding: 17px 18px;
+  text-decoration: none;
+  transition: border-color 0.18s var(--d-ease), background 0.18s var(--d-ease), transform 0.18s var(--d-ease);
+}
+.docs-card:hover { border-color: var(--d-line-firm); background: #101010; transform: translateY(-1px); }
+.docs-card .t { font-size: 14.5px; font-weight: 580; color: var(--d-ink); letter-spacing: -0.008em; }
+.docs-card .d { font-size: 13px; line-height: 1.6; color: var(--d-ink-3); margin-top: 5px; }
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+
+.docs-side {
+  padding: 34px 20px 72px 28px;
+  border-right: 1px solid var(--d-line);
+}
+.docs-nav .grp {
+  font-family: var(--d-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.17em;
+  color: var(--d-ink-4);
+  margin: 26px 0 7px;
+  padding-left: 11px;
+}
+.docs-nav a {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--d-ink-3);
+  padding: 6px 11px;
+  border-radius: var(--d-radius-sm);
+  border-left: 2px solid transparent;
+  transition: color 0.15s var(--d-ease), background 0.15s var(--d-ease), border-color 0.15s var(--d-ease);
+}
+.docs-nav a:hover { color: var(--d-ink-2); background: rgba(255, 255, 255, 0.032); }
+.docs-nav a.active {
+  color: var(--d-ink);
+  font-weight: 520;
+  background: rgba(255, 255, 255, 0.055);
+  border-left-color: var(--d-ink);
+}
+
+/* ── On this page ───────────────────────────────────────────────────────────── */
+
+.docs-toc {
+  position: sticky;
+  top: 57px;
+  align-self: start;
+  max-height: calc(100vh - 57px);
+  overflow-y: auto;
+  padding: 52px 24px 72px 4px;
+}
+.docs-toc-t {
+  font-family: var(--d-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--d-ink-4);
+  margin-bottom: 11px;
+}
+.docs-toc a {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--d-ink-3);
+  text-decoration: none;
+  padding: 5px 0 5px 12px;
+  border-left: 1px solid var(--d-line);
+  transition: color 0.15s var(--d-ease), border-color 0.15s var(--d-ease);
+}
+.docs-toc a:hover { color: var(--d-ink-2); border-left-color: var(--d-line-firm); }
+.docs-toc a.active { color: var(--d-ink); border-left-color: var(--d-ink); }
+.docs-toc a.lvl3 { padding-left: 24px; font-size: 12px; color: var(--d-ink-4); }
+.docs-toc a.lvl3:hover { color: var(--d-ink-3); }
+.docs-toc a.lvl3.active { color: var(--d-ink-2); }
+
+/* ── Topbar ─────────────────────────────────────────────────────────────────── */
+
+.docs-topbar {
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: saturate(160%) blur(12px);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+  border-bottom: 1px solid var(--d-line);
+}
+/* `min-height`, never `height`: below 720px the bar wraps the brand, the call to
+   action and the search field onto separate rows, and a fixed height would let
+   them spill over the navigation underneath. */
+.docs-topbar-in { max-width: 1320px; gap: 18px; min-height: 56px; }
+.docs-searchbtn {
+  border: 1px solid var(--d-line);
+  background: var(--d-raised);
+  border-radius: var(--d-radius-sm);
+  color: var(--d-ink-4);
+  font-size: 13px;
+  padding: 7px 10px;
+  transition: border-color 0.16s var(--d-ease), color 0.16s var(--d-ease);
+}
+.docs-searchbtn:hover { border-color: var(--d-line-firm); color: var(--d-ink-2); }
+.docs-searchbtn kbd {
+  font-family: var(--d-mono); font-size: 10px; color: var(--d-ink-4);
+  border: 1px solid var(--d-line); border-radius: 4px; padding: 2px 5px;
+}
+.docs-toplink { font-size: 13px; color: var(--d-ink-3); transition: color 0.16s var(--d-ease); }
+.docs-toplink:hover { color: var(--d-ink); }
+
+/* ── Focus: visible for a keyboard, absent for a mouse ──────────────────────── */
+
+.docs-shell a:focus-visible,
+.docs-shell button:focus-visible,
+.docs-topbar a:focus-visible,
+.docs-topbar button:focus-visible,
+.docs-toc a:focus-visible,
+#docs-search input:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 2px;
+  border-radius: var(--d-radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .docs-shell *, .docs-topbar * { transition: none !important; animation: none !important; }
+  .docs-card:hover { transform: none; }
+}
+
+/* ── Narrower viewports ─────────────────────────────────────────────────────── */
+
+@media (max-width: 1180px) {
+  .docs-shell { grid-template-columns: 240px minmax(0, 1fr); }
+  .docs-toc { display: none; }
+}
+@media (max-width: 900px) {
+  .docs-shell { grid-template-columns: minmax(0, 1fr); }
+  .docs-side {
+    position: static; height: auto; border-right: 0;
+    border-bottom: 1px solid var(--d-line);
+    padding: 16px 20px;
+  }
+  .docs-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .docs-nav .grp { width: 100%; margin: 10px 0 2px; padding-left: 0; }
+  .docs-main { padding: 34px 20px 72px; }
+  .docs-main h2 { margin-top: 42px; }
+}
+@media (max-width: 560px) {
+  .docs-main { padding: 26px 16px 64px; }
+  .docs-main h1 { font-size: 25px; gap: 8px; }
+  .docs-main h1 .ep { font-size: 16px; word-break: break-all; }
+  .docs-main p, .docs-main li { font-size: 14.5px; }
+  .docs-pre code { font-size: 12.2px; padding: 13px 14px; }
+  .docs-main table { font-size: 13px; }
+  .docs-main th, .docs-main td { padding: 9px 10px; }
+  .docs-topbar-in { gap: 10px 12px; }
+  .docs-toplink { display: none; }
+  /* The brand and the call to action then fit on one row at 390px. */
+  .docs-topbar .docs-brand-sub { display: none; }
+}
